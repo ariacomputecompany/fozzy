@@ -190,6 +190,7 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
 }
 
 fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
+    let strict_bundle = !is_direct_trace_input(run);
     let entries = artifacts_list(config, run)?;
     let mut files: Vec<PathBuf> = entries
         .into_iter()
@@ -203,6 +204,9 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
         return Err(crate::FozzyError::InvalidArgument(format!(
             "no artifacts found for {run:?}"
         )));
+    }
+    if strict_bundle {
+        validate_required_bundle_files(&files, run)?;
     }
 
     let meta_dir = std::env::temp_dir().join(format!("fozzy-pack-{}", uuid::Uuid::new_v4()));
@@ -244,6 +248,7 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
 }
 
 fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
+    let strict_bundle = !is_direct_trace_input(run);
     let entries = artifacts_list(config, run)?;
     let mut files: Vec<PathBuf> = entries
         .into_iter()
@@ -257,6 +262,9 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
         return Err(crate::FozzyError::InvalidArgument(format!(
             "no artifacts found for {run:?}"
         )));
+    }
+    if strict_bundle {
+        validate_required_bundle_files(&files, run)?;
     }
 
     if out
@@ -648,7 +656,49 @@ fn validate_copy_targets_secure(files: &[PathBuf], out_dir: &Path) -> FozzyResul
             }
         }
     }
+
+    if out_dir.exists() {
+        for entry in std::fs::read_dir(out_dir)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !seen.contains(&name) {
+                return Err(crate::FozzyError::InvalidArgument(format!(
+                    "refusing to write into non-empty output directory with stale entries: {}",
+                    out_dir.display()
+                )));
+            }
+        }
+    }
+
     Ok(())
+}
+
+fn validate_required_bundle_files(files: &[PathBuf], run: &str) -> FozzyResult<()> {
+    let present: BTreeSet<String> = files
+        .iter()
+        .filter_map(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+        .collect();
+    let required = ["trace.fozzy", "report.json", "events.json", "manifest.json"];
+    let missing: Vec<&str> = required
+        .into_iter()
+        .filter(|name| !present.contains(*name))
+        .collect();
+    if !missing.is_empty() {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "incomplete artifacts for {run:?}; missing required files: {}",
+            missing.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+fn is_direct_trace_input(run: &str) -> bool {
+    let p = PathBuf::from(run);
+    p.exists()
+        && p.is_file()
+        && p.extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"))
 }
 
 #[cfg(test)]
@@ -718,6 +768,7 @@ mod tests {
         std::fs::create_dir_all(&run_dir).expect("mkdir");
         std::fs::write(run_dir.join("report.json"), b"{}").expect("report");
         std::fs::write(run_dir.join("events.json"), b"[]").expect("events");
+        std::fs::write(run_dir.join("manifest.json"), br#"{"schemaVersion":"fozzy.run_manifest.v1"}"#).expect("manifest");
         std::fs::write(run_dir.join("trace.fozzy"), b"{}").expect("trace");
         let out = root.join("pack.zip");
         let cfg = crate::Config {
@@ -745,6 +796,9 @@ mod tests {
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
         std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
+        std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
+        std::fs::write(run_dir.join("manifest.json"), br#"{"schemaVersion":"fozzy.run_manifest.v1"}"#).expect("manifest");
+        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -773,6 +827,7 @@ mod tests {
         std::fs::write(run_dir.join("report.json"), br#"{"report":true}"#).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), br#"{"schemaVersion":"fozzy.run_manifest.v1"}"#).expect("manifest");
+        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -814,5 +869,53 @@ mod tests {
         let a = std::fs::read(&out_a).expect("read a");
         let b = std::fs::read(&out_b).expect("read b");
         assert_eq!(a, b, "repeated pack exports for same run must be byte-identical");
+    }
+
+    #[test]
+    fn export_and_pack_reject_incomplete_run_directory() {
+        let root = std::env::temp_dir().join(format!("fozzy-pack-incomplete-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        std::fs::write(
+            run_dir.join("manifest.json"),
+            br#"{"schemaVersion":"fozzy.run_manifest.v1","reportPath":"report.json"}"#,
+        )
+        .expect("manifest");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+        };
+        let out_pack = root.join("pack.zip");
+        let out_export = root.join("export.zip");
+
+        let err_pack = export_reproducer_pack(&cfg, "r1", &out_pack).expect_err("pack must fail for incomplete run");
+        assert!(err_pack.to_string().contains("incomplete artifacts"));
+        assert!(!out_pack.exists(), "pack zip should not be created on incomplete run");
+
+        let err_export = export_artifacts(&cfg, "r1", &out_export).expect_err("export must fail for incomplete run");
+        assert!(err_export.to_string().contains("incomplete artifacts"));
+        assert!(!out_export.exists(), "export zip should not be created on incomplete run");
+    }
+
+    #[test]
+    fn pack_dir_rejects_stale_preexisting_files() {
+        let root = std::env::temp_dir().join(format!("fozzy-pack-stale-dir-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
+        std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
+        std::fs::write(run_dir.join("manifest.json"), br#"{"schemaVersion":"fozzy.run_manifest.v1"}"#).expect("manifest");
+        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+        };
+
+        let out_dir = root.join("out");
+        std::fs::create_dir_all(&out_dir).expect("out");
+        std::fs::write(out_dir.join("stale.txt"), b"old").expect("stale");
+
+        let err = export_reproducer_pack(&cfg, "r1", &out_dir).expect_err("must reject stale output dir");
+        assert!(err.to_string().contains("non-empty output directory with stale entries"));
     }
 }
