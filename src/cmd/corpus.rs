@@ -269,7 +269,13 @@ fn normalize_zip_entry_rel_path(name: &str) -> FozzyResult<PathBuf> {
     for comp in path.components() {
         use std::path::Component;
         match comp {
-            Component::Normal(seg) => rel.push(seg),
+            Component::Normal(seg) => {
+                let seg = seg.to_str().ok_or_else(|| {
+                    FozzyError::InvalidArgument(format!("unsafe archive entry path rejected: {name}"))
+                })?;
+                validate_archive_path_segment(seg, name)?;
+                rel.push(seg);
+            }
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err(FozzyError::InvalidArgument(format!(
@@ -289,6 +295,66 @@ fn normalize_zip_entry_rel_path(name: &str) -> FozzyResult<PathBuf> {
 fn is_windows_drive_prefixed(name: &str) -> bool {
     let b = name.as_bytes();
     b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+}
+
+fn validate_archive_path_segment(seg: &str, original_name: &str) -> FozzyResult<()> {
+    if seg.is_empty() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "unsafe archive entry path rejected: {original_name}"
+        )));
+    }
+
+    // Keep entry names portable and safe across platforms/tools.
+    if seg.ends_with('.') || seg.ends_with(' ') {
+        return Err(FozzyError::InvalidArgument(format!(
+            "unsafe archive entry path rejected: {original_name}"
+        )));
+    }
+
+    if seg.chars().any(|c| c.is_control() || matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|')) {
+        return Err(FozzyError::InvalidArgument(format!(
+            "unsafe archive entry path rejected: {original_name}"
+        )));
+    }
+
+    if is_windows_reserved_name(seg) {
+        return Err(FozzyError::InvalidArgument(format!(
+            "unsafe archive entry path rejected: {original_name}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn is_windows_reserved_name(seg: &str) -> bool {
+    let trimmed = seg.trim_end_matches(['.', ' ']);
+    let stem = trimmed.split('.').next().unwrap_or(trimmed);
+    let upper = stem.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 
 #[cfg(test)]
@@ -372,6 +438,24 @@ mod tests {
             "//server/share/evil_unc.bin",
         ] {
             let err = normalize_zip_entry_rel_path(bad).expect_err("must reject windows-style unsafe path");
+            assert!(err.to_string().contains("unsafe archive entry path rejected"));
+        }
+    }
+
+    #[test]
+    fn normalize_rejects_special_unsafe_filenames() {
+        for bad in [
+            "\u{0001}.bin",
+            "\u{0000}TRUNC.bin",
+            "CON",
+            "aux.txt",
+            "name-with-trailing-dot.",
+            "name-with-trailing-space ",
+            "bad:name.bin",
+            "bad*name.bin",
+            "bad?name.bin",
+        ] {
+            let err = normalize_zip_entry_rel_path(bad).expect_err("must reject unsafe special filename");
             assert!(err.to_string().contains("unsafe archive entry path rejected"));
         }
     }
