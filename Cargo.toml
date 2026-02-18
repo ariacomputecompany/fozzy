@@ -1,0 +1,27 @@
+[package]
+name = "fozzy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.86"
+blake3 = "1.5.4"
+clap = { version = "4.5.16", features = ["derive"] }
+globset = "0.4.15"
+rand_chacha = "0.3.1"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+serde = { version = "1.0.208", features = ["derive"] }
+serde_json = "1.0.125"
+thiserror = "2.0.6"
+time = { version = "0.3.36", features = ["formatting", "macros", "serde", "parsing"] }
+toml = "0.8.19"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+uuid = { version = "1.10.0", features = ["serde", "v4"] }
+walkdir = "2.5.0"
+zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
+
+[lints.clippy]
+dbg_macro = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
