@@ -115,6 +115,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Trace format compatibility tests added (legacy/new decision schema parsing)
 - ✅ UX polish and diagnostics are partial (shrink default path now deterministic and explicit)
 - ✅ Deterministic timeout semantics fixed: `--timeout` now applies to virtual elapsed time under `--det`
+- ✅ Atomic trace writes prevent concurrent same-path `--record` corruption
 
 ## Production Backlog (Next Execution Order)
 1. ✅ Expand M3 with stricter network capability contracts and richer record/replay semantics.

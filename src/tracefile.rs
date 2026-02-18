@@ -122,7 +122,20 @@ impl TraceFile {
         } else {
             serde_json::to_vec(self)?
         };
-        std::fs::write(path, bytes)?;
+        // Atomic replace to avoid concurrent writer corruption on shared paths.
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("trace.fozzy");
+        let tmp_name = format!(
+            ".{file_name}.{}.{}.tmp",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        );
+        let tmp_path = parent.join(tmp_name);
+        std::fs::write(&tmp_path, bytes)?;
+        std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
 
