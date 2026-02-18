@@ -2,7 +2,7 @@
 
 Deterministic full-stack testing: test, replay, shrink, fuzz, and distributed exploration via one engine and one CLI.
 
-Status: pre-1.0. This repository is being implemented from `/Users/deepsaint/Desktop/fozzy/PLAN.md`.
+Status: pre-1.0. This repository is being implemented from [PLAN.md](PLAN.md).
 
 ## Install (dev)
 
@@ -30,14 +30,14 @@ fozzy shrink .fozzy/runs/<runId>/trace.fozzy --minimize all --json
 
 ## CLI
 
-The canonical CLI surface is documented in `/Users/deepsaint/Desktop/fozzy/CLI.md`.
+The canonical CLI surface is documented in [CLI.md](CLI.md).
 
 ## Repo Docs
 
-- `/Users/deepsaint/Desktop/fozzy/PLAN.md`: execution plan / milestones
-- `/Users/deepsaint/Desktop/fozzy/RUST-STYLE-GUIDE.md`: Rust conventions for this codebase
-- `/Users/deepsaint/Desktop/fozzy/SDK-TS.md`: TypeScript SDK contract (thin wrapper over the binary)
-- `/Users/deepsaint/Desktop/fozzy/sdk-ts/`: production TypeScript SDK package scaffold (`fozzy-sdk`)
+- [PLAN.md](PLAN.md): execution plan / milestones
+- [RUST-STYLE-GUIDE.md](RUST-STYLE-GUIDE.md): Rust conventions for this codebase
+- [SDK-TS.md](SDK-TS.md): TypeScript SDK contract (thin wrapper over the binary)
+- [sdk-ts/](sdk-ts/): production TypeScript SDK package scaffold (`fozzy-sdk`)
 
 ## License
 
