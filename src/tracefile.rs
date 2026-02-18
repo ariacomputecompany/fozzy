@@ -135,3 +135,69 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_parses_legacy_scheduler_and_step_decisions() {
+        let raw = r#"{
+          "format":"fozzy-trace",
+          "version":1,
+          "engine":{"version":"0.1.0"},
+          "mode":"run",
+          "scenario_path":"tests/example.fozzy.json",
+          "scenario":{"version":1,"name":"example","steps":[]},
+          "decisions":[
+            {"kind":"scheduler_pick","task_id":1,"label":"step0"},
+            {"kind":"step","index":0,"name":"legacy-step"}
+          ],
+          "events":[],
+          "summary":{
+            "status":"pass",
+            "mode":"run",
+            "identity":{"runId":"r1","seed":1},
+            "startedAt":"2026-01-01T00:00:00Z",
+            "finishedAt":"2026-01-01T00:00:00Z",
+            "durationMs":0
+          }
+        }"#;
+
+        let trace: TraceFile = serde_json::from_str(raw).expect("legacy trace parses");
+        assert_eq!(trace.version, 1);
+        assert_eq!(trace.decisions.len(), 2);
+    }
+
+    #[test]
+    fn trace_parses_network_replay_decisions() {
+        let raw = r#"{
+          "format":"fozzy-trace",
+          "version":1,
+          "engine":{"version":"0.1.0"},
+          "mode":"run",
+          "scenario_path":"tests/net.fozzy.json",
+          "scenario":{"version":1,"name":"net","steps":[]},
+          "decisions":[
+            {"kind":"scheduler_pick","task_id":1,"label":"NetDeliverOne"},
+            {"kind":"net_deliver_pick","message_id":42},
+            {"kind":"net_drop","message_id":42,"dropped":false}
+          ],
+          "events":[],
+          "summary":{
+            "status":"pass",
+            "mode":"run",
+            "identity":{"runId":"r2","seed":2},
+            "startedAt":"2026-01-01T00:00:00Z",
+            "finishedAt":"2026-01-01T00:00:00Z",
+            "durationMs":0
+          }
+        }"#;
+
+        let trace: TraceFile = serde_json::from_str(raw).expect("network trace parses");
+        assert_eq!(trace.decisions.len(), 3);
+        let out = serde_json::to_string(&trace).expect("trace serializes");
+        assert!(out.contains("net_deliver_pick"));
+        assert!(out.contains("net_drop"));
+    }
+}

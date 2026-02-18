@@ -105,7 +105,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ⬜ Determinism audit suite (cross-platform) pending
 - ⬜ Performance optimization passes pending
 - ⬜ Memory/trace-size optimization pending
-- ⬜ Trace format compatibility tests pending
+- ✅ Trace format compatibility tests added (legacy/new decision schema parsing)
 - ☑️ UX polish and diagnostics are partial (shrink default path now deterministic and explicit)
 
 ## Production Backlog (Next Execution Order)
