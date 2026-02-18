@@ -65,7 +65,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy explore".to_string(),
                 when: "Test distributed/system scenarios by exploring schedules and injecting faults deterministically.".to_string(),
-                how: "fozzy explore scenario.json --schedule pct --nodes 5 --faults preset --time 30s (planned).".to_string(),
+                how: "fozzy explore tests/kv.explore.fozzy.json --schedule random --nodes 3 --steps 200 --json.".to_string(),
             },
             UsageItem {
                 command: "fozzy corpus".to_string(),

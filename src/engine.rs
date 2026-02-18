@@ -205,7 +205,14 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             }
         }
 
-        let run = run_scenario_inner(config, RunMode::Test, ScenarioPath::new(p.clone()), seed, opt.det, opt.timeout)?;
+        let run = match run_scenario_inner(config, RunMode::Test, ScenarioPath::new(p.clone()), seed, opt.det, opt.timeout) {
+            Ok(run) => run,
+            Err(FozzyError::Scenario(msg)) if msg.contains("use `fozzy explore`") => {
+                skipped += 1;
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
         match run.status {
             ExitStatus::Pass => passed += 1,
             _ => {
@@ -329,6 +336,9 @@ pub fn replay_trace(config: &Config, trace_path: TracePath, opt: &ReplayOptions)
     if trace.fuzz.is_some() && trace.scenario.is_none() {
         return crate::replay_fuzz_trace(config, &trace);
     }
+    if trace.explore.is_some() && trace.scenario.is_none() {
+        return crate::replay_explore_trace(config, &trace);
+    }
 
     let seed = trace.summary.identity.seed;
     let run_id = Uuid::new_v4().to_string();
@@ -393,6 +403,9 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
     let trace = TraceFile::read_json(trace_path.as_path())?;
     if trace.fuzz.is_some() && trace.scenario.is_none() {
         return crate::shrink_fuzz_trace(config, trace_path, opt);
+    }
+    if trace.explore.is_some() && trace.scenario.is_none() {
+        return crate::shrink_explore_trace(config, trace_path, opt);
     }
     let seed = trace.summary.identity.seed;
 

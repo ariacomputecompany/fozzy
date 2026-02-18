@@ -26,6 +26,7 @@ impl ScenarioPath {
 pub enum ScenarioFile {
     Steps(ScenarioV1Steps),
     Suites(ScenarioV1Suites),
+    Distributed(ScenarioV1Distributed),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +41,42 @@ pub struct ScenarioV1Suites {
     pub version: u32,
     pub name: String,
     pub suites: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioV1Distributed {
+    pub version: u32,
+    pub name: String,
+    pub distributed: DistributedDef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DistributedDef {
+    #[serde(default)]
+    pub nodes: Option<Vec<String>>,
+    #[serde(default)]
+    pub node_count: Option<usize>,
+    pub steps: Vec<DistributedStep>,
+    #[serde(default)]
+    pub invariants: Vec<DistributedInvariant>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DistributedStep {
+    ClientPut { node: String, key: String, value: String },
+    ClientGetAssert { node: String, key: String, equals: Option<String>, is_null: Option<bool> },
+    Partition { a: String, b: String },
+    Heal { a: String, b: String },
+    Crash { node: String },
+    Restart { node: String },
+    Tick { duration: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DistributedInvariant {
+    KvAllEqual { key: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +122,10 @@ impl Scenario {
             }
             ScenarioFile::Suites(_s) => Err(FozzyError::Scenario(format!(
                 "scenario file {} uses `suites` without an executable step DSL (v0.1 only supports `steps`)",
+                path.as_path().display()
+            ))),
+            ScenarioFile::Distributed(_d) => Err(FozzyError::Scenario(format!(
+                "scenario file {} is a distributed scenario; use `fozzy explore`",
                 path.as_path().display()
             ))),
         }

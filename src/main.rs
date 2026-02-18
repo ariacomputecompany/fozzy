@@ -8,8 +8,8 @@ use std::process::ExitCode;
 
 use fozzy::{
     ArtifactCommand, Config, CorpusCommand, ExitStatus, FozzyDuration, InitTemplate, ReportCommand,
-    FuzzMode, FuzzOptions, FuzzTarget, Reporter, RunOptions, RunSummary, ScenarioPath,
-    ShrinkMinimize, TracePath,
+    ExploreOptions, FuzzMode, FuzzOptions, FuzzTarget, Reporter, RunOptions, RunSummary,
+    ScenarioPath, ScheduleStrategy, ShrinkMinimize, TracePath,
 };
 
 #[derive(Debug, Parser)]
@@ -153,6 +153,39 @@ enum Command {
     /// Deterministic distributed schedule + fault exploration
     Explore {
         scenario: PathBuf,
+
+        #[arg(long)]
+        seed: Option<u64>,
+
+        #[arg(long)]
+        time: Option<FozzyDuration>,
+
+        #[arg(long)]
+        steps: Option<u64>,
+
+        #[arg(long)]
+        nodes: Option<usize>,
+
+        #[arg(long)]
+        faults: Option<String>,
+
+        #[arg(long, default_value = "fifo")]
+        schedule: ScheduleStrategy,
+
+        #[arg(long)]
+        checker: Option<String>,
+
+        #[arg(long)]
+        record: Option<PathBuf>,
+
+        #[arg(long)]
+        shrink: bool,
+
+        #[arg(long)]
+        minimize: bool,
+
+        #[arg(long, default_value = "pretty")]
+        reporter: Reporter,
     },
 
     /// Replay a previously recorded run exactly
@@ -350,13 +383,39 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             Ok(exit_code_for_status(run.summary.status))
         }
 
-        Command::Explore { scenario } => {
-            print_error_json_or_text(
-                cli,
-                "not_implemented",
-                format!("explore not implemented in v0.1 (scenario={}): distributed exploration is planned", scenario.display()),
+        Command::Explore {
+            scenario,
+            seed,
+            time,
+            steps,
+            nodes,
+            faults,
+            schedule,
+            checker,
+            record,
+            shrink,
+            minimize,
+            reporter,
+        } => {
+            let run = fozzy::explore(
+                config,
+                ScenarioPath::new(scenario.clone()),
+                &ExploreOptions {
+                    seed: *seed,
+                    time: time.map(|d| d.0),
+                    steps: *steps,
+                    nodes: *nodes,
+                    faults: faults.clone(),
+                    schedule: *schedule,
+                    checker: checker.clone(),
+                    record_trace_to: record.clone(),
+                    shrink: *shrink,
+                    minimize: *minimize,
+                    reporter: *reporter,
+                },
             )?;
-            Ok(ExitCode::from(2))
+            print_run_summary(cli, &run.summary)?;
+            Ok(exit_code_for_status(run.summary.status))
         }
 
         Command::Replay {
@@ -464,29 +523,6 @@ fn print_json_or_text<T: serde::Serialize>(cli: &Cli, value: &T) -> anyhow::Resu
     } else {
         println!("{}", serde_json::to_string_pretty(value)?);
     }
-    Ok(())
-}
-
-fn print_error_json_or_text(cli: &Cli, code: &str, message: String) -> anyhow::Result<()> {
-    #[derive(serde::Serialize)]
-    struct ErrorOut<'a> {
-        status: ExitStatus,
-        code: &'a str,
-        message: String,
-    }
-
-    let out = ErrorOut {
-        status: ExitStatus::Error,
-        code,
-        message,
-    };
-
-    if cli.json {
-        println!("{}", serde_json::to_string(&out)?);
-    } else {
-        eprintln!("error[{code}]: {}", out.message);
-    }
-
     Ok(())
 }
 

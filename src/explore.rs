@@ -1,0 +1,784 @@
+//! Deterministic distributed exploration runner (single-host simulation).
+
+use rand_chacha::ChaCha20Rng;
+use rand_core::{RngCore as _, SeedableRng as _};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use crate::{
+    wall_time_iso_utc, Config, DistributedInvariant, DistributedStep, ExitStatus,
+    Finding, FindingKind, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
+    TraceEvent, TraceFile,
+};
+
+use crate::{FozzyError, FozzyResult};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleStrategy {
+    Fifo,
+    Random,
+    Pct,
+}
+
+impl clap::ValueEnum for ScheduleStrategy {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Fifo, Self::Random, Self::Pct]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::Fifo => clap::builder::PossibleValue::new("fifo"),
+            Self::Random => clap::builder::PossibleValue::new("random"),
+            Self::Pct => clap::builder::PossibleValue::new("pct"),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExploreOptions {
+    pub seed: Option<u64>,
+    pub time: Option<Duration>,
+    pub steps: Option<u64>,
+    pub nodes: Option<usize>,
+    pub faults: Option<String>,
+    pub schedule: ScheduleStrategy,
+    pub checker: Option<String>,
+    pub record_trace_to: Option<PathBuf>,
+    pub shrink: bool,
+    pub minimize: bool,
+    pub reporter: Reporter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExploreTrace {
+    pub scenario_path: String,
+    pub scenario: ScenarioV1Explore,
+    pub schedule: ScheduleStrategy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioV1Explore {
+    pub version: u32,
+    pub name: String,
+    pub nodes: Vec<String>,
+    pub steps: Vec<DistributedStep>,
+    #[serde(default)]
+    pub invariants: Vec<DistributedInvariant>,
+}
+
+#[derive(Debug, Clone)]
+struct Node {
+    running: bool,
+    kv: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct Message {
+    id: u64,
+    from: String,
+    to: String,
+    kind: String,
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NetRules {
+    partitions: BTreeSet<(String, String)>,
+}
+
+impl NetRules {
+    fn is_blocked(&self, a: &str, b: &str) -> bool {
+        let (x, y) = ordered_pair(a, b);
+        self.partitions.contains(&(x.to_string(), y.to_string()))
+    }
+
+    fn partition(&mut self, a: &str, b: &str) {
+        let (x, y) = ordered_pair(a, b);
+        self.partitions.insert((x.to_string(), y.to_string()));
+    }
+
+    fn heal(&mut self, a: &str, b: &str) {
+        let (x, y) = ordered_pair(a, b);
+        self.partitions.remove(&(x.to_string(), y.to_string()));
+    }
+}
+
+pub fn explore(config: &Config, scenario_path: ScenarioPath, opt: &ExploreOptions) -> FozzyResult<crate::RunResult> {
+    let seed = opt.seed.unwrap_or_else(gen_seed);
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = wall_time_iso_utc();
+    let started = Instant::now();
+
+    let artifacts_dir = config.runs_dir().join(&run_id);
+    std::fs::create_dir_all(&artifacts_dir)?;
+
+    let scenario = load_explore_scenario(&scenario_path, opt.nodes)?;
+    let (status, findings, events, delivered, decisions) =
+        run_explore_inner(&scenario, seed, opt.schedule, opt.steps, opt.time)?;
+    let _ = delivered;
+
+    let finished_at = wall_time_iso_utc();
+    let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let report_path = artifacts_dir.join("report.json");
+
+    let mut summary = RunSummary {
+        status,
+        mode: RunMode::Explore,
+        identity: RunIdentity {
+            run_id: run_id.clone(),
+            seed,
+            trace_path: None,
+            report_path: Some(report_path.to_string_lossy().to_string()),
+            artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
+        },
+        started_at,
+        finished_at,
+        duration_ms,
+        tests: None,
+        findings: findings.clone(),
+    };
+
+    std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
+    std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec_pretty(&events)?)?;
+
+    if matches!(opt.reporter, Reporter::Junit) {
+        std::fs::write(artifacts_dir.join("junit.xml"), crate::render_junit_xml(&summary))?;
+    }
+    if matches!(opt.reporter, Reporter::Html) {
+        std::fs::write(artifacts_dir.join("report.html"), crate::render_html(&summary))?;
+    }
+
+    let should_record = opt.record_trace_to.is_some() || status != ExitStatus::Pass;
+    if should_record {
+        let out = opt
+            .record_trace_to
+            .clone()
+            .unwrap_or_else(|| artifacts_dir.join("trace.fozzy"));
+        let trace = TraceFile::new_explore(
+            ExploreTrace {
+                scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
+                scenario: scenario.clone(),
+                schedule: opt.schedule,
+            },
+            decisions,
+            events,
+            summary.clone(),
+        );
+        trace.write_json(&out)?;
+        summary.identity.trace_path = Some(out.to_string_lossy().to_string());
+    }
+
+    Ok(crate::RunResult { summary })
+}
+
+pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crate::RunResult> {
+    let Some(explore) = trace.explore.as_ref() else {
+        return Err(FozzyError::Trace("not an explore trace".to_string()));
+    };
+    let seed = trace.summary.identity.seed;
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = wall_time_iso_utc();
+    let finished_at = wall_time_iso_utc();
+
+    let (status, findings, events, _delivered, _decisions) = run_explore_replay_inner(
+        &explore.scenario,
+        seed,
+        explore.schedule,
+        &trace.decisions,
+    )?;
+
+    let artifacts_dir = config.runs_dir().join(&run_id);
+    std::fs::create_dir_all(&artifacts_dir)?;
+    let report_path = artifacts_dir.join("report.json");
+
+    let summary = RunSummary {
+        status,
+        mode: RunMode::Replay,
+        identity: RunIdentity {
+            run_id,
+            seed,
+            trace_path: Some("<embedded>".to_string()),
+            report_path: Some(report_path.to_string_lossy().to_string()),
+            artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
+        },
+        started_at,
+        finished_at,
+        duration_ms: 0,
+        tests: None,
+        findings: findings.clone(),
+    };
+
+    std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
+    std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec_pretty(&events)?)?;
+
+    Ok(crate::RunResult { summary })
+}
+
+pub fn shrink_explore_trace(
+    _config: &Config,
+    trace_path: crate::TracePath,
+    opt: &crate::ShrinkOptions,
+) -> FozzyResult<crate::ShrinkResult> {
+    let trace = TraceFile::read_json(trace_path.as_path())?;
+    let Some(explore) = trace.explore.as_ref() else {
+        return Err(FozzyError::Trace("not an explore trace".to_string()));
+    };
+    if opt.minimize != crate::ShrinkMinimize::All && opt.minimize != crate::ShrinkMinimize::Schedule {
+        return Err(FozzyError::InvalidArgument(
+            "explore shrink only supports --minimize schedule|all (v0.2)".to_string(),
+        ));
+    }
+
+    let seed = trace.summary.identity.seed;
+    let mut best = trace.decisions.clone();
+    let mut candidate = best.clone();
+    let budget = opt.budget.unwrap_or(Duration::from_secs(15));
+    let deadline = Instant::now() + budget;
+
+    let mut chunk = (candidate.len().max(1) + 1) / 2;
+    while chunk > 0 && Instant::now() < deadline && candidate.len() > 1 {
+        let mut improved = false;
+        let mut i = 0usize;
+        while i < candidate.len() && Instant::now() < deadline {
+            let mut trial = candidate.clone();
+            let end = (i + chunk).min(trial.len());
+            trial.drain(i..end);
+            if trial.is_empty() {
+                i += chunk;
+                continue;
+            }
+
+            let (status, _findings, _events, _delivered, _decisions) =
+                run_explore_replay_inner(&explore.scenario, seed, explore.schedule, &trial)?;
+            if status != ExitStatus::Pass {
+                candidate = trial;
+                improved = true;
+                continue;
+            }
+            i += chunk;
+        }
+
+        if !improved {
+            if chunk == 1 {
+                break;
+            }
+            chunk = (chunk + 1) / 2;
+        }
+    }
+
+    best = candidate;
+    let out_path = opt
+        .out_trace_path
+        .clone()
+        .unwrap_or_else(|| default_min_path(trace_path.as_path()));
+
+    let (status, findings, events, _delivered, _decisions) =
+        run_explore_replay_inner(&explore.scenario, seed, explore.schedule, &best)?;
+
+    let started_at = wall_time_iso_utc();
+    let finished_at = wall_time_iso_utc();
+    let summary = RunSummary {
+        status,
+        mode: RunMode::Explore,
+        identity: RunIdentity {
+            run_id: Uuid::new_v4().to_string(),
+            seed,
+            trace_path: Some(out_path.to_string_lossy().to_string()),
+            report_path: None,
+            artifacts_dir: None,
+        },
+        started_at,
+        finished_at,
+        duration_ms: 0,
+        tests: None,
+        findings,
+    };
+
+    let trace_out = TraceFile::new_explore(explore.clone(), best, events, summary.clone());
+    trace_out.write_json(&out_path)?;
+
+    Ok(crate::ShrinkResult {
+        out_trace_path: out_path.to_string_lossy().to_string(),
+        result: crate::RunResult { summary },
+    })
+}
+
+fn load_explore_scenario(path: &ScenarioPath, nodes_override: Option<usize>) -> FozzyResult<ScenarioV1Explore> {
+    let bytes = std::fs::read(path.as_path())?;
+    let file: ScenarioFile = serde_json::from_slice(&bytes)?;
+    let ScenarioFile::Distributed(d) = file else {
+        return Err(FozzyError::Scenario(format!(
+            "scenario file {} is not a distributed scenario (use `distributed` section)",
+            path.as_path().display()
+        )));
+    };
+    if d.version != 1 {
+        return Err(FozzyError::Scenario(format!(
+            "unsupported distributed scenario version {} (expected 1)",
+            d.version
+        )));
+    }
+
+    let nodes = if let Some(n) = nodes_override {
+        (0..n).map(|i| format!("n{i}")).collect()
+    } else if let Some(nodes) = d.distributed.nodes.clone() {
+        nodes
+    } else if let Some(n) = d.distributed.node_count {
+        (0..n).map(|i| format!("n{i}")).collect()
+    } else {
+        vec!["n0".to_string(), "n1".to_string(), "n2".to_string()]
+    };
+
+    Ok(ScenarioV1Explore {
+        version: 1,
+        name: d.name,
+        nodes,
+        steps: d.distributed.steps,
+        invariants: d.distributed.invariants,
+    })
+}
+
+fn run_explore_inner(
+    scenario: &ScenarioV1Explore,
+    seed: u64,
+    schedule: ScheduleStrategy,
+    max_steps: Option<u64>,
+    max_time: Option<Duration>,
+) -> FozzyResult<(ExitStatus, Vec<Finding>, Vec<TraceEvent>, u64, Vec<crate::Decision>)> {
+    let mut rng = rng_from_seed(seed);
+    let started = Instant::now();
+    let deadline = max_time.map(|d| started + d);
+    let step_budget = max_steps.unwrap_or(u64::MAX);
+
+    let mut nodes: BTreeMap<String, Node> = scenario
+        .nodes
+        .iter()
+        .map(|n| {
+            (
+                n.clone(),
+                Node {
+                    running: true,
+                    kv: BTreeMap::new(),
+                },
+            )
+        })
+        .collect();
+
+    let mut net = NetRules::default();
+    let mut queue: VecDeque<Message> = VecDeque::new();
+    let mut next_id = 1u64;
+    let mut events = Vec::new();
+    let mut findings = Vec::new();
+    let mut decisions: Vec<crate::Decision> = Vec::new();
+    let mut delivered = 0u64;
+    let mut time_ms = 0u64;
+
+    // Scripted setup actions enqueue replication messages, faults, etc.
+    for step in &scenario.steps {
+        if let DistributedStep::Tick { duration } = step {
+            let d = crate::parse_duration(duration)?;
+            time_ms = time_ms.saturating_add(d.as_millis().min(u128::from(u64::MAX)) as u64);
+        }
+
+        apply_script_step(step, &mut nodes, &mut net, &mut queue, &mut next_id, &mut events, &mut time_ms)?;
+    }
+
+    while delivered < step_budget {
+        if let Some(dl) = deadline {
+            if Instant::now() >= dl {
+                findings.push(Finding {
+                    kind: FindingKind::Hang,
+                    title: "timeout".to_string(),
+                    message: "explore timed out".to_string(),
+                    location: None,
+                });
+                return Ok((ExitStatus::Timeout, findings, events, delivered, decisions));
+            }
+        }
+
+        let deliverable = deliverable_indices(&queue, &nodes, &net);
+        if deliverable.is_empty() {
+            break;
+        }
+
+        let pick = pick_index(&deliverable, schedule, &mut rng);
+        let idx = deliverable[pick];
+        let msg = queue.remove(idx).expect("index exists");
+        delivered += 1;
+        time_ms = time_ms.saturating_add(1);
+        decisions.push(crate::Decision::ExploreDeliver { msg_id: msg.id });
+        events.push(TraceEvent {
+            time_ms,
+            name: "deliver".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("id".to_string(), serde_json::Value::Number((msg.id as u64).into())),
+                ("from".to_string(), serde_json::Value::String(msg.from.clone())),
+                ("to".to_string(), serde_json::Value::String(msg.to.clone())),
+                ("kind".to_string(), serde_json::Value::String(msg.kind.clone())),
+                ("key".to_string(), serde_json::Value::String(msg.key.clone())),
+            ]),
+        });
+
+        deliver_message(msg, &mut nodes, &mut queue, &mut next_id, &mut events, &mut time_ms)?;
+
+        if let Some(finding) = check_invariants(scenario, &nodes) {
+            findings.push(finding);
+            return Ok((ExitStatus::Fail, findings, events, delivered, decisions));
+        }
+    }
+
+    if let Some(finding) = check_invariants(scenario, &nodes) {
+        findings.push(finding);
+        return Ok((ExitStatus::Fail, findings, events, delivered, decisions));
+    }
+
+    Ok((ExitStatus::Pass, findings, events, delivered, decisions))
+}
+
+fn run_explore_replay_inner(
+    scenario: &ScenarioV1Explore,
+    seed: u64,
+    schedule: ScheduleStrategy,
+    decisions: &[crate::Decision],
+) -> FozzyResult<(ExitStatus, Vec<Finding>, Vec<TraceEvent>, u64, Vec<crate::Decision>)> {
+    // Replay uses the recorded "deliver:<id>" sequence (encoded in Step name for v0.2).
+    let mut rng = rng_from_seed(seed);
+
+    let mut nodes: BTreeMap<String, Node> = scenario
+        .nodes
+        .iter()
+        .map(|n| {
+            (
+                n.clone(),
+                Node {
+                    running: true,
+                    kv: BTreeMap::new(),
+                },
+            )
+        })
+        .collect();
+
+    let mut net = NetRules::default();
+    let mut queue: VecDeque<Message> = VecDeque::new();
+    let mut next_id = 1u64;
+    let mut events = Vec::new();
+    let mut findings = Vec::new();
+    let mut delivered = 0u64;
+    let mut time_ms = 0u64;
+
+    for step in &scenario.steps {
+        if let DistributedStep::Tick { duration } = step {
+            let d = crate::parse_duration(duration)?;
+            time_ms = time_ms.saturating_add(d.as_millis().min(u128::from(u64::MAX)) as u64);
+        }
+        apply_script_step(step, &mut nodes, &mut net, &mut queue, &mut next_id, &mut events, &mut time_ms)?;
+    }
+
+    for d in decisions {
+        let msg_id = match d {
+            crate::Decision::ExploreDeliver { msg_id } => *msg_id,
+            crate::Decision::Step { name, .. } => {
+                let Some(id_str) = name.strip_prefix("deliver:") else { continue };
+                id_str.parse().map_err(|_| FozzyError::Trace("invalid deliver decision".to_string()))?
+            }
+            _ => continue,
+        };
+
+        let idx = queue
+            .iter()
+            .position(|m| m.id == msg_id)
+            .ok_or_else(|| FozzyError::Trace(format!("replay drift: message id {msg_id} not found")))?;
+        let msg = queue.remove(idx).expect("position exists");
+        delivered += 1;
+        time_ms = time_ms.saturating_add(1);
+        events.push(TraceEvent {
+            time_ms,
+            name: "deliver".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("id".to_string(), serde_json::Value::Number((msg.id as u64).into())),
+                ("from".to_string(), serde_json::Value::String(msg.from.clone())),
+                ("to".to_string(), serde_json::Value::String(msg.to.clone())),
+                ("kind".to_string(), serde_json::Value::String(msg.kind.clone())),
+                ("key".to_string(), serde_json::Value::String(msg.key.clone())),
+            ]),
+        });
+        deliver_message(msg, &mut nodes, &mut queue, &mut next_id, &mut events, &mut time_ms)?;
+
+        if let Some(finding) = check_invariants(scenario, &nodes) {
+            findings.push(finding);
+            return Ok((ExitStatus::Fail, findings, events, delivered, decisions.to_vec()));
+        }
+    }
+
+    // If no decisions were provided (or didn't cover all), we still can progress with the configured schedule.
+    // This is intentionally permissive for shrink trials.
+    let deliverable = deliverable_indices(&queue, &nodes, &net);
+    if !deliverable.is_empty() {
+        let idx = deliverable[pick_index(&deliverable, schedule, &mut rng)];
+        let msg = queue.remove(idx).expect("index exists");
+        delivered += 1;
+        deliver_message(msg, &mut nodes, &mut queue, &mut next_id, &mut events, &mut time_ms)?;
+    }
+
+    if let Some(finding) = check_invariants(scenario, &nodes) {
+        findings.push(finding);
+        return Ok((ExitStatus::Fail, findings, events, delivered, decisions.to_vec()));
+    }
+
+    Ok((ExitStatus::Pass, findings, events, delivered, decisions.to_vec()))
+}
+
+fn apply_script_step(
+    step: &DistributedStep,
+    nodes: &mut BTreeMap<String, Node>,
+    net: &mut NetRules,
+    queue: &mut VecDeque<Message>,
+    next_id: &mut u64,
+    events: &mut Vec<TraceEvent>,
+    time_ms: &mut u64,
+) -> FozzyResult<()> {
+    match step {
+        DistributedStep::ClientPut { node, key, value } => {
+            let Some(n) = nodes.get_mut(node) else {
+                return Err(FozzyError::Scenario(format!("unknown node {node:?}")));
+            };
+            if !n.running {
+                return Ok(());
+            }
+            n.kv.insert(key.clone(), value.clone());
+            // Replicate to every other node via messages.
+            for to in nodes.keys().cloned().collect::<Vec<_>>() {
+                if to == *node {
+                    continue;
+                }
+                queue.push_back(Message {
+                    id: bump(next_id),
+                    from: node.clone(),
+                    to,
+                    kind: "kv_repl".to_string(),
+                    key: key.clone(),
+                    value: value.clone(),
+                });
+            }
+            events.push(TraceEvent {
+                time_ms: *time_ms,
+                name: "client_put".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("node".to_string(), serde_json::Value::String(node.clone())),
+                    ("key".to_string(), serde_json::Value::String(key.clone())),
+                ]),
+            });
+            Ok(())
+        }
+
+        DistributedStep::ClientGetAssert { node, key, equals, is_null } => {
+            let Some(n) = nodes.get(node) else {
+                return Err(FozzyError::Scenario(format!("unknown node {node:?}")));
+            };
+            if !n.running {
+                return Ok(());
+            }
+            let got = n.kv.get(key).cloned();
+            if is_null.unwrap_or(false) {
+                if got.is_some() {
+                    return Err(FozzyError::Scenario(format!("expected {node}.{key} to be null")));
+                }
+                return Ok(());
+            }
+            if let Some(expected) = equals {
+                if got.as_deref() != Some(expected.as_str()) {
+                    return Err(FozzyError::Scenario(format!(
+                        "expected {node}.{key} == {expected:?}, got {got:?}"
+                    )));
+                }
+            } else if got.is_none() {
+                return Err(FozzyError::Scenario(format!("expected {node}.{key} to exist")));
+            }
+            Ok(())
+        }
+
+        DistributedStep::Partition { a, b } => {
+            net.partition(a, b);
+            events.push(TraceEvent {
+                time_ms: *time_ms,
+                name: "partition".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("a".to_string(), serde_json::Value::String(a.clone())),
+                    ("b".to_string(), serde_json::Value::String(b.clone())),
+                ]),
+            });
+            Ok(())
+        }
+
+        DistributedStep::Heal { a, b } => {
+            net.heal(a, b);
+            events.push(TraceEvent {
+                time_ms: *time_ms,
+                name: "heal".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("a".to_string(), serde_json::Value::String(a.clone())),
+                    ("b".to_string(), serde_json::Value::String(b.clone())),
+                ]),
+            });
+            Ok(())
+        }
+
+        DistributedStep::Crash { node } => {
+            if let Some(n) = nodes.get_mut(node) {
+                n.running = false;
+            }
+            events.push(TraceEvent {
+                time_ms: *time_ms,
+                name: "crash".to_string(),
+                fields: serde_json::Map::from_iter([("node".to_string(), serde_json::Value::String(node.clone()))]),
+            });
+            Ok(())
+        }
+
+        DistributedStep::Restart { node } => {
+            if let Some(n) = nodes.get_mut(node) {
+                n.running = true;
+            }
+            events.push(TraceEvent {
+                time_ms: *time_ms,
+                name: "restart".to_string(),
+                fields: serde_json::Map::from_iter([("node".to_string(), serde_json::Value::String(node.clone()))]),
+            });
+            Ok(())
+        }
+
+        DistributedStep::Tick { duration: _ } => Ok(()),
+    }
+}
+
+fn deliver_message(
+    msg: Message,
+    nodes: &mut BTreeMap<String, Node>,
+    queue: &mut VecDeque<Message>,
+    next_id: &mut u64,
+    _events: &mut Vec<TraceEvent>,
+    _time_ms: &mut u64,
+) -> FozzyResult<()> {
+    let Some(to) = nodes.get_mut(&msg.to) else {
+        return Ok(());
+    };
+    if !to.running {
+        return Ok(());
+    }
+    if msg.kind == "kv_repl" {
+        to.kv.insert(msg.key.clone(), msg.value.clone());
+        // No further messages in this v0.2 protocol.
+    } else if msg.kind == "kv_forward" {
+        // Example: forward message to all peers.
+        for peer in nodes.keys().cloned().collect::<Vec<_>>() {
+            if peer == msg.to {
+                continue;
+            }
+            queue.push_back(Message {
+                id: bump(next_id),
+                from: msg.to.clone(),
+                to: peer,
+                kind: "kv_repl".to_string(),
+                key: msg.key.clone(),
+                value: msg.value.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn check_invariants(scenario: &ScenarioV1Explore, nodes: &BTreeMap<String, Node>) -> Option<Finding> {
+    for inv in &scenario.invariants {
+        match inv {
+            DistributedInvariant::KvAllEqual { key } => {
+                let mut expected: Option<String> = None;
+                for n in nodes.values() {
+                    if !n.running {
+                        continue;
+                    }
+                    let v = n.kv.get(key).cloned();
+                    if expected.is_none() {
+                        expected = v;
+                        continue;
+                    }
+                    if v != expected {
+                        return Some(Finding {
+                            kind: FindingKind::Invariant,
+                            title: "kv_all_equal".to_string(),
+                            message: format!("invariant violated for key {key:?}: values diverged across nodes"),
+                            location: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn deliverable_indices(queue: &VecDeque<Message>, nodes: &BTreeMap<String, Node>, net: &NetRules) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (idx, m) in queue.iter().enumerate() {
+        let Some(from) = nodes.get(&m.from) else { continue };
+        let Some(to) = nodes.get(&m.to) else { continue };
+        if !from.running || !to.running {
+            continue;
+        }
+        if net.is_blocked(&m.from, &m.to) {
+            continue;
+        }
+        out.push(idx);
+    }
+    out
+}
+
+fn pick_index(deliverable: &[usize], strategy: ScheduleStrategy, rng: &mut ChaCha20Rng) -> usize {
+    match strategy {
+        ScheduleStrategy::Fifo => 0,
+        ScheduleStrategy::Random | ScheduleStrategy::Pct => {
+            if deliverable.is_empty() {
+                0
+            } else {
+                (rng.next_u64() as usize) % deliverable.len()
+            }
+        }
+    }
+}
+
+fn bump(next_id: &mut u64) -> u64 {
+    let id = *next_id;
+    *next_id = next_id.saturating_add(1);
+    id
+}
+
+fn ordered_pair<'a>(a: &'a str, b: &'a str) -> (&'a str, &'a str) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+fn default_min_path(in_path: &Path) -> PathBuf {
+    let in_s = in_path.to_string_lossy().to_string();
+    if let Some(stripped) = in_s.strip_suffix(".fozzy") {
+        PathBuf::from(format!("{stripped}.min.fozzy"))
+    } else {
+        PathBuf::from(format!("{in_s}.min.fozzy"))
+    }
+}
+
+fn gen_seed() -> u64 {
+    let mut seed = [0u8; 8];
+    rand_core::OsRng.fill_bytes(&mut seed);
+    u64::from_le_bytes(seed)
+}
+
+fn rng_from_seed(seed: u64) -> ChaCha20Rng {
+    let seed_bytes = blake3::hash(&seed.to_le_bytes()).as_bytes().to_owned();
+    let mut seed32 = [0u8; 32];
+    seed32.copy_from_slice(&seed_bytes[..32]);
+    ChaCha20Rng::from_seed(seed32)
+}

@@ -31,6 +31,7 @@ Completed / working (v0.1)
   • `fozzy usage` agent-oriented “what to use when” overview
   • Basic fuzzing loop (`fozzy fuzz fn:kv`): mutation + simple coverage feedback + crash recording + replay/shrink
   • Capability virtualization (partial): deterministic virtual filesystem overlay steps (fs write/read/snapshot/restore)
+  • Deterministic distributed exploration (partial): `fozzy explore` multi-node single-host simulation with FIFO/random schedules + trace record/replay + basic schedule shrinking
 
 Not yet implemented (planned)
   • Full coverage-guided fuzzing + crash dedup (M5)
@@ -48,7 +49,7 @@ Milestones (tracked)
   • M3 Capabilities: PARTIAL (virtual fs overlay; net/http/proc not yet)
   • M4 Replay + Artifacts: PARTIAL (trace/events/report; timeline/diffs not yet)
   • M5 Fuzzing Engine: PARTIAL (basic mutation+feedback loop; target system not yet generalized)
-  • M6 Distributed Explore: NOT DONE
+  • M6 Distributed Explore: PARTIAL (single-host simulation; message schedule exploration + partitions/crash scripting; full fault space + strategies not yet)
   • M7 Shrinking Engine: PARTIAL (basic step shrink only)
   • M8 TypeScript SDK: NOT DONE (spec exists in SDK-TS.md)
   • M9 CI + Reporting: PARTIAL (JUnit/HTML emitted; CI UX not yet complete)

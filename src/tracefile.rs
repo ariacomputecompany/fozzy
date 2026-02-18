@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use std::path::{Path, PathBuf};
 
-use crate::{Decision, FuzzTrace, RunMode, RunSummary, ScenarioV1Steps, VersionInfo};
+use crate::{Decision, ExploreTrace, FuzzTrace, RunMode, RunSummary, ScenarioV1Steps, VersionInfo};
 
 #[derive(Debug, Clone)]
 pub struct TracePath {
@@ -31,6 +31,8 @@ pub struct TraceFile {
     pub scenario: Option<ScenarioV1Steps>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fuzz: Option<FuzzTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explore: Option<ExploreTrace>,
     pub decisions: Vec<Decision>,
     pub events: Vec<TraceEvent>,
     pub summary: RunSummary,
@@ -61,6 +63,7 @@ impl TraceFile {
             scenario_path,
             scenario,
             fuzz: None,
+            explore: None,
             decisions,
             events,
             summary,
@@ -79,7 +82,29 @@ impl TraceFile {
                 target,
                 input_hex: bytes_to_hex(input),
             }),
+            explore: None,
             decisions: Vec::new(),
+            events,
+            summary,
+        }
+    }
+
+    pub fn new_explore(
+        explore: ExploreTrace,
+        decisions: Vec<Decision>,
+        events: Vec<TraceEvent>,
+        summary: RunSummary,
+    ) -> Self {
+        Self {
+            format: "fozzy-trace".to_string(),
+            version: 1,
+            engine: crate::version_info(),
+            mode: RunMode::Explore,
+            scenario_path: None,
+            scenario: None,
+            fuzz: None,
+            explore: Some(explore),
+            decisions,
             events,
             summary,
         }

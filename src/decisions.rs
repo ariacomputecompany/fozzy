@@ -10,6 +10,7 @@ pub enum Decision {
     TimeSleepMs { ms: u64 },
     TimeAdvanceMs { ms: u64 },
     Step { index: usize, name: String },
+    ExploreDeliver { msg_id: u64 },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -44,4 +45,3 @@ impl<'a> DecisionCursor<'a> {
         self.decisions.len().saturating_sub(self.index)
     }
 }
-
