@@ -116,6 +116,8 @@ fn import_zip(zip_path: &Path, out_dir: &Path) -> FozzyResult<()> {
         )));
     }
 
+    validate_zip_archive_raw_entries(zip_path)?;
+
     let file = File::open(zip_path)?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| FozzyError::InvalidArgument(format!("invalid zip: {e}")))?;
     let mut seen_targets = HashSet::new();
@@ -142,6 +144,132 @@ fn import_zip(zip_path: &Path, out_dir: &Path) -> FozzyResult<()> {
         write_zip_entry_secure(out_dir, f.name(), &bytes)?;
     }
     Ok(())
+}
+
+fn validate_zip_archive_raw_entries(zip_path: &Path) -> FozzyResult<()> {
+    let bytes = std::fs::read(zip_path)?;
+    let raw_names = parse_zip_central_directory_names(&bytes)?;
+    let mut seen = HashSet::<String>::new();
+    for raw in raw_names {
+        if raw.contains(&0) {
+            return Err(FozzyError::InvalidArgument(format!(
+                "unsafe archive entry path rejected: {}",
+                String::from_utf8_lossy(&raw)
+            )));
+        }
+        let name = std::str::from_utf8(&raw).map_err(|_| {
+            FozzyError::InvalidArgument(format!(
+                "unsafe archive entry path rejected: {}",
+                String::from_utf8_lossy(&raw)
+            ))
+        })?;
+        let rel = normalize_zip_entry_rel_path(name)?;
+        let key = portable_rel_key(&rel);
+        if !seen.insert(key) {
+            return Err(FozzyError::InvalidArgument(format!(
+                "duplicate output file in archive is not allowed: {}",
+                rel.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parse_zip_central_directory_names(bytes: &[u8]) -> FozzyResult<Vec<Vec<u8>>> {
+    const CEN_SIG: u32 = 0x0201_4b50;
+    const ZIP64_U16_MAX: u16 = 0xFFFF;
+    const ZIP64_U32_MAX: u32 = 0xFFFF_FFFF;
+
+    let Some(eocd) = find_eocd_offset(bytes) else {
+        return Err(FozzyError::InvalidArgument("invalid zip: missing end-of-central-directory".to_string()));
+    };
+    let total_entries = read_u16_le(bytes, eocd + 10)?;
+    let cd_size = read_u32_le(bytes, eocd + 12)?;
+    let cd_offset = read_u32_le(bytes, eocd + 16)?;
+    if total_entries == ZIP64_U16_MAX || cd_size == ZIP64_U32_MAX || cd_offset == ZIP64_U32_MAX {
+        return Err(FozzyError::InvalidArgument(
+            "invalid zip: zip64 archives are not supported for corpus import".to_string(),
+        ));
+    }
+
+    let total_entries = total_entries as usize;
+    let cd_offset = cd_offset as usize;
+    let cd_size = cd_size as usize;
+    let cd_end = cd_offset
+        .checked_add(cd_size)
+        .ok_or_else(|| FozzyError::InvalidArgument("invalid zip: central directory overflow".to_string()))?;
+    if cd_end > bytes.len() {
+        return Err(FozzyError::InvalidArgument(
+            "invalid zip: central directory out of bounds".to_string(),
+        ));
+    }
+
+    let mut names = Vec::with_capacity(total_entries);
+    let mut pos = cd_offset;
+    for _ in 0..total_entries {
+        if pos + 46 > cd_end {
+            return Err(FozzyError::InvalidArgument(
+                "invalid zip: malformed central directory entry".to_string(),
+            ));
+        }
+        let sig = read_u32_le(bytes, pos)?;
+        if sig != CEN_SIG {
+            return Err(FozzyError::InvalidArgument(
+                "invalid zip: bad central directory signature".to_string(),
+            ));
+        }
+        let name_len = read_u16_le(bytes, pos + 28)? as usize;
+        let extra_len = read_u16_le(bytes, pos + 30)? as usize;
+        let comment_len = read_u16_le(bytes, pos + 32)? as usize;
+        let name_start = pos + 46;
+        let name_end = name_start
+            .checked_add(name_len)
+            .ok_or_else(|| FozzyError::InvalidArgument("invalid zip: filename length overflow".to_string()))?;
+        if name_end > cd_end {
+            return Err(FozzyError::InvalidArgument(
+                "invalid zip: filename out of bounds".to_string(),
+            ));
+        }
+        names.push(bytes[name_start..name_end].to_vec());
+        pos = name_end
+            .checked_add(extra_len)
+            .and_then(|p| p.checked_add(comment_len))
+            .ok_or_else(|| FozzyError::InvalidArgument("invalid zip: central directory overflow".to_string()))?;
+    }
+
+    Ok(names)
+}
+
+fn find_eocd_offset(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 22 {
+        return None;
+    }
+    let start = bytes.len().saturating_sub(22 + 65_535);
+    for i in (start..=bytes.len() - 22).rev() {
+        if bytes[i..].starts_with(&[0x50, 0x4b, 0x05, 0x06]) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn read_u16_le(bytes: &[u8], off: usize) -> FozzyResult<u16> {
+    if off + 2 > bytes.len() {
+        return Err(FozzyError::InvalidArgument("invalid zip: truncated data".to_string()));
+    }
+    Ok(u16::from_le_bytes([bytes[off], bytes[off + 1]]))
+}
+
+fn read_u32_le(bytes: &[u8], off: usize) -> FozzyResult<u32> {
+    if off + 4 > bytes.len() {
+        return Err(FozzyError::InvalidArgument("invalid zip: truncated data".to_string()));
+    }
+    Ok(u32::from_le_bytes([
+        bytes[off],
+        bytes[off + 1],
+        bytes[off + 2],
+        bytes[off + 3],
+    ]))
 }
 
 fn write_zip_entry_secure(out_dir: &Path, entry_name: &str, bytes: &[u8]) -> FozzyResult<()> {
@@ -394,6 +522,86 @@ fn is_windows_reserved_name(seg: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in bytes {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let lsb = crc & 1;
+                crc >>= 1;
+                if lsb != 0 {
+                    crc ^= 0xEDB8_8320;
+                }
+            }
+        }
+        !crc
+    }
+
+    fn build_zip_with_raw_entries(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
+        let mut out = Vec::<u8>::new();
+        let mut central = Vec::<u8>::new();
+        let mut offsets = Vec::<u32>::new();
+
+        for (name, payload) in entries {
+            let offset = out.len() as u32;
+            offsets.push(offset);
+            let crc = crc32(payload);
+            let name_len = name.len() as u16;
+            let size = payload.len() as u32;
+
+            out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&name_len.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name);
+            out.extend_from_slice(payload);
+        }
+
+        let cd_offset = out.len() as u32;
+        for ((name, payload), offset) in entries.iter().zip(offsets.iter().copied()) {
+            let crc = crc32(payload);
+            let name_len = name.len() as u16;
+            let size = payload.len() as u32;
+            central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&crc.to_le_bytes());
+            central.extend_from_slice(&size.to_le_bytes());
+            central.extend_from_slice(&size.to_le_bytes());
+            central.extend_from_slice(&name_len.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&offset.to_le_bytes());
+            central.extend_from_slice(name);
+        }
+        let cd_size = central.len() as u32;
+        out.extend_from_slice(&central);
+
+        out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
     #[cfg(unix)]
     #[test]
     fn import_rejects_symlink_target_overwrite() {
@@ -589,5 +797,43 @@ mod tests {
         let err = import_zip(&zip_path, &out).expect_err("must reject nul entry names");
         assert!(err.to_string().contains("unsafe archive entry path rejected"));
         assert!(!out.join("bad").exists(), "must not write truncated output");
+    }
+
+    #[test]
+    fn import_rejects_duplicate_entry_names_from_raw_headers() {
+        let root = std::env::temp_dir().join(format!("fozzy-corpus-rawdup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("root");
+        let zip_path = root.join("dup.zip");
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).expect("out");
+
+        let zip = build_zip_with_raw_entries(&[
+            (b"dup.bin", b"FIRST"),
+            (b"dup.bin", b"SECOND"),
+        ]);
+        std::fs::write(&zip_path, zip).expect("zip write");
+
+        let err = import_zip(&zip_path, &out).expect_err("must reject duplicates");
+        assert!(err.to_string().contains("duplicate output file in archive is not allowed"));
+        assert!(!out.join("dup.bin").exists(), "should fail before writes");
+    }
+
+    #[test]
+    fn import_rejects_nul_collision_aliases_from_raw_headers() {
+        let root = std::env::temp_dir().join(format!("fozzy-corpus-rawnuldup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("root");
+        let zip_path = root.join("dup.zip");
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).expect("out");
+
+        let zip = build_zip_with_raw_entries(&[
+            (b"bad\0suffix.bin", b"FIRST"),
+            (b"bad", b"SECOND"),
+        ]);
+        std::fs::write(&zip_path, zip).expect("zip write");
+
+        let err = import_zip(&zip_path, &out).expect_err("must reject nul-collision aliases");
+        assert!(err.to_string().contains("unsafe archive entry path rejected"));
+        assert!(!out.join("bad").exists(), "should fail before writes");
     }
 }
