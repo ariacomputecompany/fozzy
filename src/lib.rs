@@ -1,23 +1,42 @@
 //! Fozzy core library: shared types used by the CLI and future SDK bindings.
 
+#[path = "cmd/artifacts.rs"]
 mod artifacts;
+#[path = "runtime/clock.rs"]
 mod clock;
+#[path = "platform/config.rs"]
 mod config;
+#[path = "cmd/corpus.rs"]
 mod corpus;
+#[path = "model/decisions.rs"]
 mod decisions;
+#[path = "platform/duration.rs"]
 mod duration;
+#[path = "runtime/engine.rs"]
 mod engine;
+#[path = "platform/envinfo.rs"]
 mod envinfo;
+#[path = "platform/error.rs"]
 mod error;
+#[path = "modes/fuzz.rs"]
 mod fuzz;
+#[path = "modes/explore.rs"]
 mod explore;
+#[path = "platform/fsutil.rs"]
 mod fsutil;
+#[path = "cmd/usage.rs"]
 mod usage;
+#[path = "model/reporting.rs"]
 mod reporting;
+#[path = "cmd/reporting_cmd.rs"]
 mod reporting_cmd;
+#[path = "runtime/scheduler.rs"]
 mod scheduler;
+#[path = "model/scenario.rs"]
 mod scenario;
+#[path = "runtime/timeline.rs"]
 mod timeline;
+#[path = "runtime/tracefile.rs"]
 mod tracefile;
 
 pub use artifacts::*;
