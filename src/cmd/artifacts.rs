@@ -213,7 +213,8 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
         (
             "commandline.json",
             serde_json::to_vec_pretty(&serde_json::json!({
-                "argv": std::env::args().collect::<Vec<String>>(),
+                "command": "fozzy artifacts pack",
+                "target": run,
             }))?,
         ),
     ];
@@ -489,6 +490,7 @@ fn export_artifacts_zip(files: &[PathBuf], out_zip: &Path) -> FozzyResult<()> {
         let mut zip = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
+            .last_modified_time(zip::DateTime::default())
             .unix_permissions(0o644);
         let mut used_names: BTreeSet<String> = BTreeSet::new();
 
@@ -787,5 +789,30 @@ mod tests {
         assert_eq!(std::fs::read(&outside).expect("victim read"), br#"{"victim":true}"#);
         assert!(!out_dir.join("report.json").exists(), "partial file should not be written");
         assert!(!out_dir.join("events.json").exists(), "partial file should not be written");
+    }
+
+    #[test]
+    fn pack_zip_is_byte_deterministic_for_same_run() {
+        let root = std::env::temp_dir().join(format!("fozzy-pack-deterministic-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
+        std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
+        std::fs::write(run_dir.join("manifest.json"), br#"{"schemaVersion":"fozzy.run_manifest.v1"}"#).expect("manifest");
+        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+        };
+
+        let out_a = root.join("a.zip");
+        let out_b = root.join("b.zip");
+        export_reproducer_pack(&cfg, "r1", &out_a).expect("pack a");
+        export_reproducer_pack(&cfg, "r1", &out_b).expect("pack b");
+
+        let a = std::fs::read(&out_a).expect("read a");
+        let b = std::fs::read(&out_b).expect("read b");
+        assert_eq!(a, b, "repeated pack exports for same run must be byte-identical");
     }
 }

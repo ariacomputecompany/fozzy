@@ -183,7 +183,10 @@ fn write_zip_entry_secure(out_dir: &Path, entry_name: &str, bytes: &[u8]) -> Foz
                 out_path.display()
             )));
         }
-        std::fs::remove_file(&out_path)?;
+        return Err(FozzyError::InvalidArgument(format!(
+            "refusing to overwrite existing output file: {}",
+            out_path.display()
+        )));
     }
 
     let parent = out_path.parent().unwrap_or(out_dir);
@@ -247,6 +250,10 @@ fn validate_zip_target_secure(out_dir: &Path, rel: &Path, seen_targets: &mut Has
                 out_path.display()
             )));
         }
+        return Err(FozzyError::InvalidArgument(format!(
+            "refusing to overwrite existing output file: {}",
+            out_path.display()
+        )));
     }
 
     Ok(())
@@ -524,5 +531,29 @@ mod tests {
         assert!(err.to_string().contains("duplicate output file in archive is not allowed"));
         assert!(!out.join("dup.bin").exists(), "duplicate rejection should be failure-atomic");
         assert!(!out.join("DUP.BIN").exists(), "duplicate rejection should be failure-atomic");
+    }
+
+    #[test]
+    fn import_rejects_overwrite_of_existing_file() {
+        let root = std::env::temp_dir().join(format!("fozzy-corpus-overwrite-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("root");
+        let zip_path = root.join("in.zip");
+
+        {
+            let file = File::create(&zip_path).expect("zip create");
+            let mut zip = zip::ZipWriter::new(file);
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("dup.bin", opts).expect("start");
+            zip.write_all(b"new").expect("write");
+            zip.finish().expect("finish");
+        }
+
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).expect("out");
+        std::fs::write(out.join("dup.bin"), b"old").expect("seed existing");
+
+        let err = import_zip(&zip_path, &out).expect_err("must reject overwrite");
+        assert!(err.to_string().contains("refusing to overwrite existing output file"));
+        assert_eq!(std::fs::read(out.join("dup.bin")).expect("read"), b"old");
     }
 }
