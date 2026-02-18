@@ -81,6 +81,7 @@ pub struct ScenarioV1Explore {
 struct Node {
     running: bool,
     kv: BTreeMap<String, String>,
+    kv_version: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +92,7 @@ struct Message {
     kind: String,
     key: String,
     value: String,
+    version: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -456,6 +458,7 @@ fn run_explore_inner(
                 Node {
                     running: true,
                     kv: BTreeMap::new(),
+                    kv_version: BTreeMap::new(),
                 },
             )
         })
@@ -554,6 +557,7 @@ fn run_explore_replay_inner(
                 Node {
                     running: true,
                     kv: BTreeMap::new(),
+                    kv_version: BTreeMap::new(),
                 },
             )
         })
@@ -654,6 +658,13 @@ fn apply_script_step(
             if !n.running {
                 return Ok(());
             }
+            let version = n
+                .kv_version
+                .get(key)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(1);
+            n.kv_version.insert(key.clone(), version);
             n.kv.insert(key.clone(), value.clone());
             // Replicate to every other node via messages.
             for to in nodes.keys().cloned().collect::<Vec<_>>() {
@@ -667,6 +678,7 @@ fn apply_script_step(
                     kind: "kv_repl".to_string(),
                     key: key.clone(),
                     value: value.clone(),
+                    version,
                 });
             }
             events.push(TraceEvent {
@@ -775,7 +787,11 @@ fn deliver_message(
         return Ok(());
     }
     if msg.kind == "kv_repl" {
-        to.kv.insert(msg.key.clone(), msg.value.clone());
+        let current = to.kv_version.get(&msg.key).copied().unwrap_or(0);
+        if msg.version >= current {
+            to.kv_version.insert(msg.key.clone(), msg.version);
+            to.kv.insert(msg.key.clone(), msg.value.clone());
+        }
         // No further messages in this v0.2 protocol.
     } else if msg.kind == "kv_forward" {
         // Example: forward message to all peers.
@@ -790,6 +806,7 @@ fn deliver_message(
                 kind: "kv_repl".to_string(),
                 key: msg.key.clone(),
                 value: msg.value.clone(),
+                version: msg.version,
             });
         }
     }
