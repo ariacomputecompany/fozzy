@@ -4,6 +4,30 @@ Deterministic full-stack testing: test, replay, shrink, fuzz, and distributed ex
 
 Status: pre-1.0. This repository is being implemented from [PLAN.md](PLAN.md).
 
+## What Bugs Fozzy Catches
+
+Fozzy is built to catch high-cost bugs that normal unit/integration runs miss:
+
+- Nondeterministic failures: race/order bugs that pass once and fail once.
+- Distributed consistency bugs: partition/heal/crash/restart edge cases.
+- Timeout and hang regressions: deterministic virtual-time and replayed schedule checks.
+- Flaky test behavior: run-set variance and flake budget enforcement.
+- Input robustness bugs: malformed input, parser edge cases, and fuzz-discovered crashes.
+- Replay drift: cases where a recorded failure no longer reproduces exactly.
+- Artifact integrity issues: corrupted traces, missing checksums (in strict mode), broken exports.
+
+Outcome: failures are reproducible, shrinkable, and diagnosable, so teams spend less time on “cannot reproduce” and more time fixing root cause.
+
+## Test Modes
+
+- `fozzy test`: scenario suite execution for normal CI pipelines.
+- `fozzy run`: single-scenario deterministic debug loop.
+- `fozzy fuzz`: coverage/property fuzzing with trace capture and shrink.
+- `fozzy explore`: schedule/fault exploration for distributed scenarios.
+- `fozzy replay`: exact failure reproduction from a `.fozzy` trace.
+- `fozzy shrink`: minimization to smallest actionable reproducer.
+- `fozzy ci`: canonical gate bundle for trace verify + replay + export integrity (+ optional flake budget).
+
 ## Install (dev)
 
 ```bash
@@ -26,6 +50,24 @@ Record a trace on failure, then replay and shrink it:
 fozzy run tests/fail.fozzy.json --det --json
 fozzy replay .fozzy/runs/<runId>/trace.fozzy --json
 fozzy shrink .fozzy/runs/<runId>/trace.fozzy --minimize all --json
+```
+
+Run a local production-style gate for a trace:
+
+```bash
+fozzy ci .fozzy/runs/<runId>/trace.fozzy --json
+```
+
+Verify trace integrity and enforce strict checksum/warning policy:
+
+```bash
+fozzy --strict trace verify .fozzy/runs/<runId>/trace.fozzy --json
+```
+
+Create a reproducer bundle (trace/report/events + env/version/commandline):
+
+```bash
+fozzy artifacts pack .fozzy/runs/<runId>/trace.fozzy --out repro.zip --json
 ```
 
 ## CLI
