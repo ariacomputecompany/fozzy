@@ -17,7 +17,9 @@ pub enum ReportCommand {
     Query {
         run: String,
         #[arg(long)]
-        jq: String,
+        jq: Option<String>,
+        #[arg(long, default_value_t = false)]
+        list_paths: bool,
     },
     Flaky {
         runs: Vec<String>,
@@ -57,10 +59,24 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
             }
         }
 
-        ReportCommand::Query { run, jq } => {
+        ReportCommand::Query {
+            run,
+            jq,
+            list_paths,
+        } => {
             let summary = load_summary(config, run)?;
             let value = serde_json::to_value(summary)?;
-            query_value(&value, jq)
+            if *list_paths {
+                return Ok(serde_json::json!({
+                    "paths": list_query_paths(&value)
+                }));
+            }
+            let expr = jq.as_deref().ok_or_else(|| {
+                FozzyError::Report(
+                    "missing --jq expression (or pass --list-paths to inspect available paths)".to_string(),
+                )
+            })?;
+            query_value(&value, expr)
         }
         ReportCommand::Flaky { runs } => flaky_command(config, runs),
     }
@@ -180,8 +196,14 @@ fn query_value(root: &serde_json::Value, expr: &str) -> FozzyResult<serde_json::
     }
 
     if current.is_empty() {
+        let suggestions = suggest_query_paths(root, &normalized, 4);
+        let suggestion_text = if suggestions.is_empty() {
+            String::new()
+        } else {
+            format!("; did you mean {}", suggestions.join(", "))
+        };
         return Err(FozzyError::Report(format!(
-            "query matched no values for expression {expr:?}"
+            "query matched no values for expression {expr:?}{suggestion_text}"
         )));
     }
     if current.len() == 1 {
@@ -190,6 +212,64 @@ fn query_value(root: &serde_json::Value, expr: &str) -> FozzyResult<serde_json::
     Ok(serde_json::Value::Array(
         current.into_iter().cloned().collect(),
     ))
+}
+
+fn list_query_paths(root: &serde_json::Value) -> Vec<String> {
+    fn visit(value: &serde_json::Value, path: String, out: &mut std::collections::BTreeSet<String>) {
+        out.insert(path.clone());
+        match value {
+            serde_json::Value::Object(map) => {
+                for (k, v) in map {
+                    let next = if path == "." {
+                        format!(".{k}")
+                    } else {
+                        format!("{path}.{k}")
+                    };
+                    visit(v, next, out);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                out.insert(format!("{path}[]"));
+                if let Some(first) = arr.first() {
+                    visit(first, format!("{path}[0]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = std::collections::BTreeSet::new();
+    visit(root, ".".to_string(), &mut out);
+    out.into_iter().map(|p| p.trim_start_matches('.').to_string()).collect()
+}
+
+fn suggest_query_paths(root: &serde_json::Value, normalized_expr: &str, limit: usize) -> Vec<String> {
+    let paths = list_query_paths(root);
+    let needle = normalized_expr.trim_start_matches('.');
+    let needle_lc = needle.to_ascii_lowercase();
+    if needle.is_empty() {
+        return paths.into_iter().take(limit).collect();
+    }
+
+    let mut exact_prefix: Vec<String> = paths
+        .iter()
+        .filter(|p| p.to_ascii_lowercase().starts_with(&needle_lc))
+        .cloned()
+        .collect();
+    if exact_prefix.is_empty() {
+        let tail_lc = needle_lc.rsplit('.').next().unwrap_or(&needle_lc).to_string();
+        exact_prefix = paths
+            .iter()
+            .filter(|p| {
+                let p_lc = p.to_ascii_lowercase();
+                p_lc.ends_with(&tail_lc) || p_lc.contains(&needle_lc)
+            })
+            .cloned()
+            .collect();
+    }
+    exact_prefix.sort();
+    exact_prefix.dedup();
+    exact_prefix.into_iter().take(limit).collect()
 }
 
 fn apply_query_aliases(expr: &str) -> String {
@@ -297,4 +377,48 @@ fn parse_expr(expr: &str) -> FozzyResult<Vec<QueryToken>> {
     }
 
     Ok(tokens)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_accepts_dot_index_form() {
+        let value = serde_json::json!({
+            "findings": [{"title": "oops"}]
+        });
+        let out = query_value(&value, ".findings.0.title").expect("query");
+        assert_eq!(out, serde_json::Value::String("oops".to_string()));
+    }
+
+    #[test]
+    fn query_run_id_alias_maps_to_identity() {
+        let value = serde_json::json!({
+            "identity": {"runId": "run-123"}
+        });
+        let out = query_value(&value, "runId").expect("query");
+        assert_eq!(out, serde_json::Value::String("run-123".to_string()));
+    }
+
+    #[test]
+    fn query_miss_reports_suggestion() {
+        let value = serde_json::json!({
+            "identity": {"runId": "run-123"}
+        });
+        let err = query_value(&value, "runid").expect_err("must miss");
+        assert!(err.to_string().contains("did you mean"));
+        assert!(err.to_string().contains("identity.runId"));
+    }
+
+    #[test]
+    fn list_paths_exposes_identity_shape() {
+        let value = serde_json::json!({
+            "identity": {"runId": "run-123", "seed": 1},
+            "findings": [{"title": "oops"}]
+        });
+        let paths = list_query_paths(&value);
+        assert!(paths.contains(&"identity.runId".to_string()));
+        assert!(paths.contains(&"findings[0].title".to_string()));
+    }
 }

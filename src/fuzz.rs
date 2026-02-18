@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     wall_time_iso_utc, Config, ExitStatus, Finding, FindingKind, Reporter, RunIdentity, RunMode,
-    RunSummary, TraceEvent, TraceFile,
+    RunSummary, TraceEvent, TraceFile, write_trace_with_policy, RecordCollisionPolicy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -77,6 +77,7 @@ pub struct FuzzOptions {
     pub reporter: Reporter,
     pub crash_only: bool,
     pub minimize: bool,
+    pub record_collision: RecordCollisionPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,8 +209,8 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
                 .clone()
                 .unwrap_or_else(|| artifacts_dir.join("trace.fozzy"));
             let trace = TraceFile::new_fuzz(target_string(target), &input, exec.events, summary.clone());
-            trace.write_json(&trace_out)?;
-            crash_trace_path = Some(trace_out);
+            let written = write_trace_with_policy(&trace, &trace_out, opt.record_collision)?;
+            crash_trace_path = Some(written);
 
             if opt.minimize || opt.shrink {
                 let minimized = minimize_input(target, &input, opt.max_input_bytes, exec.status)?;
@@ -269,8 +270,8 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
             trace_summary.findings = exec_findings;
             trace_summary.identity.trace_path = Some(record_path.to_string_lossy().to_string());
             let trace = TraceFile::new_fuzz(target_string(target), &input, events, trace_summary);
-            trace.write_json(record_path)?;
-            summary.identity.trace_path = Some(record_path.to_string_lossy().to_string());
+            let written = write_trace_with_policy(&trace, record_path, opt.record_collision)?;
+            summary.identity.trace_path = Some(written.to_string_lossy().to_string());
         }
     }
 
@@ -292,6 +293,16 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
 
     let started_at = wall_time_iso_utc();
     let finished_at = wall_time_iso_utc();
+    let mut findings = exec.findings.clone();
+    for warning in crate::trace_schema_warnings(trace.version) {
+        findings.push(Finding {
+            kind: FindingKind::Checker,
+            title: "stale_trace_schema".to_string(),
+            message: warning,
+            location: None,
+        });
+    }
+
     let summary = RunSummary {
         status: exec.status,
         mode: RunMode::Replay,
@@ -306,7 +317,7 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         finished_at,
         duration_ms: 0,
         tests: None,
-        findings: exec.findings.clone(),
+        findings,
     };
 
     std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;

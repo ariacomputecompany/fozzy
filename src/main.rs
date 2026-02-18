@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use fozzy::{
     ArtifactCommand, Config, CorpusCommand, ExitStatus, FozzyDuration, InitTemplate, ReportCommand,
-    ExploreOptions, FuzzMode, FuzzOptions, FuzzTarget, Reporter, RunOptions, RunSummary,
+    ExploreOptions, FuzzMode, FuzzOptions, FuzzTarget, RecordCollisionPolicy, Reporter, RunOptions, RunSummary,
     ScenarioPath, ScheduleStrategy, ShrinkMinimize, TracePath,
 };
 
@@ -84,6 +84,10 @@ enum Command {
         #[arg(long)]
         record: Option<PathBuf>,
 
+        /// Behavior when --record target exists: error, overwrite, or append with numeric suffix.
+        #[arg(long, default_value = "error")]
+        record_collision: RecordCollisionPolicy,
+
         /// Stop on first failure.
         #[arg(long)]
         fail_fast: bool,
@@ -107,6 +111,10 @@ enum Command {
 
         #[arg(long)]
         record: Option<PathBuf>,
+
+        /// Behavior when --record target exists: error, overwrite, or append with numeric suffix.
+        #[arg(long, default_value = "error")]
+        record_collision: RecordCollisionPolicy,
     },
 
     /// Coverage-guided or property-based fuzzing
@@ -148,6 +156,10 @@ enum Command {
 
         #[arg(long)]
         minimize: bool,
+
+        /// Behavior when --record target exists: error, overwrite, or append with numeric suffix.
+        #[arg(long, default_value = "error")]
+        record_collision: RecordCollisionPolicy,
     },
 
     /// Deterministic distributed schedule + fault exploration
@@ -186,6 +198,10 @@ enum Command {
 
         #[arg(long, default_value = "pretty")]
         reporter: Reporter,
+
+        /// Behavior when --record target exists: error, overwrite, or append with numeric suffix.
+        #[arg(long, default_value = "error")]
+        record_collision: RecordCollisionPolicy,
     },
 
     /// Replay a previously recorded run exactly
@@ -203,6 +219,12 @@ enum Command {
 
         #[arg(long, default_value = "pretty")]
         reporter: Reporter,
+    },
+
+    /// Inspect and verify trace-file integrity/versioning
+    Trace {
+        #[command(subcommand)]
+        command: TraceCommand,
     },
 
     /// Minimize a failing run (input + schedule + fault trace)
@@ -270,6 +292,12 @@ enum Command {
 
     /// Show a compact "what to use when" guide for each command, with examples.
     Usage,
+}
+
+#[derive(Debug, Subcommand)]
+enum TraceCommand {
+    /// Verify checksum/integrity and schema warnings for a .fozzy trace
+    Verify { path: PathBuf },
 }
 
 fn main() -> ExitCode {
@@ -360,6 +388,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             reporter,
             record,
             fail_fast,
+            record_collision,
         } => {
             let run = fozzy::run_tests(
                 config,
@@ -373,6 +402,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     filter: filter.clone(),
                     jobs: *jobs,
                     fail_fast: *fail_fast,
+                    record_collision: *record_collision,
                 },
             )?;
             print_run_summary(cli, &run.summary)?;
@@ -386,6 +416,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             timeout,
             reporter,
             record,
+            record_collision,
         } => {
             let run = fozzy::run_scenario(
                 config,
@@ -399,6 +430,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     filter: None,
                     jobs: None,
                     fail_fast: false,
+                    record_collision: *record_collision,
                 },
             )?;
             print_run_summary(cli, &run.summary)?;
@@ -419,6 +451,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             reporter,
             crash_only,
             minimize,
+            record_collision,
         } => {
             let target: FuzzTarget = target.parse()?;
             let run = fozzy::fuzz(
@@ -437,6 +470,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     reporter: *reporter,
                     crash_only: *crash_only,
                     minimize: *minimize,
+                    record_collision: *record_collision,
                 },
             )?;
             print_run_summary(cli, &run.summary)?;
@@ -456,6 +490,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             shrink,
             minimize,
             reporter,
+            record_collision,
         } => {
             let run = fozzy::explore(
                 config,
@@ -472,6 +507,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     shrink: *shrink,
                     minimize: *minimize,
                     reporter: *reporter,
+                    record_collision: *record_collision,
                 },
             )?;
             print_run_summary(cli, &run.summary)?;
@@ -497,6 +533,16 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             )?;
             print_run_summary(cli, &run.summary)?;
             Ok(exit_code_for_status(run.summary.status))
+        }
+
+        Command::Trace { command } => {
+            match command {
+                TraceCommand::Verify { path } => {
+                    let out = fozzy::verify_trace_file(path)?;
+                    print_json_or_text(cli, &out)?;
+                }
+            }
+            Ok(ExitCode::SUCCESS)
         }
 
         Command::Shrink {

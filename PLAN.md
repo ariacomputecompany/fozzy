@@ -20,6 +20,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Deterministic replay works for run/fuzz/explore traces.
 - ✅ Core capabilities cover time/rng/fs/http/proc/network with deterministic replay decisions.
 - ✅ Fuzzing and distributed exploration are partially implemented (remaining depth noted below).
+- ✅ Hardening wave landed: checksum-backed traces, collision-safe recording, schema warnings on replay.
 - ⬜ Full hardening/performance/audit requirements are still pending.
 
 ## Milestone Checklist
@@ -107,6 +108,8 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Global CLI flags (like `--json`) are accepted before or after subcommand
 - ✅ CI flaky analysis command added (`fozzy report flaky ...`); richer policy semantics still pending
 - ✅ Full `jq` parity is still pending (advanced filters/functions not implemented)
+- ✅ `report query` now supports `--list-paths` shape introspection
+- ✅ Missed `report query` paths now return "did you mean ..." suggestions (for example `identity.runId`)
 
 ### M10 Hardening
 - ✅ Determinism audit command added (`fozzy doctor --deep --scenario ... --runs ... --seed ...`)
@@ -116,6 +119,14 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ UX polish and diagnostics are partial (shrink default path now deterministic and explicit)
 - ✅ Deterministic timeout semantics fixed: `--timeout` now applies to virtual elapsed time under `--det`
 - ✅ Atomic trace writes prevent concurrent same-path `--record` corruption
+- ✅ Explicit `--record-collision=error|overwrite|append` policy on `run/test/fuzz/explore`
+- ✅ Deterministic active-writer lock conflict error for same-path `--record`
+- ✅ Trace integrity checksum validation on read/replay
+- ✅ `fozzy trace verify <path>` integrity + schema warning command
+- ✅ Replay now emits explicit stale-schema warnings for older trace versions
+- ⬜ CLI contract test matrix across subcommands (flag parity + exit-code matrix) still pending
+- ⬜ Filesystem chaos/security test matrix (read-only, ENOSPC, SIGINT/SIGTERM, symlink/path escape) still pending
+- ⬜ Concurrent stress and retention/repro gates in CI still pending
 
 ## Production Backlog (Next Execution Order)
 1. ✅ Expand M3 with stricter network capability contracts and richer record/replay semantics.

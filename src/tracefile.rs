@@ -4,7 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use std::path::{Path, PathBuf};
 
-use crate::{Decision, ExploreTrace, FuzzTrace, RunMode, RunSummary, ScenarioV1Steps, VersionInfo};
+use crate::{
+    Decision, ExploreTrace, FozzyError, FozzyResult, FuzzTrace, RecordCollisionPolicy, RunMode, RunSummary,
+    ScenarioV1Steps, VersionInfo,
+};
+
+pub const CURRENT_TRACE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct TracePath {
@@ -36,6 +41,8 @@ pub struct TraceFile {
     pub decisions: Vec<Decision>,
     pub events: Vec<TraceEvent>,
     pub summary: RunSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,7 +64,7 @@ impl TraceFile {
     ) -> Self {
         Self {
             format: "fozzy-trace".to_string(),
-            version: 1,
+            version: CURRENT_TRACE_VERSION,
             engine: crate::version_info(),
             mode,
             scenario_path,
@@ -67,13 +74,14 @@ impl TraceFile {
             decisions,
             events,
             summary,
+            checksum: None,
         }
     }
 
     pub fn new_fuzz(target: String, input: &[u8], events: Vec<TraceEvent>, summary: RunSummary) -> Self {
         Self {
             format: "fozzy-trace".to_string(),
-            version: 1,
+            version: CURRENT_TRACE_VERSION,
             engine: crate::version_info(),
             mode: RunMode::Fuzz,
             scenario_path: None,
@@ -86,6 +94,7 @@ impl TraceFile {
             decisions: Vec::new(),
             events,
             summary,
+            checksum: None,
         }
     }
 
@@ -97,7 +106,7 @@ impl TraceFile {
     ) -> Self {
         Self {
             format: "fozzy-trace".to_string(),
-            version: 1,
+            version: CURRENT_TRACE_VERSION,
             engine: crate::version_info(),
             mode: RunMode::Explore,
             scenario_path: None,
@@ -107,20 +116,26 @@ impl TraceFile {
             decisions,
             events,
             summary,
+            checksum: None,
         }
     }
 
-    pub fn write_json(&self, path: &Path) -> crate::FozzyResult<()> {
+    pub fn write_json(&self, path: &Path) -> FozzyResult<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let mut with_checksum = self.clone();
+        with_checksum.checksum = None;
+        let canonical = serde_json::to_vec(&with_checksum)?;
+        with_checksum.checksum = Some(blake3::hash(&canonical).to_hex().to_string());
+
         let pretty = std::env::var("FOZZY_TRACE_PRETTY")
             .ok()
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         let bytes = if pretty {
-            serde_json::to_vec_pretty(self)?
+            serde_json::to_vec_pretty(&with_checksum)?
         } else {
-            serde_json::to_vec(self)?
+            serde_json::to_vec(&with_checksum)?
         };
         // Atomic replace to avoid concurrent writer corruption on shared paths.
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -139,11 +154,143 @@ impl TraceFile {
         Ok(())
     }
 
-    pub fn read_json(path: &Path) -> crate::FozzyResult<Self> {
+    pub fn read_json(path: &Path) -> FozzyResult<Self> {
         let bytes = std::fs::read(path)?;
-        let t: TraceFile = serde_json::from_slice(&bytes)?;
+        let t: TraceFile = serde_json::from_slice(&bytes).map_err(|e| {
+            FozzyError::Trace(format!(
+                "failed to parse trace {}: {e}",
+                path.display()
+            ))
+        })?;
+        verify_checksum(&t, path)?;
         Ok(t)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceVerifyReport {
+    pub ok: bool,
+    pub path: String,
+    pub version: u32,
+    #[serde(rename = "checksumPresent")]
+    pub checksum_present: bool,
+    #[serde(rename = "checksumValid")]
+    pub checksum_valid: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+pub fn trace_schema_warnings(version: u32) -> Vec<String> {
+    if version < CURRENT_TRACE_VERSION {
+        vec![format!(
+            "trace schema v{version} is stale; current schema is v{CURRENT_TRACE_VERSION}"
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn verify_trace_file(path: &Path) -> FozzyResult<TraceVerifyReport> {
+    let t = TraceFile::read_json(path)?;
+    let warnings = trace_schema_warnings(t.version);
+    Ok(TraceVerifyReport {
+        ok: true,
+        path: path.display().to_string(),
+        version: t.version,
+        checksum_present: t.checksum.is_some(),
+        checksum_valid: t.checksum.is_some(),
+        warnings,
+    })
+}
+
+pub fn write_trace_with_policy(
+    trace: &TraceFile,
+    requested: &Path,
+    policy: RecordCollisionPolicy,
+) -> FozzyResult<PathBuf> {
+    let target = resolve_record_target(requested, policy)?;
+    let _lock = acquire_record_lock(&target)?;
+    trace.write_json(&target)?;
+    Ok(target)
+}
+
+fn resolve_record_target(path: &Path, policy: RecordCollisionPolicy) -> FozzyResult<PathBuf> {
+    match policy {
+        RecordCollisionPolicy::Overwrite => Ok(path.to_path_buf()),
+        RecordCollisionPolicy::Error => {
+            if path.exists() {
+                Err(FozzyError::Trace(format!(
+                    "record collision: {} already exists (--record-collision=error)",
+                    path.display()
+                )))
+            } else {
+                Ok(path.to_path_buf())
+            }
+        }
+        RecordCollisionPolicy::Append => {
+            if !path.exists() {
+                return Ok(path.to_path_buf());
+            }
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("fozzy");
+            for i in 1..=100_000 {
+                let candidate = parent.join(format!("{stem}.{i}.{ext}"));
+                if !candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+            Err(FozzyError::Trace(format!(
+                "unable to find append target for {}",
+                path.display()
+            )))
+        }
+    }
+}
+
+struct RecordLockGuard {
+    lock_path: PathBuf,
+}
+
+impl Drop for RecordLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+fn acquire_record_lock(target: &Path) -> FozzyResult<RecordLockGuard> {
+    let lock_path = PathBuf::from(format!("{}.lock", target.to_string_lossy()));
+    match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&lock_path)
+    {
+        Ok(_) => Ok(RecordLockGuard { lock_path }),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(FozzyError::Trace(format!(
+            "record collision: active writer holds lock for {}",
+            target.display()
+        ))),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn verify_checksum(trace: &TraceFile, path: &Path) -> FozzyResult<()> {
+    let Some(expected) = trace.checksum.as_ref() else {
+        return Ok(());
+    };
+    let mut canonical = trace.clone();
+    canonical.checksum = None;
+    let bytes = serde_json::to_vec(&canonical)?;
+    let got = blake3::hash(&bytes).to_hex().to_string();
+    if &got != expected {
+        return Err(FozzyError::Trace(format!(
+            "trace checksum mismatch for {} (expected {}, got {})",
+            path.display(),
+            expected,
+            got
+        )));
+    }
+    Ok(())
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -159,6 +306,33 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ExitStatus, RunIdentity, RunSummary};
+    use uuid::Uuid;
+
+    fn temp_file(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fozzy-trace-tests-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir.join(name)
+    }
+
+    fn sample_summary(trace_path: Option<String>) -> RunSummary {
+        RunSummary {
+            status: ExitStatus::Pass,
+            mode: RunMode::Run,
+            identity: RunIdentity {
+                run_id: "run-1".to_string(),
+                seed: 1,
+                trace_path,
+                report_path: None,
+                artifacts_dir: None,
+            },
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:00Z".to_string(),
+            duration_ms: 0,
+            tests: None,
+            findings: Vec::new(),
+        }
+    }
 
     #[test]
     fn trace_parses_legacy_scheduler_and_step_decisions() {
@@ -219,5 +393,75 @@ mod tests {
         let out = serde_json::to_string(&trace).expect("trace serializes");
         assert!(out.contains("net_deliver_pick"));
         assert!(out.contains("net_drop"));
+    }
+
+    #[test]
+    fn checksum_mismatch_is_rejected() {
+        let path = temp_file("bad.fozzy");
+        let raw = r#"{
+          "format":"fozzy-trace",
+          "version":2,
+          "engine":{"version":"0.1.0"},
+          "mode":"run",
+          "scenario_path":null,
+          "scenario":{"version":1,"name":"x","steps":[]},
+          "decisions":[],
+          "events":[],
+          "summary":{
+            "status":"pass",
+            "mode":"run",
+            "identity":{"runId":"r1","seed":1},
+            "startedAt":"2026-01-01T00:00:00Z",
+            "finishedAt":"2026-01-01T00:00:00Z",
+            "durationMs":0
+          },
+          "checksum":"deadbeef"
+        }"#;
+        std::fs::write(&path, raw).expect("write");
+        let err = TraceFile::read_json(&path).expect_err("must reject checksum mismatch");
+        assert!(err.to_string().contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn record_collision_error_policy_rejects_existing_target() {
+        let path = temp_file("exists.fozzy");
+        std::fs::write(&path, b"old").expect("write existing");
+        let trace = TraceFile::new(
+            RunMode::Run,
+            None,
+            Some(ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            Vec::new(),
+            Vec::new(),
+            sample_summary(Some(path.to_string_lossy().to_string())),
+        );
+        let err = write_trace_with_policy(&trace, &path, RecordCollisionPolicy::Error).expect_err("must fail");
+        assert!(err.to_string().contains("record collision"));
+    }
+
+    #[test]
+    fn record_collision_append_policy_picks_numbered_path() {
+        let path = temp_file("trace.fozzy");
+        std::fs::write(&path, b"old").expect("write existing");
+        let trace = TraceFile::new(
+            RunMode::Run,
+            None,
+            Some(ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            Vec::new(),
+            Vec::new(),
+            sample_summary(None),
+        );
+        let out = write_trace_with_policy(&trace, &path, RecordCollisionPolicy::Append).expect("append");
+        assert_ne!(out, path);
+        assert!(out.to_string_lossy().contains(".1.fozzy"));
+        let loaded = TraceFile::read_json(&out).expect("trace exists");
+        assert_eq!(loaded.format, "fozzy-trace");
     }
 }

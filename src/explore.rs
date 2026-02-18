@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use crate::{
     wall_time_iso_utc, Config, DistributedInvariant, DistributedStep, ExitStatus,
     Finding, FindingKind, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
-    TraceEvent, TraceFile,
+    TraceEvent, TraceFile, write_trace_with_policy, RecordCollisionPolicy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -58,6 +58,7 @@ pub struct ExploreOptions {
     pub shrink: bool,
     pub minimize: bool,
     pub reporter: Reporter,
+    pub record_collision: RecordCollisionPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,8 +182,8 @@ pub fn explore(config: &Config, scenario_path: ScenarioPath, opt: &ExploreOption
             events,
             summary.clone(),
         );
-        trace.write_json(&out)?;
-        summary.identity.trace_path = Some(out.to_string_lossy().to_string());
+        let written = write_trace_with_policy(&trace, &out, opt.record_collision)?;
+        summary.identity.trace_path = Some(written.to_string_lossy().to_string());
     }
 
     Ok(crate::RunResult { summary })
@@ -208,6 +209,16 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
     std::fs::create_dir_all(&artifacts_dir)?;
     let report_path = artifacts_dir.join("report.json");
 
+    let mut findings = findings.clone();
+    for warning in crate::trace_schema_warnings(trace.version) {
+        findings.push(Finding {
+            kind: FindingKind::Checker,
+            title: "stale_trace_schema".to_string(),
+            message: warning,
+            location: None,
+        });
+    }
+
     let summary = RunSummary {
         status,
         mode: RunMode::Replay,
@@ -222,7 +233,7 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         finished_at,
         duration_ms: 0,
         tests: None,
-        findings: findings.clone(),
+        findings,
     };
 
     std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crate::{
     wall_time_iso_utc, Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, Reporter,
     RunIdentity, RunMode, RunSummary, Scenario, ScenarioPath, ScenarioV1Steps, TraceEvent,
-    TraceFile, TracePath,
+    TraceFile, TracePath, write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -55,6 +55,7 @@ pub struct RunOptions {
     pub filter: Option<String>,
     pub jobs: Option<usize>,
     pub fail_fast: bool,
+    pub record_collision: RecordCollisionPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +105,27 @@ pub struct DoctorReport {
     pub nondeterminism_signals: Option<Vec<NondeterminismSignal>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub determinism_audit: Option<DeterminismAudit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordCollisionPolicy {
+    Error,
+    Overwrite,
+    Append,
+}
+
+impl clap::ValueEnum for RecordCollisionPolicy {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Error, Self::Overwrite, Self::Append]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::Error => clap::builder::PossibleValue::new("error"),
+            Self::Overwrite => clap::builder::PossibleValue::new("overwrite"),
+            Self::Append => clap::builder::PossibleValue::new("append"),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,7 +302,7 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
     std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
 
     if let Some(record_base) = &opt.record_trace_to {
-        write_test_traces(record_base, &test_runs, seed)?;
+        write_test_traces(record_base, &test_runs, seed, opt.record_collision)?;
     }
 
     if matches!(opt.reporter, Reporter::Junit) {
@@ -293,7 +315,12 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
     Ok(RunResult { summary })
 }
 
-fn write_test_traces(record_base: &PathBuf, runs: &[ScenarioRun], seed: u64) -> FozzyResult<()> {
+fn write_test_traces(
+    record_base: &PathBuf,
+    runs: &[ScenarioRun],
+    seed: u64,
+    policy: RecordCollisionPolicy,
+) -> FozzyResult<()> {
     if runs.is_empty() {
         return Ok(());
     }
@@ -323,7 +350,7 @@ fn write_test_traces(record_base: &PathBuf, runs: &[ScenarioRun], seed: u64) -> 
             run.events.clone(),
             summary,
         );
-        trace.write_json(record_base)?;
+        write_trace_with_policy(&trace, record_base, policy)?;
         return Ok(());
     }
 
@@ -365,7 +392,7 @@ fn write_test_traces(record_base: &PathBuf, runs: &[ScenarioRun], seed: u64) -> 
             run.events.clone(),
             summary,
         );
-        trace.write_json(&out)?;
+        write_trace_with_policy(&trace, &out, policy)?;
     }
     Ok(())
 }
@@ -429,8 +456,8 @@ pub fn run_scenario(config: &Config, scenario_path: ScenarioPath, opt: &RunOptio
             run.events,
             report_summary.clone(),
         );
-        trace.write_json(&path)?;
-        trace_path = Some(path);
+        let written = write_trace_with_policy(&trace, &path, opt.record_collision)?;
+        trace_path = Some(written);
     }
 
     let mut summary = report_summary;
@@ -482,6 +509,16 @@ pub fn replay_trace(config: &Config, trace_path: TracePath, opt: &ReplayOptions)
     std::fs::create_dir_all(&artifacts_dir)?;
     let report_path = artifacts_dir.join("report.json");
 
+    let mut findings = run.findings.clone();
+    for warning in crate::trace_schema_warnings(trace.version) {
+        findings.push(Finding {
+            kind: FindingKind::Checker,
+            title: "stale_trace_schema".to_string(),
+            message: warning,
+            location: None,
+        });
+    }
+
     let summary = RunSummary {
         status: run.status,
         mode: RunMode::Replay,
@@ -496,7 +533,7 @@ pub fn replay_trace(config: &Config, trace_path: TracePath, opt: &ReplayOptions)
         finished_at,
         duration_ms,
         tests: None,
-        findings: run.findings.clone(),
+        findings,
     };
 
     std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;

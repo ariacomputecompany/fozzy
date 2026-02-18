@@ -53,6 +53,11 @@ pub fn usage_doc() -> UsageDoc {
                 how: "fozzy replay .fozzy/runs/<runId>/trace.fozzy --dump-events --json.".to_string(),
             },
             UsageItem {
+                command: "fozzy trace verify".to_string(),
+                when: "Validate trace integrity/version before replaying or handing artifacts to CI/other teams.".to_string(),
+                how: "fozzy trace verify .fozzy/runs/<runId>/trace.fozzy --json (checks checksum and reports stale schema warnings).".to_string(),
+            },
+            UsageItem {
                 command: "fozzy shrink".to_string(),
                 when: "Minimize a failing run to the smallest scenario/trace that still triggers the bug.".to_string(),
                 how: "fozzy shrink trace.fozzy --minimize all --budget 30s --json (then replay the .min.fozzy output).".to_string(),
