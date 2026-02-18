@@ -1,6 +1,6 @@
 //! Fozzy CLI entrypoint.
 
-use clap::{Parser, Subcommand};
+use clap::{error::ErrorKind, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use std::path::PathBuf;
@@ -318,7 +318,12 @@ enum TraceCommand {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse_from(normalize_global_args(std::env::args()));
+    let normalized_args = normalize_global_args(std::env::args());
+    let json_requested = args_request_json(&normalized_args);
+    let cli = match Cli::try_parse_from(normalized_args) {
+        Ok(cli) => cli,
+        Err(err) => return print_clap_error_and_exit(json_requested, err),
+    };
 
     if let Err(err) = init_tracing(&cli.log) {
         // Tracing is best-effort; if it fails, we still continue.
@@ -336,6 +341,10 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => print_error_and_exit(&cli, err),
     }
+}
+
+fn args_request_json(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--json" || a == "--json=true")
 }
 
 fn normalize_global_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -758,6 +767,25 @@ fn print_error_and_exit(cli: &Cli, err: anyhow::Error) -> ExitCode {
         eprintln!("{msg}");
     }
     ExitCode::from(2)
+}
+
+fn print_clap_error_and_exit(json: bool, err: clap::Error) -> ExitCode {
+    let kind = err.kind();
+    let code = err.exit_code();
+    if matches!(kind, ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+        let _ = err.print();
+        return ExitCode::from(code as u8);
+    }
+    if json {
+        let out = serde_json::json!({
+            "code": "error",
+            "message": err.to_string().trim_end(),
+        });
+        println!("{out}");
+    } else {
+        let _ = err.print();
+    }
+    ExitCode::from(code as u8)
 }
 
 fn exit_code_for_status(status: ExitStatus) -> ExitCode {

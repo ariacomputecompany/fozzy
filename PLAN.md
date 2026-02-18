@@ -106,6 +106,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ `artifacts ls` supports both run-id and `.fozzy` trace paths
 - ✅ Timeline artifact output (`timeline.json`) included in artifact listing
 - ✅ Global CLI flags (like `--json`) are accepted before or after subcommand
+- ✅ `--json` mode now emits JSON error envelopes for CLI parse/usage failures (for example missing required args), not plain-text parse output
 - ✅ CI flaky analysis command added (`fozzy report flaky ...`); richer policy semantics still pending
 - ✅ Full `jq` parity is still pending (advanced filters/functions not implemented)
 - ✅ `report query` now supports `--list-paths` shape introspection
@@ -148,6 +149,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ⬜ Concurrent stress and retention/repro gates in CI still pending
 - ✅ `--strict` warning-to-error mode added for run/replay/shrink warning findings, `trace verify`, and `doctor`
 - ✅ `trace verify --json --strict` now emits a single final JSON document (error-only on strict failure), preserving machine-parse contract
+- ✅ `artifacts pack/export --help` now reflects runtime contract via `RUN_OR_TRACE` argument naming
 - ✅ Trace ingest now enforces explicit header compatibility (`format=fozzy-trace`, schema `version` in supported range) for verify/replay/ci, independent of checksum presence
 - ✅ Local parity/golden hardening tests added: run-like common flag parsing and end-to-end `record -> replay -> shrink -> replay(min)` for run/fuzz/explore
 - ✅ End-to-end golden flows (`record -> replay -> shrink -> replay(min)`) per mode

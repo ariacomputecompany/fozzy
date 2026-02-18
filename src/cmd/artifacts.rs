@@ -11,10 +11,28 @@ use crate::{Config, FozzyResult, RunManifest, RunSummary, TraceFile};
 
 #[derive(Debug, Subcommand)]
 pub enum ArtifactCommand {
-    Ls { run: String },
-    Diff { left: String, right: String },
-    Export { run: String, #[arg(long)] out: PathBuf },
-    Pack { run: String, #[arg(long)] out: PathBuf },
+    Ls {
+        #[arg(value_name = "RUN_OR_TRACE")]
+        run: String,
+    },
+    Diff {
+        #[arg(value_name = "LEFT_RUN_OR_TRACE")]
+        left: String,
+        #[arg(value_name = "RIGHT_RUN_OR_TRACE")]
+        right: String,
+    },
+    Export {
+        #[arg(value_name = "RUN_OR_TRACE")]
+        run: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    Pack {
+        #[arg(value_name = "RUN_OR_TRACE")]
+        run: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

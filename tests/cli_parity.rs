@@ -19,6 +19,11 @@ fn run_cli(args: &[String]) -> std::process::Output {
         .expect("run cli")
 }
 
+fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
+    let s = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(s.trim()).expect("stdout json")
+}
+
 #[test]
 fn common_global_and_mode_flags_parse_across_run_like_commands() {
     let ws = temp_workspace("parity");
@@ -357,6 +362,40 @@ fn invalid_trace_header_is_rejected_in_non_strict_verify_replay_and_ci() {
         Some(2),
         "ci must reject bad version in non-strict mode"
     );
+}
+
+#[test]
+fn json_mode_argument_errors_emit_json_for_parse_failures() {
+    for args in [
+        vec!["artifacts".into(), "export".into(), "--json".into()],
+        vec!["ci".into(), "--json".into()],
+        vec!["replay".into(), "--json".into()],
+    ] {
+        let out = run_cli(&args);
+        assert_eq!(out.status.code(), Some(2), "parse error should exit 2");
+        let doc = parse_json_stdout(&out);
+        assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
+        assert!(
+            !doc.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .is_empty(),
+            "error message should be present"
+        );
+    }
+}
+
+#[test]
+fn artifacts_help_uses_run_or_trace_value_name() {
+    for sub in ["pack", "export"] {
+        let out = run_cli(&["artifacts".into(), sub.to_string(), "--help".into()]);
+        assert_eq!(out.status.code(), Some(0), "help should exit 0");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("RUN_OR_TRACE"),
+            "help should show RUN_OR_TRACE for artifacts {sub}; got: {stdout}"
+        );
+    }
 }
 
 #[test]
