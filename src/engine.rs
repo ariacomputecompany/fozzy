@@ -689,6 +689,7 @@ fn run_scenario_inner(
 
     let mut ctx = ExecCtx::new(seed, det);
     let started = Instant::now();
+    let start_virtual_ms = ctx.clock.now_ms();
     let deadline = timeout.map(|t| started + t);
     let mut scheduler = crate::DeterministicScheduler::new(crate::SchedulerMode::Fifo, seed);
     for (idx, step) in loaded.steps.iter().enumerate() {
@@ -698,16 +699,14 @@ fn run_scenario_inner(
     while let Some(item) = scheduler.pop_next() {
         let idx = item.payload;
         let step = &loaded.steps[idx];
-        if let Some(dl) = deadline {
-            if Instant::now() > dl {
-                ctx.findings.push(Finding {
-                    kind: FindingKind::Hang,
-                    title: "timeout".to_string(),
-                    message: "scenario timed out".to_string(),
-                    location: None,
-                });
-                return Ok(ctx.finish(ExitStatus::Timeout, scenario_path.as_path().to_path_buf(), embedded));
-            }
+        if timeout_reached(&ctx, det, timeout, deadline, start_virtual_ms) {
+            ctx.findings.push(Finding {
+                kind: FindingKind::Hang,
+                title: "timeout".to_string(),
+                message: "scenario timed out".to_string(),
+                location: None,
+            });
+            return Ok(ctx.finish(ExitStatus::Timeout, scenario_path.as_path().to_path_buf(), embedded));
         }
 
         ctx.decisions.push(Decision::SchedulerPick {
@@ -718,9 +717,37 @@ fn run_scenario_inner(
             ctx.findings.push(finding);
             return Ok(ctx.finish(ExitStatus::Fail, scenario_path.as_path().to_path_buf(), embedded));
         }
+
+        if timeout_reached(&ctx, det, timeout, deadline, start_virtual_ms) {
+            ctx.findings.push(Finding {
+                kind: FindingKind::Hang,
+                title: "timeout".to_string(),
+                message: "scenario timed out".to_string(),
+                location: None,
+            });
+            return Ok(ctx.finish(ExitStatus::Timeout, scenario_path.as_path().to_path_buf(), embedded));
+        }
     }
 
     Ok(ctx.finish(ExitStatus::Pass, scenario_path.as_path().to_path_buf(), embedded))
+}
+
+fn timeout_reached(
+    ctx: &ExecCtx,
+    det: bool,
+    timeout: Option<Duration>,
+    deadline: Option<Instant>,
+    start_virtual_ms: u64,
+) -> bool {
+    let Some(limit) = timeout else {
+        return false;
+    };
+    if det {
+        let elapsed_ms = ctx.clock.now_ms().saturating_sub(start_virtual_ms);
+        elapsed_ms >= limit.as_millis().min(u128::from(u64::MAX)) as u64
+    } else {
+        deadline.is_some_and(|dl| Instant::now() > dl)
+    }
 }
 
 fn run_scenario_replay_inner(

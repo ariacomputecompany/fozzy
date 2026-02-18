@@ -45,7 +45,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy run".to_string(),
                 when: "Run a single scenario one-off while iterating locally or debugging a specific failure.".to_string(),
-                how: "fozzy run tests/example.fozzy.json --det --json; add --record path/to/trace.fozzy to always keep the trace.".to_string(),
+                how: "fozzy run tests/example.fozzy.json --det --timeout 2s --json; in --det mode timeout is enforced on virtual elapsed time.".to_string(),
             },
             UsageItem {
                 command: "fozzy replay".to_string(),
