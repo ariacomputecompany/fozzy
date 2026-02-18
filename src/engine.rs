@@ -736,7 +736,7 @@ fn run_scenario_replay_inner(
     Ok(ctx.finish(ExitStatus::Pass, PathBuf::from(scenario_path), scenario.clone()))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ExecCtx {
     det: bool,
     rng: ChaCha20Rng,
@@ -855,6 +855,18 @@ impl ExecCtx {
                 Ok(())
             }
 
+            crate::Step::AssertOk { value, msg } => {
+                if !value {
+                    return Err(Finding {
+                        kind: FindingKind::Assertion,
+                        title: "assert_ok".to_string(),
+                        message: msg.clone().unwrap_or_else(|| "assert_ok failed".to_string()),
+                        location: None,
+                    });
+                }
+                Ok(())
+            }
+
             crate::Step::AssertEqInt { a, b, msg } => {
                 if a != b {
                     return Err(Finding {
@@ -867,12 +879,36 @@ impl ExecCtx {
                 Ok(())
             }
 
+            crate::Step::AssertNeInt { a, b, msg } => {
+                if a == b {
+                    return Err(Finding {
+                        kind: FindingKind::Assertion,
+                        title: "assert_ne_int".to_string(),
+                        message: msg.clone().unwrap_or_else(|| format!("expected {a} != {b}")),
+                        location: None,
+                    });
+                }
+                Ok(())
+            }
+
             crate::Step::AssertEqStr { a, b, msg } => {
                 if a != b {
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "assert_eq_str".to_string(),
                         message: msg.clone().unwrap_or_else(|| format!("expected {a:?} == {b:?}")),
+                        location: None,
+                    });
+                }
+                Ok(())
+            }
+
+            crate::Step::AssertNeStr { a, b, msg } => {
+                if a == b {
+                    return Err(Finding {
+                        kind: FindingKind::Assertion,
+                        title: "assert_ne_str".to_string(),
+                        message: msg.clone().unwrap_or_else(|| format!("expected {a:?} != {b:?}")),
                         location: None,
                     });
                 }
@@ -1302,6 +1338,87 @@ impl ExecCtx {
                 Ok(())
             }
 
+            crate::Step::AssertThrows { steps } => self.exec_expect_failure("assert_throws", steps),
+            crate::Step::AssertRejects { steps } => self.exec_expect_failure("assert_rejects", steps),
+
+            crate::Step::AssertEventuallyKv {
+                key,
+                equals,
+                within,
+                poll,
+                msg,
+            } => {
+                let within_d = crate::parse_duration(within).map_err(|e| Finding {
+                    kind: FindingKind::Checker,
+                    title: "invalid_duration".to_string(),
+                    message: e.to_string(),
+                    location: None,
+                })?;
+                let poll_d = crate::parse_duration(poll).map_err(|e| Finding {
+                    kind: FindingKind::Checker,
+                    title: "invalid_duration".to_string(),
+                    message: e.to_string(),
+                    location: None,
+                })?;
+
+                let deadline = Instant::now() + within_d;
+                loop {
+                    if self.kv.get(key).is_some_and(|v| v == equals) {
+                        return Ok(());
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(Finding {
+                            kind: FindingKind::Assertion,
+                            title: "assert_eventually_kv".to_string(),
+                            message: msg.clone().unwrap_or_else(|| {
+                                format!("key {key:?} did not become {equals:?} within {}", within)
+                            }),
+                            location: None,
+                        });
+                    }
+                    self.sleep_poll(poll_d);
+                }
+            }
+
+            crate::Step::AssertNeverKv {
+                key,
+                equals,
+                within,
+                poll,
+                msg,
+            } => {
+                let within_d = crate::parse_duration(within).map_err(|e| Finding {
+                    kind: FindingKind::Checker,
+                    title: "invalid_duration".to_string(),
+                    message: e.to_string(),
+                    location: None,
+                })?;
+                let poll_d = crate::parse_duration(poll).map_err(|e| Finding {
+                    kind: FindingKind::Checker,
+                    title: "invalid_duration".to_string(),
+                    message: e.to_string(),
+                    location: None,
+                })?;
+
+                let deadline = Instant::now() + within_d;
+                loop {
+                    if self.kv.get(key).is_some_and(|v| v == equals) {
+                        return Err(Finding {
+                            kind: FindingKind::Assertion,
+                            title: "assert_never_kv".to_string(),
+                            message: msg
+                                .clone()
+                                .unwrap_or_else(|| format!("key {key:?} became forbidden value {equals:?}")),
+                            location: None,
+                        });
+                    }
+                    if Instant::now() >= deadline {
+                        return Ok(());
+                    }
+                    self.sleep_poll(poll_d);
+                }
+            }
+
             crate::Step::Fail { message } => Err(Finding {
                 kind: FindingKind::Assertion,
                 title: "fail".to_string(),
@@ -1315,6 +1432,35 @@ impl ExecCtx {
                 message: message.clone(),
                 location: None,
             }),
+        }
+    }
+
+    fn exec_expect_failure(&mut self, title: &str, steps: &[crate::Step]) -> Result<(), Finding> {
+        let mut shadow = self.clone();
+        shadow.replay = None;
+        shadow.decisions = DecisionLog::default();
+        shadow.events.clear();
+        shadow.findings.clear();
+
+        for s in steps {
+            if shadow.exec_step(s).is_err() {
+                return Ok(());
+            }
+        }
+
+        Err(Finding {
+            kind: FindingKind::Assertion,
+            title: title.to_string(),
+            message: format!("{title} expected failure but nested steps passed"),
+            location: None,
+        })
+    }
+
+    fn sleep_poll(&mut self, d: Duration) {
+        if self.det {
+            self.clock.advance(d);
+        } else {
+            std::thread::sleep(d);
         }
     }
 }

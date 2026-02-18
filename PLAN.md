@@ -40,10 +40,9 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 
 ### M2 Test Framework
 - ✅ Scenario discovery and execution (`fozzy test`, `fozzy run`)
-- ✅ Assertions (`assert_eq_int`, `assert_eq_str`, `fail`, KV assertions)
+- ✅ Assertions (`ok/eq/ne/throws/rejects/eventually/never` + `fail`, KV assertions)
 - ✅ Deterministic mode (`--det`) and seed controls
-- ☑️ Async test semantics are partial (logical operations modeled; no async DSL parity yet)
-- ⬜ Full assertion surface parity (`throws/rejects/eventually/never`) pending
+- ✅ Async-style assertion semantics (`eventually`/`never`) in deterministic polling form
 
 ### M3 Capability Virtualization
 - ✅ Time capability (virtual clock)

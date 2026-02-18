@@ -84,8 +84,11 @@ pub enum DistributedInvariant {
 pub enum Step {
     TraceEvent { name: String, #[serde(default)] fields: serde_json::Map<String, serde_json::Value> },
     RandU64 { #[serde(default)] key: Option<String> },
+    AssertOk { value: bool, #[serde(default)] msg: Option<String> },
     AssertEqInt { a: i64, b: i64, #[serde(default)] msg: Option<String> },
+    AssertNeInt { a: i64, b: i64, #[serde(default)] msg: Option<String> },
     AssertEqStr { a: String, b: String, #[serde(default)] msg: Option<String> },
+    AssertNeStr { a: String, b: String, #[serde(default)] msg: Option<String> },
     Sleep { duration: String },
     Advance { duration: String },
     Freeze { #[serde(default)] at_ms: Option<u64> },
@@ -148,6 +151,28 @@ pub enum Step {
         #[serde(default)]
         save_stdout_as: Option<String>,
     },
+    AssertThrows {
+        steps: Vec<Step>,
+    },
+    AssertRejects {
+        steps: Vec<Step>,
+    },
+    AssertEventuallyKv {
+        key: String,
+        equals: String,
+        within: String,
+        poll: String,
+        #[serde(default)]
+        msg: Option<String>,
+    },
+    AssertNeverKv {
+        key: String,
+        equals: String,
+        within: String,
+        poll: String,
+        #[serde(default)]
+        msg: Option<String>,
+    },
     Fail { message: String },
     Panic { message: String },
 }
@@ -188,6 +213,10 @@ impl Scenario {
             match step {
                 Step::Sleep { duration } | Step::Advance { duration } => {
                     parse_duration(duration)?;
+                }
+                Step::AssertEventuallyKv { within, poll, .. } | Step::AssertNeverKv { within, poll, .. } => {
+                    parse_duration(within)?;
+                    parse_duration(poll)?;
                 }
                 Step::GetKvAssert { equals: Some(_), is_null: Some(true), .. } => {
                     return Err(FozzyError::Scenario(
