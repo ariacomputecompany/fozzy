@@ -18,7 +18,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Rust-native engine and CLI are in place.
 - ✅ `fozzy usage` command exists for quick command selection guidance.
 - ✅ Deterministic replay works for run/fuzz/explore traces.
-- ☑️ Core capabilities are partial (time/rng/fs/http/proc scripted; network capability unification still pending).
+- ✅ Core capabilities cover time/rng/fs/http/proc/network with deterministic replay decisions.
 - ☑️ Fuzzing and distributed exploration are partial implementations.
 - ⬜ Full hardening/performance/audit requirements are still pending.
 
@@ -50,7 +50,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Filesystem overlay capability (write/read/snapshot/restore)
 - ✅ Scripted HTTP mocking capability (`http_when` / `http_request`)
 - ✅ Scripted process virtualization capability (`proc_when` / `proc_spawn`)
-- ☑️ Network simulation exists in explore runner; capability API unification pending
+- ✅ Network simulation capability in both run/explore flows with delivery/drop replay decisions
 
 ### M4 Replay + Artifacts
 - ✅ `.fozzy` trace format with versioning + metadata
@@ -105,7 +105,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ☑️ UX polish and diagnostics are partial (shrink default path now deterministic and explicit)
 
 ## Production Backlog (Next Execution Order)
-1. ☑️ Expand M3 with stricter network capability contracts and richer record/replay semantics.
+1. ✅ Expand M3 with stricter network capability contracts and richer record/replay semantics.
 2. ☑️ Deepen M5 with stronger coverage accounting + target plugin interfaces.
 3. ☑️ Deepen M6 strategy space and richer distributed checkers.
 4. ☑️ Complete M7 combined shrinking across input/schedule/fault dimensions.

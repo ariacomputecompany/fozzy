@@ -151,6 +151,35 @@ pub enum Step {
         #[serde(default)]
         save_stdout_as: Option<String>,
     },
+    NetPartition {
+        a: String,
+        b: String,
+    },
+    NetHeal {
+        a: String,
+        b: String,
+    },
+    NetSetDropRate {
+        rate: f64,
+    },
+    NetSetReorder {
+        enabled: bool,
+    },
+    NetSend {
+        from: String,
+        to: String,
+        payload: String,
+    },
+    NetDeliverOne {
+        #[serde(default)]
+        strategy: Option<String>,
+    },
+    NetRecvAssert {
+        node: String,
+        #[serde(default)]
+        from: Option<String>,
+        payload: String,
+    },
     AssertThrows {
         steps: Vec<Step>,
     },

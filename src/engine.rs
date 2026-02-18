@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -746,6 +747,12 @@ struct ExecCtx {
     fs_snapshots: BTreeMap<String, BTreeMap<String, String>>,
     http_rules: Vec<HttpRule>,
     proc_rules: Vec<ProcRule>,
+    net_queue: Vec<NetMessage>,
+    net_inbox: BTreeMap<String, Vec<NetMessage>>,
+    net_partitions: BTreeSet<(String, String)>,
+    net_next_id: u64,
+    net_drop_rate: f64,
+    net_reorder: bool,
     decisions: DecisionLog,
     events: Vec<TraceEvent>,
     findings: Vec<Finding>,
@@ -767,6 +774,12 @@ impl ExecCtx {
             fs_snapshots: BTreeMap::new(),
             http_rules: Vec::new(),
             proc_rules: Vec::new(),
+            net_queue: Vec::new(),
+            net_inbox: BTreeMap::new(),
+            net_partitions: BTreeSet::new(),
+            net_next_id: 1,
+            net_drop_rate: 0.0,
+            net_reorder: false,
             decisions: DecisionLog::default(),
             events: Vec::new(),
             findings: Vec::new(),
@@ -811,6 +824,23 @@ impl ExecCtx {
             None => Err(FozzyError::Trace(
                 "replay drift: missing SchedulerPick decision".to_string(),
             )),
+        }
+    }
+
+    fn replay_peek(&self) -> Option<&Decision> {
+        self.replay.as_ref().and_then(|c| c.peek())
+    }
+
+    fn replay_take_if<F>(&mut self, pred: F) -> Option<Decision>
+    where
+        F: FnOnce(&Decision) -> bool,
+    {
+        let cursor = self.replay.as_mut()?;
+        let next = cursor.peek()?;
+        if pred(next) {
+            cursor.next().cloned()
+        } else {
+            None
         }
     }
 
@@ -1338,6 +1368,187 @@ impl ExecCtx {
                 Ok(())
             }
 
+            crate::Step::NetPartition { a, b } => {
+                self.net_partitions.insert(sorted_pair(a, b));
+                Ok(())
+            }
+
+            crate::Step::NetHeal { a, b } => {
+                self.net_partitions.remove(&sorted_pair(a, b));
+                Ok(())
+            }
+
+            crate::Step::NetSetDropRate { rate } => {
+                if !(0.0..=1.0).contains(rate) {
+                    return Err(Finding {
+                        kind: FindingKind::Checker,
+                        title: "net_drop_rate".to_string(),
+                        message: format!("invalid drop rate {rate}; expected [0,1]"),
+                        location: None,
+                    });
+                }
+                self.net_drop_rate = *rate;
+                Ok(())
+            }
+
+            crate::Step::NetSetReorder { enabled } => {
+                self.net_reorder = *enabled;
+                Ok(())
+            }
+
+            crate::Step::NetSend { from, to, payload } => {
+                let id = self.net_next_id;
+                self.net_next_id = self.net_next_id.saturating_add(1);
+                self.net_queue.push(NetMessage {
+                    id,
+                    from: from.clone(),
+                    to: to.clone(),
+                    payload: payload.clone(),
+                });
+                Ok(())
+            }
+
+            crate::Step::NetDeliverOne { strategy } => {
+                let mut deliverable = Vec::new();
+                for (idx, msg) in self.net_queue.iter().enumerate() {
+                    if self.net_partitions.contains(&sorted_pair(&msg.from, &msg.to)) {
+                        continue;
+                    }
+                    deliverable.push((idx, msg.id));
+                }
+                if deliverable.is_empty() {
+                    return Err(Finding {
+                        kind: FindingKind::Assertion,
+                        title: "net_deliver".to_string(),
+                        message: "no deliverable network message".to_string(),
+                        location: None,
+                    });
+                }
+
+                let use_random = strategy
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case("random"))
+                    .unwrap_or(self.net_reorder);
+
+                let picked_message_id = match self.replay_peek() {
+                    Some(Decision::NetDeliverPick { message_id }) => {
+                        let id = *message_id;
+                        if !deliverable.iter().any(|(_, m)| *m == id) {
+                            return Err(Finding {
+                                kind: FindingKind::Checker,
+                                title: "replay_drift".to_string(),
+                                message: format!(
+                                    "replay net delivery drift: message id {id} is not deliverable"
+                                ),
+                                location: None,
+                            });
+                        }
+                        let _ = self.replay_take_if(|d| matches!(d, Decision::NetDeliverPick { .. }));
+                        id
+                    }
+                    _ => {
+                        let pick_pos = if use_random {
+                            (self.rng.next_u64() as usize) % deliverable.len()
+                        } else {
+                            0
+                        };
+                        deliverable[pick_pos].1
+                    }
+                };
+                self.decisions.push(Decision::NetDeliverPick {
+                    message_id: picked_message_id,
+                });
+
+                let Some((idx, _)) = deliverable.into_iter().find(|(_, id)| *id == picked_message_id) else {
+                    return Err(Finding {
+                        kind: FindingKind::Checker,
+                        title: "net_deliver".to_string(),
+                        message: format!("selected message id {picked_message_id} no longer in queue"),
+                        location: None,
+                    });
+                };
+                let msg = self.net_queue.remove(idx);
+
+                if let Some(Decision::NetDrop { message_id, .. }) = self.replay_peek() {
+                    if *message_id != msg.id {
+                        return Err(Finding {
+                            kind: FindingKind::Checker,
+                            title: "replay_drift".to_string(),
+                            message: format!(
+                                "replay net drop drift: expected message id {}, got {}",
+                                msg.id, message_id
+                            ),
+                            location: None,
+                        });
+                    }
+                }
+
+                let should_drop = match self.replay_take_if(|d| {
+                    matches!(d, Decision::NetDrop { message_id, .. } if *message_id == msg.id)
+                }) {
+                    Some(Decision::NetDrop { dropped, .. }) => dropped,
+                    _ => {
+                        if self.net_drop_rate <= 0.0 {
+                            false
+                        } else {
+                            let sample = (self.rng.next_u64() as f64) / (u64::MAX as f64);
+                            sample < self.net_drop_rate
+                        }
+                    }
+                };
+                self.decisions.push(Decision::NetDrop {
+                    message_id: msg.id,
+                    dropped: should_drop,
+                });
+
+                if should_drop {
+                    self.events.push(TraceEvent {
+                        time_ms: self.clock.now_ms(),
+                        name: "net_drop".to_string(),
+                        fields: serde_json::Map::from_iter([
+                            ("id".to_string(), serde_json::Value::Number(msg.id.into())),
+                            ("from".to_string(), serde_json::Value::String(msg.from)),
+                            ("to".to_string(), serde_json::Value::String(msg.to)),
+                        ]),
+                    });
+                    return Ok(());
+                }
+
+                self.net_inbox.entry(msg.to.clone()).or_default().push(msg.clone());
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "net_deliver".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("id".to_string(), serde_json::Value::Number(msg.id.into())),
+                        ("from".to_string(), serde_json::Value::String(msg.from)),
+                        ("to".to_string(), serde_json::Value::String(msg.to)),
+                    ]),
+                });
+                Ok(())
+            }
+
+            crate::Step::NetRecvAssert { node, from, payload } => {
+                let inbox = self.net_inbox.entry(node.clone()).or_default();
+                let pos = inbox.iter().position(|m| {
+                    if let Some(f) = from {
+                        if &m.from != f {
+                            return false;
+                        }
+                    }
+                    m.payload == *payload
+                });
+                let Some(pos) = pos else {
+                    return Err(Finding {
+                        kind: FindingKind::Assertion,
+                        title: "net_recv_assert".to_string(),
+                        message: format!("no matching inbox message for node {node:?} payload {payload:?}"),
+                        location: None,
+                    });
+                };
+                inbox.remove(pos);
+                Ok(())
+            }
+
             crate::Step::AssertThrows { steps } => self.exec_expect_failure("assert_throws", steps),
             crate::Step::AssertRejects { steps } => self.exec_expect_failure("assert_rejects", steps),
 
@@ -1487,6 +1698,22 @@ struct ProcRule {
 }
 
 #[derive(Debug, Clone)]
+struct NetMessage {
+    id: u64,
+    from: String,
+    to: String,
+    payload: String,
+}
+
+fn sorted_pair(a: &str, b: &str) -> (String, String) {
+    if a <= b {
+        (a.to_string(), b.to_string())
+    } else {
+        (b.to_string(), a.to_string())
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ReplayCursor {
     decisions: Vec<Decision>,
     index: usize,
@@ -1504,6 +1731,10 @@ impl ReplayCursor {
         let d = self.decisions.get(self.index);
         self.index = self.index.saturating_add(1);
         d
+    }
+
+    fn peek(&self) -> Option<&Decision> {
+        self.decisions.get(self.index)
     }
 
     fn remaining(&self) -> usize {

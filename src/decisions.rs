@@ -10,6 +10,8 @@ pub enum Decision {
     TimeSleepMs { ms: u64 },
     TimeAdvanceMs { ms: u64 },
     SchedulerPick { task_id: u64, label: String },
+    NetDeliverPick { message_id: u64 },
+    NetDrop { message_id: u64, dropped: bool },
     Step { index: usize, name: String },
     ExploreDeliver { msg_id: u64 },
 }
