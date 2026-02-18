@@ -35,8 +35,8 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Seeded deterministic RNG
 - ✅ Virtual time with freeze/advance/sleep behavior
 - ✅ Decision logging for replay
-- ☑️ Deterministic scheduling is partial (full generalized scheduler still pending)
-- ☑️ Replay drift detection is partial (core checks present; deeper audits pending)
+- ✅ Deterministic scheduler core (task queue + deterministic picks + schedule recording)
+- ✅ Replay drift detection for scheduler decisions (run/explore)
 
 ### M2 Test Framework
 - ✅ Scenario discovery and execution (`fozzy test`, `fozzy run`)

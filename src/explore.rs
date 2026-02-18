@@ -419,7 +419,10 @@ fn run_explore_inner(
         let msg = queue.remove(idx).expect("index exists");
         delivered += 1;
         time_ms = time_ms.saturating_add(1);
-        decisions.push(crate::Decision::ExploreDeliver { msg_id: msg.id });
+        decisions.push(crate::Decision::SchedulerPick {
+            task_id: msg.id,
+            label: "deliver".to_string(),
+        });
         events.push(TraceEvent {
             time_ms,
             name: "deliver".to_string(),
@@ -490,6 +493,7 @@ fn run_explore_replay_inner(
     for d in decisions {
         let msg_id = match d {
             crate::Decision::ExploreDeliver { msg_id } => *msg_id,
+            crate::Decision::SchedulerPick { task_id, .. } => *task_id,
             crate::Decision::Step { name, .. } => {
                 let Some(id_str) = name.strip_prefix("deliver:") else { continue };
                 id_str.parse().map_err(|_| FozzyError::Trace("invalid deliver decision".to_string()))?

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::{
     wall_time_iso_utc, Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, Reporter,
-    RunIdentity, RunMode, RunSummary, Scenario, ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile,
-    TracePath,
+    RunIdentity, RunMode, RunSummary, Scenario, ScenarioPath, ScenarioV1Steps, TraceEvent,
+    TraceFile, TracePath,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -604,8 +604,14 @@ fn run_scenario_inner(
     let mut ctx = ExecCtx::new(seed, det);
     let started = Instant::now();
     let deadline = timeout.map(|t| started + t);
-
+    let mut scheduler = crate::DeterministicScheduler::new(crate::SchedulerMode::Fifo, seed);
     for (idx, step) in loaded.steps.iter().enumerate() {
+        scheduler.enqueue(format!("{step:?}"), idx);
+    }
+
+    while let Some(item) = scheduler.pop_next() {
+        let idx = item.payload;
+        let step = &loaded.steps[idx];
         if let Some(dl) = deadline {
             if Instant::now() > dl {
                 ctx.findings.push(Finding {
@@ -618,11 +624,10 @@ fn run_scenario_inner(
             }
         }
 
-        ctx.decisions.push(Decision::Step {
-            index: idx,
-            name: format!("{step:?}"),
+        ctx.decisions.push(Decision::SchedulerPick {
+            task_id: item.id,
+            label: item.label,
         });
-
         if let Err(finding) = ctx.exec_step(step) {
             ctx.findings.push(finding);
             return Ok(ctx.finish(ExitStatus::Fail, scenario_path.as_path().to_path_buf(), embedded));
@@ -653,31 +658,66 @@ fn run_scenario_replay_inner(
     if let Some(d) = decisions {
         ctx.replay = Some(ReplayCursor::new(d));
     }
+    let has_scheduler_pick = decisions
+        .map(|d| d.iter().any(|x| matches!(x, Decision::SchedulerPick { .. })))
+        .unwrap_or(false);
 
     let started = Instant::now();
     let deadline = until.map(|t| started + t);
 
-    for (idx, step_def) in scenario.steps.iter().enumerate() {
-        if let Some(dl) = deadline {
-            if Instant::now() > dl {
-                ctx.findings.push(Finding {
-                    kind: FindingKind::Hang,
-                    title: "until".to_string(),
-                    message: "replay stopped at --until budget".to_string(),
-                    location: None,
-                });
-                return Ok(ctx.finish(ExitStatus::Timeout, PathBuf::from(scenario_path), scenario.clone()));
+    if has_scheduler_pick {
+        let mut scheduler = crate::DeterministicScheduler::new(crate::SchedulerMode::Fifo, seed);
+        for (idx, step) in scenario.steps.iter().enumerate() {
+            scheduler.enqueue(format!("{step:?}"), idx);
+        }
+        while let Some(item) = scheduler.pop_next() {
+            let idx = item.payload;
+            let step_def = &scenario.steps[idx];
+            if let Some(dl) = deadline {
+                if Instant::now() > dl {
+                    ctx.findings.push(Finding {
+                        kind: FindingKind::Hang,
+                        title: "until".to_string(),
+                        message: "replay stopped at --until budget".to_string(),
+                        location: None,
+                    });
+                    return Ok(ctx.finish(ExitStatus::Timeout, PathBuf::from(scenario_path), scenario.clone()));
+                }
+            }
+
+            if step {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            ctx.expect_scheduler_pick(item.id, &item.label)?;
+            if let Err(finding) = ctx.exec_step(step_def) {
+                ctx.findings.push(finding);
+                return Ok(ctx.finish(ExitStatus::Fail, PathBuf::from(scenario_path), scenario.clone()));
             }
         }
+    } else {
+        for (idx, step_def) in scenario.steps.iter().enumerate() {
+            if let Some(dl) = deadline {
+                if Instant::now() > dl {
+                    ctx.findings.push(Finding {
+                        kind: FindingKind::Hang,
+                        title: "until".to_string(),
+                        message: "replay stopped at --until budget".to_string(),
+                        location: None,
+                    });
+                    return Ok(ctx.finish(ExitStatus::Timeout, PathBuf::from(scenario_path), scenario.clone()));
+                }
+            }
 
-        if step {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+            if step {
+                std::thread::sleep(Duration::from_millis(10));
+            }
 
-        ctx.expect_step(idx)?;
-        if let Err(finding) = ctx.exec_step(step_def) {
-            ctx.findings.push(finding);
-            return Ok(ctx.finish(ExitStatus::Fail, PathBuf::from(scenario_path), scenario.clone()));
+            ctx.expect_step(idx)?;
+            if let Err(finding) = ctx.exec_step(step_def) {
+                ctx.findings.push(finding);
+                return Ok(ctx.finish(ExitStatus::Fail, PathBuf::from(scenario_path), scenario.clone()));
+            }
         }
     }
 
@@ -753,6 +793,24 @@ impl ExecCtx {
             Some(Decision::Step { index, .. }) if *index == idx => Ok(()),
             Some(other) => Err(FozzyError::Trace(format!("replay drift at step {idx}: expected step decision, got {other:?}"))),
             None => Err(FozzyError::Trace(format!("replay drift at step {idx}: missing decision"))),
+        }
+    }
+
+    fn expect_scheduler_pick(&mut self, task_id: u64, label: &str) -> FozzyResult<()> {
+        let Some(cursor) = self.replay.as_mut() else {
+            return Ok(());
+        };
+        match cursor.next() {
+            Some(Decision::SchedulerPick {
+                task_id: expected_id,
+                label: expected_label,
+            }) if *expected_id == task_id && expected_label == label => Ok(()),
+            Some(other) => Err(FozzyError::Trace(format!(
+                "replay drift: expected SchedulerPick(task_id={task_id}, label={label:?}), got {other:?}"
+            ))),
+            None => Err(FozzyError::Trace(
+                "replay drift: missing SchedulerPick decision".to_string(),
+            )),
         }
     }
 

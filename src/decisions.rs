@@ -9,6 +9,7 @@ pub enum Decision {
     RandBytes { hex: String },
     TimeSleepMs { ms: u64 },
     TimeAdvanceMs { ms: u64 },
+    SchedulerPick { task_id: u64, label: String },
     Step { index: usize, name: String },
     ExploreDeliver { msg_id: u64 },
 }
