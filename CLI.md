@@ -51,6 +51,7 @@ CORPUS:
 
 ARTIFACTS:
   fozzy artifacts ls <run-id|trace>
+  fozzy artifacts diff <left-run-id|trace> <right-run-id|trace>
   fozzy artifacts export <run-id|trace> --out <dir|zip>
 
 REPORT:

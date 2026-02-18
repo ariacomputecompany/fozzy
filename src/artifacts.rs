@@ -3,13 +3,15 @@
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::{Config, FozzyResult};
+use crate::{Config, FozzyResult, RunSummary, TraceFile};
 
 #[derive(Debug, Subcommand)]
 pub enum ArtifactCommand {
     Ls { run: String },
+    Diff { left: String, right: String },
     Export { run: String, #[arg(long)] out: PathBuf },
 }
 
@@ -20,6 +22,7 @@ pub enum ArtifactKind {
     Timeline,
     Events,
     Report,
+    Coverage,
     MinRepro,
     Logs,
     Corpus,
@@ -33,12 +36,92 @@ pub struct ArtifactEntry {
     pub size_bytes: Option<u64>,
 }
 
-pub fn artifacts_command(config: &Config, command: &ArtifactCommand) -> FozzyResult<Vec<ArtifactEntry>> {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ArtifactOutput {
+    List { entries: Vec<ArtifactEntry> },
+    Diff { diff: ArtifactDiff },
+    Exported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactDiff {
+    pub left: String,
+    pub right: String,
+    pub files: Vec<ArtifactFileDelta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<ReportDelta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<TraceDelta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactFileDelta {
+    pub key: String,
+    #[serde(rename = "leftPath", skip_serializing_if = "Option::is_none")]
+    pub left_path: Option<String>,
+    #[serde(rename = "rightPath", skip_serializing_if = "Option::is_none")]
+    pub right_path: Option<String>,
+    #[serde(rename = "leftSizeBytes", skip_serializing_if = "Option::is_none")]
+    pub left_size_bytes: Option<u64>,
+    #[serde(rename = "rightSizeBytes", skip_serializing_if = "Option::is_none")]
+    pub right_size_bytes: Option<u64>,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportDelta {
+    #[serde(rename = "leftStatus")]
+    pub left_status: String,
+    #[serde(rename = "rightStatus")]
+    pub right_status: String,
+    #[serde(rename = "leftMode")]
+    pub left_mode: String,
+    #[serde(rename = "rightMode")]
+    pub right_mode: String,
+    #[serde(rename = "leftFindings")]
+    pub left_findings: usize,
+    #[serde(rename = "rightFindings")]
+    pub right_findings: usize,
+    #[serde(rename = "leftDurationMs")]
+    pub left_duration_ms: u64,
+    #[serde(rename = "rightDurationMs")]
+    pub right_duration_ms: u64,
+    #[serde(rename = "findingTitlesChanged")]
+    pub finding_titles_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceDelta {
+    #[serde(rename = "leftMode")]
+    pub left_mode: String,
+    #[serde(rename = "rightMode")]
+    pub right_mode: String,
+    #[serde(rename = "leftDecisions")]
+    pub left_decisions: usize,
+    #[serde(rename = "rightDecisions")]
+    pub right_decisions: usize,
+    #[serde(rename = "leftEvents")]
+    pub left_events: usize,
+    #[serde(rename = "rightEvents")]
+    pub right_events: usize,
+    #[serde(rename = "firstDecisionDiffIndex", skip_serializing_if = "Option::is_none")]
+    pub first_decision_diff_index: Option<usize>,
+    #[serde(rename = "firstEventDiffIndex", skip_serializing_if = "Option::is_none")]
+    pub first_event_diff_index: Option<usize>,
+}
+
+pub fn artifacts_command(config: &Config, command: &ArtifactCommand) -> FozzyResult<ArtifactOutput> {
     match command {
-        ArtifactCommand::Ls { run } => artifacts_list(config, run),
+        ArtifactCommand::Ls { run } => Ok(ArtifactOutput::List {
+            entries: artifacts_list(config, run)?,
+        }),
+        ArtifactCommand::Diff { left, right } => Ok(ArtifactOutput::Diff {
+            diff: artifacts_diff(config, left, right)?,
+        }),
         ArtifactCommand::Export { run, out } => {
             export_artifacts(config, run, out)?;
-            Ok(Vec::new())
+            Ok(ArtifactOutput::Exported)
         }
     }
 }
@@ -58,6 +141,7 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
             push_if_exists(&mut out, ArtifactKind::Timeline, parent.join("timeline.json"))?;
             push_if_exists(&mut out, ArtifactKind::Report, parent.join("report.json"))?;
             push_if_exists(&mut out, ArtifactKind::Events, parent.join("events.json"))?;
+            push_if_exists(&mut out, ArtifactKind::Coverage, parent.join("coverage.json"))?;
             push_if_exists(&mut out, ArtifactKind::Report, parent.join("report.html"))?;
             push_if_exists(&mut out, ArtifactKind::Report, parent.join("junit.xml"))?;
         }
@@ -71,6 +155,7 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
     push_if_exists(&mut out, ArtifactKind::Timeline, artifacts_dir.join("timeline.json"))?;
     push_if_exists(&mut out, ArtifactKind::Report, artifacts_dir.join("report.json"))?;
     push_if_exists(&mut out, ArtifactKind::Events, artifacts_dir.join("events.json"))?;
+    push_if_exists(&mut out, ArtifactKind::Coverage, artifacts_dir.join("coverage.json"))?;
     push_if_exists(&mut out, ArtifactKind::Report, artifacts_dir.join("report.html"))?;
     push_if_exists(&mut out, ArtifactKind::Report, artifacts_dir.join("junit.xml"))?;
 
@@ -102,6 +187,163 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
     }
 
     Ok(())
+}
+
+fn artifacts_diff(config: &Config, left: &str, right: &str) -> FozzyResult<ArtifactDiff> {
+    let left_entries = artifacts_list(config, left)?;
+    let right_entries = artifacts_list(config, right)?;
+
+    let mut left_map = BTreeMap::new();
+    for entry in left_entries {
+        let file = PathBuf::from(&entry.path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&entry.path)
+            .to_string();
+        let key = format!("{:?}:{file}", entry.kind);
+        left_map.insert(key, entry);
+    }
+    let mut right_map = BTreeMap::new();
+    for entry in right_entries {
+        let file = PathBuf::from(&entry.path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&entry.path)
+            .to_string();
+        let key = format!("{:?}:{file}", entry.kind);
+        right_map.insert(key, entry);
+    }
+
+    let mut keys: Vec<String> = left_map
+        .keys()
+        .chain(right_map.keys())
+        .cloned()
+        .collect();
+    keys.sort();
+    keys.dedup();
+
+    let mut files = Vec::new();
+    for key in keys {
+        let l = left_map.get(&key);
+        let r = right_map.get(&key);
+        let left_path = l.map(|e| e.path.clone());
+        let right_path = r.map(|e| e.path.clone());
+        let left_size = l.and_then(|e| e.size_bytes);
+        let right_size = r.and_then(|e| e.size_bytes);
+        files.push(ArtifactFileDelta {
+            key,
+            left_path,
+            right_path,
+            left_size_bytes: left_size,
+            right_size_bytes: right_size,
+            changed: left_size != right_size || l.is_none() || r.is_none(),
+        });
+    }
+
+    let report = match (load_summary(config, left)?, load_summary(config, right)?) {
+        (Some(l), Some(r)) => Some(report_delta(&l, &r)),
+        _ => None,
+    };
+    let trace = match (load_trace(config, left)?, load_trace(config, right)?) {
+        (Some(l), Some(r)) => Some(trace_delta(&l, &r)),
+        _ => None,
+    };
+
+    Ok(ArtifactDiff {
+        left: left.to_string(),
+        right: right.to_string(),
+        files,
+        report,
+        trace,
+    })
+}
+
+fn report_delta(left: &RunSummary, right: &RunSummary) -> ReportDelta {
+    let left_titles: Vec<&str> = left.findings.iter().map(|f| f.title.as_str()).collect();
+    let right_titles: Vec<&str> = right.findings.iter().map(|f| f.title.as_str()).collect();
+    ReportDelta {
+        left_status: format!("{:?}", left.status).to_lowercase(),
+        right_status: format!("{:?}", right.status).to_lowercase(),
+        left_mode: format!("{:?}", left.mode).to_lowercase(),
+        right_mode: format!("{:?}", right.mode).to_lowercase(),
+        left_findings: left.findings.len(),
+        right_findings: right.findings.len(),
+        left_duration_ms: left.duration_ms,
+        right_duration_ms: right.duration_ms,
+        finding_titles_changed: left_titles != right_titles,
+    }
+}
+
+fn trace_delta(left: &TraceFile, right: &TraceFile) -> TraceDelta {
+    let first_decision_diff_index = left
+        .decisions
+        .iter()
+        .zip(right.decisions.iter())
+        .position(|(a, b)| a != b)
+        .or_else(|| {
+            if left.decisions.len() != right.decisions.len() {
+                Some(left.decisions.len().min(right.decisions.len()))
+            } else {
+                None
+            }
+        });
+
+    let first_event_diff_index = left
+        .events
+        .iter()
+        .zip(right.events.iter())
+        .position(|(a, b)| a.time_ms != b.time_ms || a.name != b.name || a.fields != b.fields)
+        .or_else(|| {
+            if left.events.len() != right.events.len() {
+                Some(left.events.len().min(right.events.len()))
+            } else {
+                None
+            }
+        });
+
+    TraceDelta {
+        left_mode: format!("{:?}", left.mode).to_lowercase(),
+        right_mode: format!("{:?}", right.mode).to_lowercase(),
+        left_decisions: left.decisions.len(),
+        right_decisions: right.decisions.len(),
+        left_events: left.events.len(),
+        right_events: right.events.len(),
+        first_decision_diff_index,
+        first_event_diff_index,
+    }
+}
+
+fn load_summary(config: &Config, run: &str) -> FozzyResult<Option<RunSummary>> {
+    let artifacts_dir = resolve_artifacts_dir(config, run)?;
+    let report_json = artifacts_dir.join("report.json");
+    if report_json.exists() {
+        let bytes = std::fs::read(report_json)?;
+        let summary: RunSummary = serde_json::from_slice(&bytes)?;
+        return Ok(Some(summary));
+    }
+
+    let trace = load_trace(config, run)?;
+    Ok(trace.map(|t| t.summary))
+}
+
+fn load_trace(config: &Config, run: &str) -> FozzyResult<Option<TraceFile>> {
+    let input = PathBuf::from(run);
+    let trace_path = if input.exists()
+        && input.is_file()
+        && input
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"))
+    {
+        input
+    } else {
+        resolve_artifacts_dir(config, run)?.join("trace.fozzy")
+    };
+
+    if !trace_path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(TraceFile::read_json(&trace_path)?))
 }
 
 pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<PathBuf> {

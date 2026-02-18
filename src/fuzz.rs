@@ -85,6 +85,17 @@ pub struct FuzzTrace {
     pub input_hex: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FuzzCoverageStats {
+    pub target: String,
+    pub executed: u64,
+    pub crashes: u64,
+    pub unique_edges: usize,
+    pub discovered_edges_total: u64,
+    pub max_new_edges_per_input: u64,
+    pub corpus_entries: usize,
+}
+
 pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyResult<crate::RunResult> {
     let seed = opt.seed.unwrap_or_else(gen_seed);
     let run_id = Uuid::new_v4().to_string();
@@ -113,6 +124,8 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
     }
 
     let mut global_coverage: HashSet<u64> = HashSet::new();
+    let mut discovered_edges_total = 0u64;
+    let mut max_new_edges_per_input = 0u64;
     let mut findings = Vec::new();
     let mut crash_trace_path: Option<PathBuf> = None;
     let mut crash_count = 0u64;
@@ -139,6 +152,8 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
             .filter(|e| !global_coverage.contains(e))
             .collect();
         if !new_edges.is_empty() {
+            discovered_edges_total = discovered_edges_total.saturating_add(new_edges.len() as u64);
+            max_new_edges_per_input = max_new_edges_per_input.max(new_edges.len() as u64);
             for e in &new_edges {
                 global_coverage.insert(*e);
             }
@@ -229,6 +244,19 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
     };
 
     std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
+    let coverage_stats = FuzzCoverageStats {
+        target: target_string(target),
+        executed,
+        crashes: crash_count,
+        unique_edges: global_coverage.len(),
+        discovered_edges_total,
+        max_new_edges_per_input,
+        corpus_entries: corpus.len(),
+    };
+    std::fs::write(
+        artifacts_dir.join("coverage.json"),
+        serde_json::to_vec_pretty(&coverage_stats)?,
+    )?;
     Ok(crate::RunResult { summary })
 }
 
@@ -346,11 +374,44 @@ struct FuzzExec {
 
 fn execute_target(target: &FuzzTarget, input: &[u8]) -> FozzyResult<FuzzExec> {
     match target {
-        FuzzTarget::Function { id } if id == "kv" => execute_kv(input),
-        FuzzTarget::Function { id } => Err(FozzyError::InvalidArgument(format!(
-            "unknown fuzz function target {id:?} (supported: fn:kv)"
-        ))),
+        FuzzTarget::Function { id } => {
+            let Some(plugin) = find_function_target(id) else {
+                return Err(FozzyError::InvalidArgument(format!(
+                    "unknown fuzz function target {id:?} (supported: {})",
+                    supported_function_targets().join(", ")
+                )));
+            };
+            (plugin.exec)(input)
+        }
     }
+}
+
+#[derive(Clone, Copy)]
+struct FunctionTargetPlugin {
+    id: &'static str,
+    exec: fn(&[u8]) -> FozzyResult<FuzzExec>,
+}
+
+const FUNCTION_TARGET_PLUGINS: &[FunctionTargetPlugin] = &[
+    FunctionTargetPlugin {
+        id: "kv",
+        exec: execute_kv,
+    },
+    FunctionTargetPlugin {
+        id: "utf8",
+        exec: execute_utf8,
+    },
+];
+
+fn find_function_target(id: &str) -> Option<FunctionTargetPlugin> {
+    FUNCTION_TARGET_PLUGINS.iter().copied().find(|p| p.id == id)
+}
+
+fn supported_function_targets() -> Vec<String> {
+    FUNCTION_TARGET_PLUGINS
+        .iter()
+        .map(|p| format!("fn:{}", p.id))
+        .collect()
 }
 
 fn execute_kv(input: &[u8]) -> FozzyResult<FuzzExec> {
@@ -454,6 +515,96 @@ fn execute_kv(input: &[u8]) -> FozzyResult<FuzzExec> {
         }
     }
 
+    Ok(FuzzExec {
+        status: ExitStatus::Pass,
+        findings,
+        events,
+        coverage,
+    })
+}
+
+fn execute_utf8(input: &[u8]) -> FozzyResult<FuzzExec> {
+    let mut coverage = BTreeSet::new();
+    let mut findings = Vec::new();
+    let mut events = Vec::new();
+
+    coverage.insert(stable_edge("utf8:entry"));
+    events.push(TraceEvent {
+        time_ms: 1,
+        name: "input_len".to_string(),
+        fields: serde_json::Map::from_iter([(
+            "bytes".to_string(),
+            serde_json::Value::Number((input.len() as u64).into()),
+        )]),
+    });
+
+    if std::str::from_utf8(input).is_err() {
+        coverage.insert(stable_edge("utf8:invalid"));
+        findings.push(Finding {
+            kind: FindingKind::Checker,
+            title: "utf8_invalid".to_string(),
+            message: "input is not valid utf-8".to_string(),
+            location: None,
+        });
+        return Ok(FuzzExec {
+            status: ExitStatus::Fail,
+            findings,
+            events,
+            coverage,
+        });
+    }
+
+    let Ok(s) = std::str::from_utf8(input) else {
+        unreachable!("validated utf-8 above");
+    };
+    coverage.insert(stable_edge("utf8:valid"));
+    if s.contains("ASSERT_FAIL") {
+        coverage.insert(stable_edge("utf8:assert_fail"));
+        findings.push(Finding {
+            kind: FindingKind::Assertion,
+            title: "utf8_assert".to_string(),
+            message: "ASSERT_FAIL marker reached".to_string(),
+            location: None,
+        });
+        return Ok(FuzzExec {
+            status: ExitStatus::Fail,
+            findings,
+            events,
+            coverage,
+        });
+    }
+    if s.contains("PANIC") {
+        coverage.insert(stable_edge("utf8:panic"));
+        findings.push(Finding {
+            kind: FindingKind::Panic,
+            title: "utf8_panic".to_string(),
+            message: "PANIC marker reached".to_string(),
+            location: None,
+        });
+        return Ok(FuzzExec {
+            status: ExitStatus::Crash,
+            findings,
+            events,
+            coverage,
+        });
+    }
+    if s.contains("TIMEOUT") {
+        coverage.insert(stable_edge("utf8:timeout"));
+        findings.push(Finding {
+            kind: FindingKind::Hang,
+            title: "utf8_timeout".to_string(),
+            message: "TIMEOUT marker reached".to_string(),
+            location: None,
+        });
+        return Ok(FuzzExec {
+            status: ExitStatus::Timeout,
+            findings,
+            events,
+            coverage,
+        });
+    }
+
+    coverage.insert(stable_edge("utf8:pass"));
     Ok(FuzzExec {
         status: ExitStatus::Pass,
         findings,

@@ -74,8 +74,8 @@ pub fn usage_doc() -> UsageDoc {
             },
             UsageItem {
                 command: "fozzy artifacts".to_string(),
-                when: "List or export the files produced by a run (trace, report, events) for triage or CI upload.".to_string(),
-                how: "fozzy artifacts ls <runId>; fozzy artifacts export <runId> --out out_dir (or out.zip).".to_string(),
+                when: "List/export run files or diff two runs/traces to quickly see artifact/report/trace drift.".to_string(),
+                how: "fozzy artifacts ls <runId>; fozzy artifacts diff <left> <right>; fozzy artifacts export <runId> --out out.zip.".to_string(),
             },
             UsageItem {
                 command: "fozzy report".to_string(),

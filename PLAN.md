@@ -57,16 +57,17 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Replay command (`fozzy replay`)
 - ✅ Artifact emission: `trace`, `events`, `report`
 - ✅ Timeline artifact emission (`timeline.json`)
-- ☑️ Artifact query/diff depth is partial
+- ✅ Artifact diff depth (`fozzy artifacts diff`) includes file/report/trace deltas
 
 ### M5 Fuzzing Engine
 - ✅ Mutation-based loop (`fozzy fuzz`)
-- ✅ Basic coverage feedback loop
+- ✅ Coverage feedback loop + persisted `coverage.json` accounting
 - ✅ Corpus storage + crash persistence
 - ✅ Crash trace replay/shrink path
+- ✅ Target plugin registry wired (`fn:kv`, `fn:utf8`) with extensible dispatch
 - ☑️ Property mode wiring exists; richer property APIs pending
 - ☑️ Crash dedup/minimization is basic, not full production-grade
-- ⬜ Generalized target ecosystem (beyond `fn:kv`) pending
+- ☑️ Generalized target ecosystem has started (multiple built-ins), broader ecosystem still pending
 
 ### M6 Distributed Exploration
 - ✅ Single-host multi-node deterministic simulation
@@ -106,7 +107,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 
 ## Production Backlog (Next Execution Order)
 1. ✅ Expand M3 with stricter network capability contracts and richer record/replay semantics.
-2. ☑️ Deepen M5 with stronger coverage accounting + target plugin interfaces.
+2. ✅ Deepen M5 with stronger coverage accounting + target plugin interfaces.
 3. ☑️ Deepen M6 strategy space and richer distributed checkers.
 4. ☑️ Complete M7 combined shrinking across input/schedule/fault dimensions.
 5. ⬜ Ship M8 TS SDK package with stable API and examples.
