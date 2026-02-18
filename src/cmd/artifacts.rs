@@ -233,10 +233,7 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
     } else {
         std::fs::create_dir_all(out)?;
         for src in files {
-            let name = src
-                .file_name()
-                .ok_or_else(|| crate::FozzyError::InvalidArgument(format!("invalid artifact path: {}", src.display())))?;
-            std::fs::copy(&src, out.join(name))?;
+            copy_file_into_dir_secure(&src, out)?;
         }
         Ok(())
     };
@@ -272,11 +269,7 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
     std::fs::create_dir_all(out)?;
 
     for src in files {
-        let name = src
-            .file_name()
-            .ok_or_else(|| crate::FozzyError::InvalidArgument(format!("invalid artifact path: {}", src.display())))?;
-        let dst = out.join(name);
-        std::fs::copy(src, dst)?;
+        copy_file_into_dir_secure(&src, out)?;
     }
 
     Ok(())
@@ -565,6 +558,52 @@ fn zip_entry_name_for_path(path: &Path, used: &mut BTreeSet<String>) -> String {
     "artifact.overflow".to_string()
 }
 
+fn copy_file_into_dir_secure(src: &Path, out_dir: &Path) -> FozzyResult<()> {
+    if out_dir.exists() {
+        let out_md = std::fs::symlink_metadata(out_dir)?;
+        if out_md.file_type().is_symlink() {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "refusing to write into symlinked output directory: {}",
+                out_dir.display()
+            )));
+        }
+    }
+
+    let name = src
+        .file_name()
+        .ok_or_else(|| crate::FozzyError::InvalidArgument(format!("invalid artifact path: {}", src.display())))?;
+    let dst = out_dir.join(name);
+    if dst.exists() {
+        let dst_md = std::fs::symlink_metadata(&dst)?;
+        if dst_md.file_type().is_symlink() {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "refusing to overwrite symlinked output file: {}",
+                dst.display()
+            )));
+        }
+        if !dst_md.is_file() {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "refusing to overwrite non-file output path: {}",
+                dst.display()
+            )));
+        }
+        std::fs::remove_file(&dst)?;
+    }
+
+    let tmp_name = format!(
+        ".{}.{}.{}.tmp",
+        dst.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("artifact"),
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    );
+    let tmp = out_dir.join(tmp_name);
+    std::fs::copy(src, &tmp)?;
+    std::fs::rename(&tmp, &dst)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,5 +687,31 @@ mod tests {
         assert!(names.iter().any(|n| n == "env.json"));
         assert!(names.iter().any(|n| n == "version.json"));
         assert!(names.iter().any(|n| n == "commandline.json"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_dir_rejects_symlink_target_overwrite() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("fozzy-pack-symlink-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+        };
+
+        let outside = root.join("outside.json");
+        std::fs::write(&outside, br#"{"victim":true}"#).expect("outside");
+        let out_dir = root.join("out");
+        std::fs::create_dir_all(&out_dir).expect("out");
+        symlink(&outside, out_dir.join("report.json")).expect("symlink");
+
+        let err = export_reproducer_pack(&cfg, "r1", &out_dir).expect_err("must reject symlink overwrite");
+        assert!(err.to_string().contains("symlinked output file"));
+        let victim = std::fs::read_to_string(&outside).expect("read victim");
+        assert!(victim.contains("victim"));
     }
 }
