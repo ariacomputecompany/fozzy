@@ -527,6 +527,7 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
     if trace.explore.is_some() && trace.scenario.is_none() {
         return crate::shrink_explore_trace(config, trace_path, opt);
     }
+    let target_status = trace.summary.status;
     let seed = trace.summary.identity.seed;
 
     let scenario = trace
@@ -576,7 +577,7 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
                 None,
                 false,
             )?;
-            if res.status != ExitStatus::Pass {
+            if shrink_status_matches(target_status, res.status) {
                 candidate = trial;
                 improved = true;
                 continue;
@@ -605,17 +606,8 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
         .clone()
         .unwrap_or_else(|| crate::default_min_trace_path(trace_path.as_path()));
 
-    // Re-run once to produce a trace for the minimized scenario.
-    let run = run_scenario_replay_inner(
-        config,
-        RunMode::Run,
-        &out_scenario,
-        "<shrunk>",
-        seed,
-        None,
-        None,
-        false,
-    )?;
+    // Re-run once to produce a replayable trace for the minimized scenario.
+    let run = run_embedded_scenario_inner(out_scenario.clone(), PathBuf::from("<shrunk>"), seed, true, None)?;
 
     let run_id = Uuid::new_v4().to_string();
     let started_at = wall_time_iso_utc();
@@ -656,6 +648,14 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
         out_trace_path: out_path.to_string_lossy().to_string(),
         result: RunResult { summary },
     })
+}
+
+pub(crate) fn shrink_status_matches(target: ExitStatus, candidate: ExitStatus) -> bool {
+    if target == ExitStatus::Pass {
+        candidate == ExitStatus::Pass
+    } else {
+        candidate != ExitStatus::Pass
+    }
 }
 
 pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport> {
@@ -783,18 +783,28 @@ fn run_scenario_inner(
         steps: loaded.steps.clone(),
     };
 
+    run_embedded_scenario_inner(embedded, scenario_path.as_path().to_path_buf(), seed, det, timeout)
+}
+
+fn run_embedded_scenario_inner(
+    scenario: ScenarioV1Steps,
+    scenario_path: PathBuf,
+    seed: u64,
+    det: bool,
+    timeout: Option<Duration>,
+) -> FozzyResult<ScenarioRun> {
     let mut ctx = ExecCtx::new(seed, det);
     let started = Instant::now();
     let start_virtual_ms = ctx.clock.now_ms();
     let deadline = timeout.map(|t| started + t);
     let mut scheduler = crate::DeterministicScheduler::new(crate::SchedulerMode::Fifo, seed);
-    for (idx, step) in loaded.steps.iter().enumerate() {
+    for (idx, step) in scenario.steps.iter().enumerate() {
         scheduler.enqueue(step.kind_name().to_string(), idx);
     }
 
     while let Some(item) = scheduler.pop_next() {
         let idx = item.payload;
-        let step = &loaded.steps[idx];
+        let step = &scenario.steps[idx];
         if timeout_reached(&ctx, det, timeout, deadline, start_virtual_ms) {
             ctx.findings.push(Finding {
                 kind: FindingKind::Hang,
@@ -802,7 +812,7 @@ fn run_scenario_inner(
                 message: "scenario timed out".to_string(),
                 location: None,
             });
-            return Ok(ctx.finish(ExitStatus::Timeout, scenario_path.as_path().to_path_buf(), embedded));
+            return Ok(ctx.finish(ExitStatus::Timeout, scenario_path, scenario));
         }
 
         ctx.decisions.push(Decision::SchedulerPick {
@@ -811,7 +821,7 @@ fn run_scenario_inner(
         });
         if let Err(finding) = ctx.exec_step(step) {
             ctx.findings.push(finding);
-            return Ok(ctx.finish(ExitStatus::Fail, scenario_path.as_path().to_path_buf(), embedded));
+            return Ok(ctx.finish(ExitStatus::Fail, scenario_path, scenario));
         }
 
         if timeout_reached(&ctx, det, timeout, deadline, start_virtual_ms) {
@@ -821,11 +831,11 @@ fn run_scenario_inner(
                 message: "scenario timed out".to_string(),
                 location: None,
             });
-            return Ok(ctx.finish(ExitStatus::Timeout, scenario_path.as_path().to_path_buf(), embedded));
+            return Ok(ctx.finish(ExitStatus::Timeout, scenario_path, scenario));
         }
     }
 
-    Ok(ctx.finish(ExitStatus::Pass, scenario_path.as_path().to_path_buf(), embedded))
+    Ok(ctx.finish(ExitStatus::Pass, scenario_path, scenario))
 }
 
 fn timeout_reached(

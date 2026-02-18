@@ -238,6 +238,7 @@ pub fn shrink_explore_trace(
     opt: &crate::ShrinkOptions,
 ) -> FozzyResult<crate::ShrinkResult> {
     let trace = TraceFile::read_json(trace_path.as_path())?;
+    let target_status = trace.summary.status;
     let Some(explore) = trace.explore.as_ref() else {
         return Err(FozzyError::Trace("not an explore trace".to_string()));
     };
@@ -269,7 +270,7 @@ pub fn shrink_explore_trace(
 
                 let (status, _findings, _events, _delivered, _decisions) =
                     run_explore_replay_inner(&explore.scenario, seed, explore.schedule, &trial)?;
-                if status != ExitStatus::Pass {
+                if crate::shrink_status_matches(target_status, status) {
                     candidate = trial;
                     improved = true;
                     continue;
@@ -315,7 +316,7 @@ pub fn shrink_explore_trace(
                 };
                 let (status, _findings, _events, _delivered, _decisions) =
                     run_explore_inner(&trial_scenario, seed, explore.schedule, None, Some(Duration::from_secs(2)))?;
-                if status != ExitStatus::Pass {
+                if crate::shrink_status_matches(target_status, status) {
                     steps = trial;
                     improved = true;
                     continue;
@@ -339,7 +340,7 @@ pub fn shrink_explore_trace(
 
     let (status, findings, events, _delivered, out_decisions) = if opt.minimize == crate::ShrinkMinimize::All {
         let trial = run_explore_inner(&shrunk_scenario, seed, explore.schedule, None, Some(Duration::from_secs(2)))?;
-        if trial.0 != ExitStatus::Pass {
+        if crate::shrink_status_matches(target_status, trial.0) {
             trial
         } else {
             run_explore_replay_inner(&explore.scenario, seed, explore.schedule, &best_decisions)?

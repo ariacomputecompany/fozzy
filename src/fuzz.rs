@@ -210,7 +210,7 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
             crash_trace_path = Some(trace_out);
 
             if opt.minimize || opt.shrink {
-                let minimized = minimize_input(target, &input, opt.max_input_bytes)?;
+                let minimized = minimize_input(target, &input, opt.max_input_bytes, exec.status)?;
                 let _min_path = persist_crash_min_input(&corpus_dir, &minimized)?;
             }
 
@@ -304,6 +304,7 @@ pub fn shrink_fuzz_trace(
     opt: &crate::ShrinkOptions,
 ) -> FozzyResult<crate::ShrinkResult> {
     let trace = TraceFile::read_json(trace_path.as_path())?;
+    let target_status = trace.summary.status;
     let Some(fuzz) = trace.fuzz.as_ref() else {
         return Err(FozzyError::Trace("not a fuzz trace".to_string()));
     };
@@ -317,7 +318,7 @@ pub fn shrink_fuzz_trace(
         ));
     }
 
-    let minimized = minimize_input(&target, &input, 1024 * 1024)?;
+    let minimized = minimize_input(&target, &input, 1024 * 1024, target_status)?;
     let exec = execute_target(&target, &minimized)?;
 
     let out_path = opt
@@ -724,7 +725,12 @@ fn persist_crash_min_input(dir: &Path, bytes: &[u8]) -> FozzyResult<PathBuf> {
     Ok(out)
 }
 
-fn minimize_input(target: &FuzzTarget, input: &[u8], max_len: usize) -> FozzyResult<Vec<u8>> {
+fn minimize_input(
+    target: &FuzzTarget,
+    input: &[u8],
+    max_len: usize,
+    target_status: ExitStatus,
+) -> FozzyResult<Vec<u8>> {
     let mut best = input.to_vec();
     let mut chunk = (best.len().max(1) + 1) / 2;
     while chunk > 0 && best.len() > 1 {
@@ -743,7 +749,7 @@ fn minimize_input(target: &FuzzTarget, input: &[u8], max_len: usize) -> FozzyRes
                 continue;
             }
             let exec = execute_target(target, &trial)?;
-            if exec.status != ExitStatus::Pass {
+            if crate::shrink_status_matches(target_status, exec.status) {
                 best = trial;
                 improved = true;
                 continue;

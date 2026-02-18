@@ -87,6 +87,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Input shrinking for fuzz traces
 - ✅ Schedule shrinking for explore traces
 - ✅ Cross-dimension explore shrinking (`--minimize all`) now reduces schedule + setup fault steps
+- ✅ Shrink status-preservation guard: passing traces stay passing after minimize/replay
 - ⬜ Full node/fault/schedule/input joint minimization pending
 
 ### M8 TypeScript SDK
