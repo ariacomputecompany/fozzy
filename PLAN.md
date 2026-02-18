@@ -132,6 +132,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Deterministic run manifest artifact added: `manifest.json` with fixed schema (`fozzy.run_manifest.v1`) across run modes
 - ✅ Reproducer pack export added: `fozzy artifacts pack <run|trace> --out <dir|zip>` including trace/report/events + env/version/commandline metadata
 - ✅ `artifacts pack/export --out <dir>` and `corpus import --out <dir>` now preflight all targets so symlink-block failures are atomic (no partial outputs written)
+- ✅ `corpus import` now rejects Windows-style unsafe archive paths (`..\\`, drive-prefixed, UNC-root) on all platforms
 - ⬜ CLI contract test matrix across subcommands (flag parity + exit-code matrix) still pending
 - ⬜ Filesystem chaos/security test matrix (read-only, ENOSPC, SIGINT/SIGTERM, symlink/path escape) still pending
 - ⬜ Concurrent stress and retention/repro gates in CI still pending
