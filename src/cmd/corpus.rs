@@ -72,6 +72,7 @@ pub fn corpus_command(_config: &Config, command: &CorpusCommand) -> FozzyResult<
 }
 
 fn export_zip(dir: &Path, out_zip: &Path) -> FozzyResult<()> {
+    validate_output_file_path_secure(out_zip)?;
     if let Some(parent) = out_zip.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -104,6 +105,53 @@ fn export_zip(dir: &Path, out_zip: &Path) -> FozzyResult<()> {
     }
 
     zip.finish()?;
+    Ok(())
+}
+
+fn validate_output_file_path_secure(out_file: &Path) -> FozzyResult<()> {
+    if out_file.exists() {
+        let md = std::fs::symlink_metadata(out_file)?;
+        if md.file_type().is_symlink() {
+            return Err(FozzyError::InvalidArgument(format!(
+                "refusing to overwrite symlinked output file: {}",
+                out_file.display()
+            )));
+        }
+    }
+    validate_output_dir_path_secure(out_file.parent().unwrap_or_else(|| Path::new(".")))
+}
+
+fn validate_output_dir_path_secure(path: &Path) -> FozzyResult<()> {
+    let is_abs = path.is_absolute();
+    let mut cur = if is_abs {
+        PathBuf::from(Path::new(std::path::MAIN_SEPARATOR_STR))
+    } else {
+        std::env::current_dir()?
+    };
+    let mut normal_seen = 0usize;
+    for comp in path.components() {
+        use std::path::Component;
+        match comp {
+            Component::Prefix(prefix) => cur.push(prefix.as_os_str()),
+            Component::RootDir => {}
+            Component::CurDir => continue,
+            Component::ParentDir => cur.push(".."),
+            Component::Normal(seg) => {
+                normal_seen += 1;
+                cur.push(seg);
+            }
+        }
+        if cur.exists() {
+            let md = std::fs::symlink_metadata(&cur)?;
+            let skip_abs_top_component = is_abs && normal_seen == 1;
+            if md.file_type().is_symlink() && !skip_abs_top_component {
+                return Err(FozzyError::InvalidArgument(format!(
+                    "refusing to write through symlinked output path: {}",
+                    cur.display()
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -835,5 +883,46 @@ mod tests {
         let err = import_zip(&zip_path, &out).expect_err("must reject nul-collision aliases");
         assert!(err.to_string().contains("unsafe archive entry path rejected"));
         assert!(!out.join("bad").exists(), "should fail before writes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_rejects_symlinked_output_file() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("fozzy-corpus-export-symlink-file-{}", uuid::Uuid::new_v4()));
+        let corpus = root.join("corpus");
+        std::fs::create_dir_all(&corpus).expect("corpus");
+        std::fs::write(corpus.join("input.bin"), b"data").expect("input");
+
+        let victim = root.join("victim.zip");
+        std::fs::write(&victim, b"safe").expect("victim");
+        let out = root.join("out.zip");
+        symlink(&victim, &out).expect("symlink");
+
+        let err = export_zip(&corpus, &out).expect_err("must reject symlinked output file");
+        assert!(err.to_string().contains("symlinked output file"));
+        assert_eq!(std::fs::read(&victim).expect("victim"), b"safe");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_rejects_symlinked_parent_path() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("fozzy-corpus-export-symlink-parent-{}", uuid::Uuid::new_v4()));
+        let corpus = root.join("corpus");
+        std::fs::create_dir_all(&corpus).expect("corpus");
+        std::fs::write(corpus.join("input.bin"), b"data").expect("input");
+
+        let real_dir = root.join("real");
+        std::fs::create_dir_all(&real_dir).expect("real");
+        let link_parent = root.join("linkp");
+        symlink(&real_dir, &link_parent).expect("symlink parent");
+        let out = link_parent.join("out.zip");
+
+        let err = export_zip(&corpus, &out).expect_err("must reject symlink parent");
+        assert!(err.to_string().contains("symlinked output path"));
+        assert!(!out.exists(), "must not create zip via symlinked parent");
     }
 }
