@@ -704,6 +704,7 @@ struct ExecCtx {
     kv: BTreeMap<String, String>,
     fs: BTreeMap<String, String>,
     fs_snapshots: BTreeMap<String, BTreeMap<String, String>>,
+    http_rules: Vec<HttpRule>,
     decisions: DecisionLog,
     events: Vec<TraceEvent>,
     findings: Vec<Finding>,
@@ -723,6 +724,7 @@ impl ExecCtx {
             kv: BTreeMap::new(),
             fs: BTreeMap::new(),
             fs_snapshots: BTreeMap::new(),
+            http_rules: Vec::new(),
             decisions: DecisionLog::default(),
             events: Vec::new(),
             findings: Vec::new(),
@@ -984,6 +986,167 @@ impl ExecCtx {
                 Ok(())
             }
 
+            crate::Step::HttpWhen {
+                method,
+                path,
+                status,
+                body,
+                json,
+                delay,
+                times,
+            } => {
+                if body.is_some() && json.is_some() {
+                    return Err(Finding {
+                        kind: FindingKind::Checker,
+                        title: "http_when_invalid".to_string(),
+                        message: "HttpWhen: cannot set both body and json".to_string(),
+                        location: None,
+                    });
+                }
+
+                let delay_ms = if let Some(d) = delay {
+                    let dur = crate::parse_duration(d).map_err(|e| Finding {
+                        kind: FindingKind::Checker,
+                        title: "invalid_duration".to_string(),
+                        message: e.to_string(),
+                        location: None,
+                    })?;
+                    dur.as_millis().min(u128::from(u64::MAX)) as u64
+                } else {
+                    0
+                };
+
+                self.http_rules.push(HttpRule {
+                    method: method.clone(),
+                    path: path.clone(),
+                    status: *status,
+                    body: body.clone(),
+                    json: json.clone(),
+                    delay_ms,
+                    remaining: times.unwrap_or(u64::MAX),
+                });
+                Ok(())
+            }
+
+            crate::Step::HttpRequest {
+                method,
+                path,
+                body,
+                expect_status,
+                expect_body,
+                expect_json,
+                save_body_as,
+            } => {
+                if expect_body.is_some() && expect_json.is_some() {
+                    return Err(Finding {
+                        kind: FindingKind::Checker,
+                        title: "http_request_invalid".to_string(),
+                        message: "HttpRequest: cannot set both expect_body and expect_json".to_string(),
+                        location: None,
+                    });
+                }
+
+                let rule_idx = self
+                    .http_rules
+                    .iter()
+                    .position(|r| r.remaining > 0 && r.method == *method && r.path == *path);
+
+                let Some(idx) = rule_idx else {
+                    return Err(Finding {
+                        kind: FindingKind::Assertion,
+                        title: "http_unmatched".to_string(),
+                        message: format!("no http mock matched {method} {path}"),
+                        location: None,
+                    });
+                };
+
+                let mut rule = self.http_rules[idx].clone();
+                if rule.remaining != u64::MAX {
+                    rule.remaining = rule.remaining.saturating_sub(1);
+                }
+                self.http_rules[idx] = rule.clone();
+
+                if self.det && rule.delay_ms > 0 {
+                    self.clock.advance(Duration::from_millis(rule.delay_ms));
+                } else if !self.det && rule.delay_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(rule.delay_ms));
+                }
+
+                let resp_body = if let Some(j) = &rule.json {
+                    serde_json::to_string(j).map_err(|e| Finding {
+                        kind: FindingKind::Checker,
+                        title: "http_json_serialize".to_string(),
+                        message: e.to_string(),
+                        location: None,
+                    })?
+                } else {
+                    rule.body.clone().unwrap_or_default()
+                };
+
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "http_request".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("method".to_string(), serde_json::Value::String(method.clone())),
+                        ("path".to_string(), serde_json::Value::String(path.clone())),
+                        (
+                            "status".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(rule.status)),
+                        ),
+                        (
+                            "has_body".to_string(),
+                            serde_json::Value::Bool(!resp_body.is_empty()),
+                        ),
+                    ]),
+                });
+
+                if let Some(expected) = expect_status {
+                    if rule.status != *expected {
+                        return Err(Finding {
+                            kind: FindingKind::Assertion,
+                            title: "http_status".to_string(),
+                            message: format!("expected status {expected}, got {}", rule.status),
+                            location: None,
+                        });
+                    }
+                }
+
+                if let Some(expected) = expect_body {
+                    if resp_body != *expected {
+                        return Err(Finding {
+                            kind: FindingKind::Assertion,
+                            title: "http_body".to_string(),
+                            message: "http response body mismatch".to_string(),
+                            location: None,
+                        });
+                    }
+                }
+
+                if let Some(expected) = expect_json {
+                    let got: serde_json::Value = serde_json::from_str(&resp_body).map_err(|e| Finding {
+                        kind: FindingKind::Assertion,
+                        title: "http_json_parse".to_string(),
+                        message: e.to_string(),
+                        location: None,
+                    })?;
+                    if got != *expected {
+                        return Err(Finding {
+                            kind: FindingKind::Assertion,
+                            title: "http_json".to_string(),
+                            message: "http response json mismatch".to_string(),
+                            location: None,
+                        });
+                    }
+                }
+
+                if let Some(key) = save_body_as {
+                    self.kv.insert(key.clone(), resp_body);
+                }
+
+                let _ = body;
+                Ok(())
+            }
+
             crate::Step::Fail { message } => Err(Finding {
                 kind: FindingKind::Assertion,
                 title: "fail".to_string(),
@@ -999,6 +1162,17 @@ impl ExecCtx {
             }),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct HttpRule {
+    method: String,
+    path: String,
+    status: u16,
+    body: Option<String>,
+    json: Option<serde_json::Value>,
+    delay_ms: u64,
+    remaining: u64,
 }
 
 #[derive(Debug, Clone)]

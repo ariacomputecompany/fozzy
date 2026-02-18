@@ -59,6 +59,13 @@ pub fn env_info(_config: &crate::Config) -> EnvInfo {
         },
     );
     capabilities.insert(
+        "http".to_string(),
+        CapabilityInfo {
+            backend: "scripted".to_string(),
+            deterministic: true,
+        },
+    );
+    capabilities.insert(
         "net".to_string(),
         CapabilityInfo {
             backend: "simulated".to_string(),

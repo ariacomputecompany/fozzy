@@ -31,7 +31,7 @@ Completed / working (v0.1)
   • JUnit + HTML report rendering (minimal)
   • `fozzy usage` agent-oriented “what to use when” overview
   • Basic fuzzing loop (`fozzy fuzz fn:kv`): mutation + simple coverage feedback + crash recording + replay/shrink
-  • Capability virtualization (partial): deterministic virtual filesystem overlay steps (fs write/read/snapshot/restore)
+  • Capability virtualization (partial): deterministic virtual filesystem overlay + scripted HTTP mocks
   • Deterministic distributed exploration (partial): `fozzy explore` multi-node single-host simulation with FIFO/random schedules + trace record/replay + basic schedule shrinking
 
 Not yet implemented (planned)
@@ -47,7 +47,7 @@ Milestones (tracked)
   • M0 Foundations: DONE (repo, build, CLI skeleton, JSON output, semver)
   • M1 Deterministic Core: PARTIAL (RNG/time/decision log/record+replay; scheduler not yet)
   • M2 Test Framework: PARTIAL (scenario runner + assertions; full discovery DSL not yet)
-  • M3 Capabilities: PARTIAL (virtual fs overlay; net/http/proc not yet)
+  • M3 Capabilities: PARTIAL (virtual fs overlay + scripted http; net/proc record+replay not yet)
   • M4 Replay + Artifacts: PARTIAL (trace/events/report; timeline/diffs not yet)
   • M5 Fuzzing Engine: PARTIAL (basic mutation+feedback loop; target system not yet generalized)
   • M6 Distributed Explore: PARTIAL (single-host simulation; message schedule exploration + partitions/crash scripting; full fault space + strategies not yet)

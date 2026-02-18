@@ -96,6 +96,33 @@ pub enum Step {
     FsReadAssert { path: String, equals: String },
     FsSnapshot { name: String },
     FsRestore { name: String },
+    HttpWhen {
+        method: String,
+        path: String,
+        status: u16,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        json: Option<serde_json::Value>,
+        #[serde(default)]
+        delay: Option<String>,
+        #[serde(default)]
+        times: Option<u64>,
+    },
+    HttpRequest {
+        method: String,
+        path: String,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        expect_status: Option<u16>,
+        #[serde(default)]
+        expect_body: Option<String>,
+        #[serde(default)]
+        expect_json: Option<serde_json::Value>,
+        #[serde(default)]
+        save_body_as: Option<String>,
+    },
     Fail { message: String },
     Panic { message: String },
 }
