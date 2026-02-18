@@ -44,7 +44,7 @@ REPLAY:
 
 SHRINK:
   fozzy shrink <trace.fozzy> [--out <trace>] [--budget <dur>] [--aggressive]
-            [--minimize input|schedule|faults|all]
+            [--minimize input|schedule|faults|all] [--reporter <json|pretty|junit|html>]
 
 CORPUS:
   fozzy corpus list <dir>

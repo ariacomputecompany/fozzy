@@ -220,6 +220,10 @@ enum Command {
 
         #[arg(long, default_value = "all")]
         minimize: ShrinkMinimize,
+
+        /// Accepted for CLI parity with run/test/fuzz/explore (summary output still follows global --json/pretty).
+        #[arg(long, default_value = "pretty")]
+        reporter: Reporter,
     },
 
     /// Manage fuzz corpora
@@ -501,6 +505,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             budget,
             aggressive,
             minimize,
+            reporter: _reporter,
         } => {
             let result = fozzy::shrink_trace(
                 config,
