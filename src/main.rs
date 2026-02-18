@@ -565,7 +565,6 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             match command {
                 TraceCommand::Verify { path } => {
                     let out = fozzy::verify_trace_file(path)?;
-                    print_json_or_text(cli, &out)?;
                     if cli.strict && (!out.checksum_present || !out.checksum_valid || !out.warnings.is_empty()) {
                         let mut reasons = Vec::new();
                         if !out.checksum_present {
@@ -582,6 +581,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                             reasons.join(", ")
                         ));
                     }
+                    print_json_or_text(cli, &out)?;
                 }
             }
             Ok(ExitCode::SUCCESS)

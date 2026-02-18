@@ -248,6 +248,48 @@ fn strict_rejects_checksumless_trace_in_verify_and_ci() {
 }
 
 #[test]
+fn strict_trace_verify_json_emits_single_error_document() {
+    let ws = temp_workspace("strict-json-contract");
+    let trace = ws.join("stale.fozzy");
+    let raw = r#"{
+      "format":"fozzy-trace",
+      "version":1,
+      "engine":{"version":"0.1.0"},
+      "mode":"run",
+      "scenario_path":"tests/example.fozzy.json",
+      "scenario":{"version":1,"name":"example","steps":[]},
+      "decisions":[],
+      "events":[],
+      "summary":{
+        "status":"pass",
+        "mode":"run",
+        "identity":{"runId":"r1","seed":1},
+        "startedAt":"2026-01-01T00:00:00Z",
+        "finishedAt":"2026-01-01T00:00:00Z",
+        "durationMs":0
+      }
+    }"#;
+    std::fs::write(&trace, raw).expect("write trace");
+    let trace_arg = trace.to_string_lossy().to_string();
+
+    let strict = run_cli(&[
+        "--strict".into(),
+        "trace".into(),
+        "verify".into(),
+        trace_arg,
+        "--json".into(),
+    ]);
+    assert_eq!(strict.status.code(), Some(2), "strict should fail");
+
+    let stdout = String::from_utf8_lossy(&strict.stdout);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "must emit a single JSON document on stdout, got: {stdout}");
+
+    let doc: serde_json::Value = serde_json::from_str(lines[0]).expect("stdout json");
+    assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
+}
+
+#[test]
 fn ci_rejects_flake_budget_without_flake_runs() {
     let ws = temp_workspace("ci-budget");
     let trace = ws.join("trace.fozzy");
