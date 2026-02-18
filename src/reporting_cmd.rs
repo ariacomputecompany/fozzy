@@ -146,6 +146,14 @@ fn query_value(root: &serde_json::Value, expr: &str) -> FozzyResult<serde_json::
         match token {
             QueryToken::Field(name) => {
                 for v in &current {
+                    if let Some(arr) = v.as_array() {
+                        if let Ok(idx) = name.parse::<usize>() {
+                            if let Some(item) = arr.get(idx) {
+                                next.push(item);
+                                continue;
+                            }
+                        }
+                    }
                     if let Some(field) = v.get(&name) {
                         next.push(field);
                     }
