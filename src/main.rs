@@ -181,6 +181,9 @@ enum Command {
 
     /// Print version and build info
     Version,
+
+    /// Show a compact "what to use when" guide for each command, with examples.
+    Usage,
 }
 
 fn main() -> ExitCode {
@@ -361,6 +364,16 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
         Command::Version => {
             let info = fozzy::version_info();
             print_json_or_text(cli, &info)?;
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Usage => {
+            let doc = fozzy::usage_doc();
+            if cli.json {
+                print_json_or_text(cli, &doc)?;
+            } else {
+                println!("{}", doc.pretty());
+            }
             Ok(ExitCode::SUCCESS)
         }
     }
