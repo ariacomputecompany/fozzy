@@ -98,26 +98,55 @@ fn query_value(root: &serde_json::Value, expr: &str) -> FozzyResult<serde_json::
     }
 
     let tokens = parse_expr(expr)?;
-    let mut cur = root;
+    let mut current: Vec<&serde_json::Value> = vec![root];
     for token in tokens {
+        let mut next = Vec::new();
         match token {
             QueryToken::Field(name) => {
-                cur = cur.get(&name).ok_or_else(|| FozzyError::Report(format!("field not found: {name}")))?;
+                for v in &current {
+                    if let Some(field) = v.get(&name) {
+                        next.push(field);
+                    }
+                }
             }
             QueryToken::Index(idx) => {
-                cur = cur
-                    .get(idx)
-                    .ok_or_else(|| FozzyError::Report(format!("index out of bounds: {idx}")))?;
+                for v in &current {
+                    if let Some(item) = v.get(idx) {
+                        next.push(item);
+                    }
+                }
+            }
+            QueryToken::AllIndices => {
+                for v in &current {
+                    if let Some(arr) = v.as_array() {
+                        for item in arr {
+                            next.push(item);
+                        }
+                    }
+                }
             }
         }
+        current = next;
     }
-    Ok(cur.clone())
+
+    if current.is_empty() {
+        return Err(FozzyError::Report(format!(
+            "query matched no values for expression {expr:?}"
+        )));
+    }
+    if current.len() == 1 {
+        return Ok(current[0].clone());
+    }
+    Ok(serde_json::Value::Array(
+        current.into_iter().cloned().collect(),
+    ))
 }
 
 #[derive(Debug, Clone)]
 enum QueryToken {
     Field(String),
     Index(usize),
+    AllIndices,
 }
 
 fn parse_expr(expr: &str) -> FozzyResult<Vec<QueryToken>> {
@@ -132,6 +161,11 @@ fn parse_expr(expr: &str) -> FozzyResult<Vec<QueryToken>> {
         }
         if chars[i] == '[' {
             i += 1;
+            if i < chars.len() && chars[i] == ']' {
+                i += 1;
+                tokens.push(QueryToken::AllIndices);
+                continue;
+            }
             let start = i;
             while i < chars.len() && chars[i].is_ascii_digit() {
                 i += 1;

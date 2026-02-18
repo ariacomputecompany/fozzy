@@ -58,7 +58,7 @@ ARTIFACTS:
 
 REPORT:
   fozzy report show <run-id|trace> [--format json|pretty|junit|html]
-  fozzy report query <run-id|trace> --jq <expr>
+  fozzy report query <run-id|trace> --jq <expr>   (supports .a.b, .arr[0], .arr[].field)
 
 DOCTOR:
   fozzy doctor [--deep] [--json]

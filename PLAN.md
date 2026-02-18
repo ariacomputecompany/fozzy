@@ -94,11 +94,12 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 ### M9 CI + Reporting
 - ✅ JSON + JUnit + HTML report outputs
 - ✅ `fozzy report show` and basic `fozzy report query --jq` support
+- ✅ `fozzy report query --jq` now supports array wildcard paths (e.g. `.findings[].title`)
 - ✅ `artifacts ls` supports both run-id and `.fozzy` trace paths
 - ✅ Timeline artifact output (`timeline.json`) included in artifact listing
 - ✅ Global CLI flags (like `--json`) are accepted before or after subcommand
 - ☑️ CI semantics are partial (flaky detection + richer policy pending)
-- ⬜ Full report query semantics parity pending
+- ☑️ Full `jq` parity is still pending (advanced filters/functions not implemented)
 
 ### M10 Hardening
 - ⬜ Determinism audit suite (cross-platform) pending

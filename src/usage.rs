@@ -80,7 +80,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy report".to_string(),
                 when: "Render a run summary in a specific format for CI (JUnit) or humans (HTML/pretty).".to_string(),
-                how: "fozzy report show <runId|trace> --format junit; or --format html; or --format json.".to_string(),
+                how: "fozzy report show <runId|trace> --format junit; fozzy report query <runId> --jq '.findings[].title'.".to_string(),
             },
             UsageItem {
                 command: "fozzy doctor".to_string(),
