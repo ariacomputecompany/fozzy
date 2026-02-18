@@ -64,6 +64,7 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Coverage feedback loop + persisted `coverage.json` accounting
 - ✅ Corpus storage + crash persistence
 - ✅ Crash trace replay/shrink path
+- ✅ `fuzz --record` now emits requested trace path for both pass and fail outcomes
 - ✅ Target plugin registry wired (`fn:kv`, `fn:utf8`) with extensible dispatch
 - ✅ Property mode wiring exists; richer property APIs pending
 - ✅ Crash dedup/minimization is basic, not full production-grade

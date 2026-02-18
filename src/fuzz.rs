@@ -129,6 +129,7 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
     let mut findings = Vec::new();
     let mut crash_trace_path: Option<PathBuf> = None;
     let mut crash_count = 0u64;
+    let mut last_exec: Option<(Vec<u8>, Vec<TraceEvent>, ExitStatus, Vec<Finding>)> = None;
 
     let mut executed = 0u64;
     while executed < max_runs {
@@ -143,6 +144,7 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
         mutate_bytes(&mut input, &mut rng, opt.max_input_bytes);
 
         let exec = execute_target(target, &input)?;
+        last_exec = Some((input.clone(), exec.events.clone(), exec.status, exec.findings.clone()));
         executed += 1;
 
         let new_edges: Vec<u64> = exec
@@ -226,13 +228,13 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
     let status = if crash_count == 0 { ExitStatus::Pass } else { ExitStatus::Fail };
     let report_path = artifacts_dir.join("report.json");
 
-    let summary = RunSummary {
+    let mut summary = RunSummary {
         status,
         mode: RunMode::Fuzz,
         identity: RunIdentity {
             run_id: run_id.clone(),
             seed,
-            trace_path: crash_trace_path.map(|p| p.to_string_lossy().to_string()),
+            trace_path: crash_trace_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             report_path: Some(report_path.to_string_lossy().to_string()),
             artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
         },
@@ -257,6 +259,21 @@ pub fn fuzz(config: &Config, target: &FuzzTarget, opt: &FuzzOptions) -> FozzyRes
         artifacts_dir.join("coverage.json"),
         serde_json::to_vec_pretty(&coverage_stats)?,
     )?;
+
+    if let Some(record_path) = &opt.record_trace_to {
+        if crash_trace_path.is_none() {
+            let (input, events, exec_status, exec_findings) = last_exec
+                .unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new()));
+            let mut trace_summary = summary.clone();
+            trace_summary.status = exec_status;
+            trace_summary.findings = exec_findings;
+            trace_summary.identity.trace_path = Some(record_path.to_string_lossy().to_string());
+            let trace = TraceFile::new_fuzz(target_string(target), &input, events, trace_summary);
+            trace.write_json(record_path)?;
+            summary.identity.trace_path = Some(record_path.to_string_lossy().to_string());
+        }
+    }
+
     Ok(crate::RunResult { summary })
 }
 
