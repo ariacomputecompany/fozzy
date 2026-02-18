@@ -244,6 +244,18 @@ enum Command {
     Doctor {
         #[arg(long)]
         deep: bool,
+
+        /// Scenario path for deterministic repeated-run audit (used with --deep).
+        #[arg(long)]
+        scenario: Option<PathBuf>,
+
+        /// Number of repeated deterministic runs for audit (minimum 2).
+        #[arg(long, default_value_t = 3)]
+        runs: u32,
+
+        /// Fixed seed used by deterministic audit runs.
+        #[arg(long)]
+        seed: Option<u64>,
     },
 
     /// Print environment + capability backend info
@@ -522,8 +534,21 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
-        Command::Doctor { deep } => {
-            let report = fozzy::doctor(config, *deep)?;
+        Command::Doctor {
+            deep,
+            scenario,
+            runs,
+            seed,
+        } => {
+            let report = fozzy::doctor(
+                config,
+                &fozzy::DoctorOptions {
+                    deep: *deep,
+                    scenario: scenario.clone().map(ScenarioPath::new),
+                    runs: *runs,
+                    seed: *seed,
+                },
+            )?;
             print_json_or_text(cli, &report)?;
             Ok(ExitCode::SUCCESS)
         }

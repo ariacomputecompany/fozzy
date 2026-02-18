@@ -85,7 +85,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy doctor".to_string(),
                 when: "Diagnose environment issues and sources of nondeterminism before trusting replay in CI.".to_string(),
-                how: "fozzy doctor --deep --json.".to_string(),
+                how: "fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 123 --json.".to_string(),
             },
             UsageItem {
                 command: "fozzy env".to_string(),

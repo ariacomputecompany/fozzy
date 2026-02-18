@@ -63,7 +63,7 @@ REPORT:
   fozzy report flaky <run-id|trace> <run-id|trace> [more...]
 
 DOCTOR:
-  fozzy doctor [--deep] [--json]
+  fozzy doctor [--deep] [--scenario <path>] [--runs <n>] [--seed <n>] [--json]
 
 GLOBAL FLAGS:
   --config <path>        default: fozzy.toml
