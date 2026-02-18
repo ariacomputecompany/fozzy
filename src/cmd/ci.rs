@@ -11,6 +11,7 @@ pub struct CiOptions {
     pub trace: PathBuf,
     pub flake_runs: Vec<String>,
     pub flake_budget_pct: Option<FlakeBudget>,
+    pub strict: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,14 +34,20 @@ pub fn ci_command(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
     let mut checks = Vec::new();
 
     let verify = verify_trace_file(&opt.trace)?;
+    let strict_integrity_ok = verify.checksum_present && verify.checksum_valid && verify.warnings.is_empty();
     checks.push(CiCheck {
         name: "trace_verify".to_string(),
-        ok: verify.ok,
-        detail: if verify.warnings.is_empty() {
-            None
-        } else {
-            Some(verify.warnings.join("; "))
-        },
+        ok: verify.ok && (!opt.strict || strict_integrity_ok),
+        detail: Some(format!(
+            "checksum_present={} checksum_valid={} warnings={}",
+            verify.checksum_present,
+            verify.checksum_valid,
+            if verify.warnings.is_empty() {
+                "<none>".to_string()
+            } else {
+                verify.warnings.join("; ")
+            }
+        )),
     });
 
     let trace = TraceFile::read_json(&opt.trace)?;
@@ -176,6 +183,7 @@ mod tests {
                 trace,
                 flake_runs: Vec::new(),
                 flake_budget_pct: None,
+                strict: false,
             },
         )
         .expect("ci command");

@@ -203,3 +203,46 @@ fn non_finite_flake_budget_is_rejected() {
     ]);
     assert_eq!(ci_nan.status.code(), Some(2), "ci NaN should be rejected");
 }
+
+#[test]
+fn strict_rejects_checksumless_trace_in_verify_and_ci() {
+    let ws = temp_workspace("strict-checksum");
+    let trace = ws.join("no-checksum.fozzy");
+    let raw = r#"{
+      "format":"fozzy-trace",
+      "version":2,
+      "engine":{"version":"0.1.0"},
+      "mode":"run",
+      "scenario_path":null,
+      "scenario":{"version":1,"name":"x","steps":[]},
+      "decisions":[],
+      "events":[],
+      "summary":{
+        "status":"pass",
+        "mode":"run",
+        "identity":{"runId":"r1","seed":1},
+        "startedAt":"2026-01-01T00:00:00Z",
+        "finishedAt":"2026-01-01T00:00:00Z",
+        "durationMs":0
+      }
+    }"#;
+    std::fs::write(&trace, raw).expect("write trace");
+    let trace_arg = trace.to_string_lossy().to_string();
+
+    let strict_verify = run_cli(&[
+        "--strict".into(),
+        "trace".into(),
+        "verify".into(),
+        trace_arg.clone(),
+        "--json".into(),
+    ]);
+    assert_eq!(strict_verify.status.code(), Some(2), "strict trace verify should fail");
+
+    let strict_ci = run_cli(&[
+        "--strict".into(),
+        "ci".into(),
+        trace_arg,
+        "--json".into(),
+    ]);
+    assert_eq!(strict_ci.status.code(), Some(2), "strict ci should fail");
+}

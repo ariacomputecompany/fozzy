@@ -566,10 +566,20 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                 TraceCommand::Verify { path } => {
                     let out = fozzy::verify_trace_file(path)?;
                     print_json_or_text(cli, &out)?;
-                    if cli.strict && !out.warnings.is_empty() {
+                    if cli.strict && (!out.checksum_present || !out.checksum_valid || !out.warnings.is_empty()) {
+                        let mut reasons = Vec::new();
+                        if !out.checksum_present {
+                            reasons.push("checksum missing".to_string());
+                        }
+                        if !out.checksum_valid {
+                            reasons.push("checksum invalid".to_string());
+                        }
+                        if !out.warnings.is_empty() {
+                            reasons.push(format!("warnings: {}", out.warnings.join("; ")));
+                        }
                         return Err(anyhow::anyhow!(
-                            "strict mode: trace verify produced warnings: {}",
-                            out.warnings.join("; ")
+                            "strict mode: trace verify failed integrity policy ({})",
+                            reasons.join(", ")
                         ));
                     }
                 }
@@ -671,6 +681,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     trace: trace.clone(),
                     flake_runs: flake_runs.clone(),
                     flake_budget_pct: *flake_budget,
+                    strict: cli.strict,
                 },
             )?;
             print_json_or_text(cli, &out)?;
