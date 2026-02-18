@@ -92,11 +92,13 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Contract/spec documented in `SDK-TS.md`
 - ✅ Production NPM package scaffolded in `sdk-ts/` with full CLI command parity wrapper
 - ✅ Streaming helper (`stream(...)`) and scenario builder helpers (`ScenarioBuilder`, `DistributedScenarioBuilder`)
+- ✅ Type-safe SDK pipeline: strict TS config, declaration output (`dist/index.d.ts`), prepack typecheck+build
 
 ### M9 CI + Reporting
 - ✅ JSON + JUnit + HTML report outputs
 - ✅ `fozzy report show` and basic `fozzy report query --jq` support
 - ✅ `fozzy report query --jq` now supports array wildcard paths (e.g. `.findings[].title`)
+- ✅ `fozzy report query --jq` accepts jq-style path ergonomics (`findings[0].title`, `$.findings[0].title`)
 - ✅ `artifacts ls` supports both run-id and `.fozzy` trace paths
 - ✅ Timeline artifact output (`timeline.json`) included in artifact listing
 - ✅ Global CLI flags (like `--json`) are accepted before or after subcommand

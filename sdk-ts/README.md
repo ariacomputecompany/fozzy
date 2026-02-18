@@ -6,12 +6,15 @@ TypeScript SDK for the `fozzy` Rust CLI.
 - Full command parity for `init/test/run/fuzz/explore/replay/shrink/corpus/artifacts/report/doctor/env/version/usage`
 - Streaming helper for long-running commands
 - Scenario builder helpers for `steps` and `distributed` scenario JSON
+- Strict type-safe build with generated declaration file (`dist/index.d.ts`)
 
 ## Install
 
 ```bash
 npm install fozzy-sdk
 ```
+
+`fozzy-sdk` ships types via `types` export and generates `dist/index.d.ts` at build/prepack.
 
 ## Quick Start
 

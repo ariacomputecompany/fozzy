@@ -135,16 +135,11 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<RunSummary> {
 
 fn query_value(root: &serde_json::Value, expr: &str) -> FozzyResult<serde_json::Value> {
     let expr = expr.trim();
-    if expr == "." {
+    if expr == "." || expr == "$" {
         return Ok(root.clone());
     }
-    if !expr.starts_with('.') {
-        return Err(FozzyError::Report(format!(
-            "unsupported jq expression {expr:?}; supported forms: '.', '.a.b', '.arr[0]'"
-        )));
-    }
-
-    let tokens = parse_expr(expr)?;
+    let normalized = normalize_query_expr(expr)?;
+    let tokens = parse_expr(&normalized)?;
     let mut current: Vec<&serde_json::Value> = vec![root];
     for token in tokens {
         let mut next = Vec::new();
@@ -187,6 +182,36 @@ fn query_value(root: &serde_json::Value, expr: &str) -> FozzyResult<serde_json::
     Ok(serde_json::Value::Array(
         current.into_iter().cloned().collect(),
     ))
+}
+
+fn normalize_query_expr(expr: &str) -> FozzyResult<String> {
+    if expr.is_empty() {
+        return Err(FozzyError::Report(
+            "empty jq expression; examples: '.', '.identity.runId', 'findings[0].title', '.findings[].title'"
+                .to_string(),
+        ));
+    }
+
+    if let Some(rest) = expr.strip_prefix("$.") {
+        return Ok(format!(".{rest}"));
+    }
+    if let Some(rest) = expr.strip_prefix('$') {
+        if rest.starts_with('[') {
+            return Ok(format!(".{rest}"));
+        }
+        return Err(FozzyError::Report(format!(
+            "unsupported jq expression {expr:?}; supported path subset examples: '.', '.a.b', 'a.b', '.arr[0]', '.arr[].field'"
+        )));
+    }
+    if expr.starts_with('.') {
+        return Ok(expr.to_string());
+    }
+    if expr.starts_with('[') || expr.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
+        return Ok(format!(".{expr}"));
+    }
+    Err(FozzyError::Report(format!(
+        "unsupported jq expression {expr:?}; supported path subset examples: '.', '.a.b', 'a.b', '.arr[0]', '.arr[].field'"
+    )))
 }
 
 #[derive(Debug, Clone)]
