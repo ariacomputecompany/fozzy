@@ -24,6 +24,86 @@ fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
     serde_json::from_str(s.trim()).expect("stdout json")
 }
 
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            let lsb = crc & 1;
+            crc >>= 1;
+            if lsb != 0 {
+                crc ^= 0xEDB8_8320;
+            }
+        }
+    }
+    !crc
+}
+
+fn build_zip_with_raw_entries(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
+    let mut out = Vec::<u8>::new();
+    let mut central = Vec::<u8>::new();
+    let mut offsets = Vec::<u32>::new();
+
+    for (name, payload) in entries {
+        let offset = out.len() as u32;
+        offsets.push(offset);
+        let crc = crc32(payload);
+        let name_len = name.len() as u16;
+        let size = payload.len() as u32;
+
+        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&name_len.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name);
+        out.extend_from_slice(payload);
+    }
+
+    let cd_offset = out.len() as u32;
+    for ((name, payload), offset) in entries.iter().zip(offsets.iter().copied()) {
+        let crc = crc32(payload);
+        let name_len = name.len() as u16;
+        let size = payload.len() as u32;
+        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&name_len.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u32.to_le_bytes());
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(name);
+    }
+    let cd_size = central.len() as u32;
+    out.extend_from_slice(&central);
+
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    out.extend_from_slice(&cd_size.to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
 #[test]
 fn common_global_and_mode_flags_parse_across_run_like_commands() {
     let ws = temp_workspace("parity");
@@ -395,6 +475,61 @@ fn artifacts_help_uses_run_or_trace_value_name() {
             stdout.contains("RUN_OR_TRACE"),
             "help should show RUN_OR_TRACE for artifacts {sub}; got: {stdout}"
         );
+    }
+}
+
+#[test]
+fn corpus_import_rejects_raw_duplicate_entries_in_strict_and_non_strict() {
+    let ws = temp_workspace("corpus-dup-raw");
+    let zip = ws.join("dup.zip");
+    let out = ws.join("out");
+    std::fs::create_dir_all(&out).expect("out");
+    std::fs::write(&zip, build_zip_with_raw_entries(&[(b"same.txt", b"A"), (b"same.txt", b"B")]))
+        .expect("zip");
+
+    for strict in [false, true] {
+        let mut args = vec!["corpus".into(), "import".into(), zip.to_string_lossy().to_string(), "--out".into(), out.to_string_lossy().to_string(), "--json".into()];
+        if strict {
+            args.insert(0, "--strict".into());
+        }
+        let outp = run_cli(&args);
+        assert_eq!(outp.status.code(), Some(2), "duplicate import must fail");
+        let doc = parse_json_stdout(&outp);
+        assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
+        assert!(doc
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("duplicate output file in archive is not allowed"));
+    }
+}
+
+#[test]
+fn corpus_import_rejects_raw_nul_collision_in_strict_and_non_strict() {
+    let ws = temp_workspace("corpus-nul-raw");
+    let zip = ws.join("nuldup.zip");
+    let out = ws.join("out");
+    std::fs::create_dir_all(&out).expect("out");
+    std::fs::write(
+        &zip,
+        build_zip_with_raw_entries(&[(b"bad\0a.txt", b"A"), (b"bad", b"B")]),
+    )
+    .expect("zip");
+
+    for strict in [false, true] {
+        let mut args = vec!["corpus".into(), "import".into(), zip.to_string_lossy().to_string(), "--out".into(), out.to_string_lossy().to_string(), "--json".into()];
+        if strict {
+            args.insert(0, "--strict".into());
+        }
+        let outp = run_cli(&args);
+        assert_eq!(outp.status.code(), Some(2), "nul collision import must fail");
+        let doc = parse_json_stdout(&outp);
+        assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
+        assert!(doc
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("unsafe archive entry path rejected"));
     }
 }
 
