@@ -213,6 +213,7 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
     let mut failed = 0u64;
     let mut skipped = 0u64;
     let mut findings = Vec::new();
+    let mut test_runs: Vec<ScenarioRun> = Vec::new();
 
     let started_at = wall_time_iso_utc();
     let started = Instant::now();
@@ -239,12 +240,15 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             ExitStatus::Pass => passed += 1,
             _ => {
                 failed += 1;
-                findings.extend(run.findings);
+                findings.extend(run.findings.clone());
+                test_runs.push(run);
                 if opt.fail_fast {
                     break;
                 }
+                continue;
             }
         }
+        test_runs.push(run);
     }
 
     let finished_at = wall_time_iso_utc();
@@ -275,6 +279,10 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
 
     std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
 
+    if let Some(record_base) = &opt.record_trace_to {
+        write_test_traces(record_base, &test_runs, seed)?;
+    }
+
     if matches!(opt.reporter, Reporter::Junit) {
         std::fs::write(artifacts_dir.join("junit.xml"), crate::render_junit_xml(&summary))?;
     }
@@ -283,6 +291,94 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
     }
 
     Ok(RunResult { summary })
+}
+
+fn write_test_traces(record_base: &PathBuf, runs: &[ScenarioRun], seed: u64) -> FozzyResult<()> {
+    if runs.is_empty() {
+        return Ok(());
+    }
+    if runs.len() == 1 {
+        let run = &runs[0];
+        let summary = RunSummary {
+            status: run.status,
+            mode: RunMode::Test,
+            identity: RunIdentity {
+                run_id: Uuid::new_v4().to_string(),
+                seed,
+                trace_path: Some(record_base.to_string_lossy().to_string()),
+                report_path: None,
+                artifacts_dir: None,
+            },
+            started_at: wall_time_iso_utc(),
+            finished_at: wall_time_iso_utc(),
+            duration_ms: 0,
+            tests: None,
+            findings: run.findings.clone(),
+        };
+        let trace = TraceFile::new(
+            RunMode::Test,
+            Some(run.scenario_path.to_string_lossy().to_string()),
+            Some(run.scenario_embedded.clone()),
+            run.decisions.decisions.clone(),
+            run.events.clone(),
+            summary,
+        );
+        trace.write_json(record_base)?;
+        return Ok(());
+    }
+
+    let parent = record_base.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let stem = record_base
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("test-trace");
+    std::fs::create_dir_all(parent)?;
+
+    for (idx, run) in runs.iter().enumerate() {
+        let out = parent.join(format!(
+            "{stem}.{}.{}.fozzy",
+            idx + 1,
+            sanitize_trace_component(&run.scenario_embedded.name)
+        ));
+        let summary = RunSummary {
+            status: run.status,
+            mode: RunMode::Test,
+            identity: RunIdentity {
+                run_id: Uuid::new_v4().to_string(),
+                seed,
+                trace_path: Some(out.to_string_lossy().to_string()),
+                report_path: None,
+                artifacts_dir: None,
+            },
+            started_at: wall_time_iso_utc(),
+            finished_at: wall_time_iso_utc(),
+            duration_ms: 0,
+            tests: None,
+            findings: run.findings.clone(),
+        };
+        let trace = TraceFile::new(
+            RunMode::Test,
+            Some(run.scenario_path.to_string_lossy().to_string()),
+            Some(run.scenario_embedded.clone()),
+            run.decisions.decisions.clone(),
+            run.events.clone(),
+            summary,
+        );
+        trace.write_json(&out)?;
+    }
+    Ok(())
+}
+
+fn sanitize_trace_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
 }
 
 pub fn run_scenario(config: &Config, scenario_path: ScenarioPath, opt: &RunOptions) -> FozzyResult<RunResult> {
@@ -660,7 +756,7 @@ fn gen_seed() -> u64 {
     u64::from_le_bytes(seed)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ScenarioRun {
     status: ExitStatus,
     findings: Vec<Finding>,
