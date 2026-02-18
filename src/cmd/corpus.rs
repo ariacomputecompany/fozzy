@@ -72,18 +72,42 @@ pub fn corpus_command(_config: &Config, command: &CorpusCommand) -> FozzyResult<
 }
 
 fn export_zip(dir: &Path, out_zip: &Path) -> FozzyResult<()> {
+    if !dir.exists() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "corpus directory not found: {}",
+            dir.display()
+        )));
+    }
+    if !dir.is_dir() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "corpus export source is not a directory: {}",
+            dir.display()
+        )));
+    }
+
     validate_output_file_path_secure(out_zip)?;
     if let Some(parent) = out_zip.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let file = File::create(out_zip)?;
-    let mut zip = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
-        .unix_permissions(0o644);
+    let file_name = out_zip
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("corpus.zip");
+    let tmp_name = format!(".{file_name}.{}.{}.tmp", std::process::id(), uuid::Uuid::new_v4());
+    let tmp_path = out_zip
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(tmp_name);
 
-    if dir.exists() {
+    let write_result = (|| -> FozzyResult<()> {
+        let file = File::create(&tmp_path)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+
+        let mut wrote_any = false;
         for entry in WalkDir::new(dir).min_depth(1) {
             let entry = entry.map_err(|e| {
                 let msg = e.to_string();
@@ -101,11 +125,30 @@ fn export_zip(dir: &Path, out_zip: &Path) -> FozzyResult<()> {
             zip.start_file(name, options)?;
             let bytes = std::fs::read(entry.path())?;
             zip.write_all(&bytes)?;
+            wrote_any = true;
+        }
+
+        if !wrote_any {
+            return Err(FozzyError::InvalidArgument(format!(
+                "corpus directory has no files to export: {}",
+                dir.display()
+            )));
+        }
+
+        zip.finish()?;
+        Ok(())
+    })();
+
+    match write_result {
+        Ok(()) => {
+            std::fs::rename(&tmp_path, out_zip)?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(err)
         }
     }
-
-    zip.finish()?;
-    Ok(())
 }
 
 fn validate_output_file_path_secure(out_file: &Path) -> FozzyResult<()> {
@@ -924,5 +967,29 @@ mod tests {
         let err = export_zip(&corpus, &out).expect_err("must reject symlink parent");
         assert!(err.to_string().contains("symlinked output path"));
         assert!(!out.exists(), "must not create zip via symlinked parent");
+    }
+
+    #[test]
+    fn export_rejects_missing_source_directory() {
+        let root = std::env::temp_dir().join(format!("fozzy-corpus-export-missing-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("root");
+        let out = root.join("out.zip");
+        let src = root.join("does-not-exist");
+
+        let err = export_zip(&src, &out).expect_err("must reject missing source");
+        assert!(err.to_string().contains("corpus directory not found"));
+        assert!(!out.exists(), "must not create zip for missing source");
+    }
+
+    #[test]
+    fn export_rejects_empty_source_directory() {
+        let root = std::env::temp_dir().join(format!("fozzy-corpus-export-empty-{}", uuid::Uuid::new_v4()));
+        let src = root.join("corpus");
+        std::fs::create_dir_all(&src).expect("src");
+        let out = root.join("out.zip");
+
+        let err = export_zip(&src, &out).expect_err("must reject empty source");
+        assert!(err.to_string().contains("corpus directory has no files to export"));
+        assert!(!out.exists(), "must not create zip for empty source");
     }
 }
