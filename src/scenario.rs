@@ -55,6 +55,10 @@ pub enum Step {
     Unfreeze,
     SetKv { key: String, value: String },
     GetKvAssert { key: String, equals: Option<String>, is_null: Option<bool> },
+    FsWrite { path: String, data: String },
+    FsReadAssert { path: String, equals: String },
+    FsSnapshot { name: String },
+    FsRestore { name: String },
     Fail { message: String },
     Panic { message: String },
 }

@@ -689,6 +689,8 @@ struct ExecCtx {
     rng: ChaCha20Rng,
     clock: crate::VirtualClock,
     kv: BTreeMap<String, String>,
+    fs: BTreeMap<String, String>,
+    fs_snapshots: BTreeMap<String, BTreeMap<String, String>>,
     decisions: DecisionLog,
     events: Vec<TraceEvent>,
     findings: Vec<Finding>,
@@ -706,6 +708,8 @@ impl ExecCtx {
             rng,
             clock: crate::VirtualClock::default(),
             kv: BTreeMap::new(),
+            fs: BTreeMap::new(),
+            fs_snapshots: BTreeMap::new(),
             decisions: DecisionLog::default(),
             events: Vec::new(),
             findings: Vec::new(),
@@ -928,6 +932,42 @@ impl ExecCtx {
                     });
                 }
 
+                Ok(())
+            }
+
+            crate::Step::FsWrite { path, data } => {
+                self.fs.insert(path.clone(), data.clone());
+                Ok(())
+            }
+
+            crate::Step::FsReadAssert { path, equals } => {
+                let got = self.fs.get(path).cloned();
+                if got.as_deref() != Some(equals.as_str()) {
+                    return Err(Finding {
+                        kind: FindingKind::Assertion,
+                        title: "fs_read_assert".to_string(),
+                        message: format!("expected {path:?} == {equals:?}, got {got:?}"),
+                        location: None,
+                    });
+                }
+                Ok(())
+            }
+
+            crate::Step::FsSnapshot { name } => {
+                self.fs_snapshots.insert(name.clone(), self.fs.clone());
+                Ok(())
+            }
+
+            crate::Step::FsRestore { name } => {
+                let Some(snapshot) = self.fs_snapshots.get(name).cloned() else {
+                    return Err(Finding {
+                        kind: FindingKind::Checker,
+                        title: "fs_restore_missing_snapshot".to_string(),
+                        message: format!("missing fs snapshot {name:?}"),
+                        location: None,
+                    });
+                };
+                self.fs = snapshot;
                 Ok(())
             }
 

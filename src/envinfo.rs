@@ -54,8 +54,8 @@ pub fn env_info(_config: &crate::Config) -> EnvInfo {
     capabilities.insert(
         "fs".to_string(),
         CapabilityInfo {
-            backend: "os".to_string(),
-            deterministic: false,
+            backend: "virtual_overlay".to_string(),
+            deterministic: true,
         },
     );
     capabilities.insert(
@@ -80,4 +80,3 @@ pub fn env_info(_config: &crate::Config) -> EnvInfo {
         capabilities,
     }
 }
-
