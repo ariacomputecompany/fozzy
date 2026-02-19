@@ -198,7 +198,11 @@ fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
     Ok(MemoryBundle {
         summary: memory.summary,
         leaks: memory.leaks,
-        graph,
+        graph: if memory.graph.is_empty() {
+            graph
+        } else {
+            memory.graph
+        },
     })
 }
 
@@ -269,6 +273,7 @@ mod tests {
                         ..MemorySummary::default()
                     },
                     leaks: Vec::new(),
+                    graph: MemoryGraph::default(),
                 }),
                 decisions: Vec::new(),
                 events: Vec::new(),

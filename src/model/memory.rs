@@ -97,6 +97,12 @@ pub struct MemoryGraph {
     pub edges: Vec<MemoryGraphEdge>,
 }
 
+impl MemoryGraph {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.edges.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryRunReport {
     #[serde(rename = "schemaVersion")]
@@ -117,6 +123,8 @@ pub struct MemoryTrace {
     pub summary: MemorySummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub leaks: Vec<MemoryLeak>,
+    #[serde(default, skip_serializing_if = "MemoryGraph::is_empty")]
+    pub graph: MemoryGraph,
 }
 
 impl MemoryRunReport {
@@ -125,6 +133,7 @@ impl MemoryRunReport {
             options: self.options.clone(),
             summary: self.summary.clone(),
             leaks: self.leaks.clone(),
+            graph: self.graph.clone(),
         }
     }
 }
