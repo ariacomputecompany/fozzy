@@ -1,46 +1,90 @@
 # Fozzy
 
-Deterministic full-stack testing: test, replay, shrink, fuzz, and distributed exploration via one engine and one CLI.
+Fozzy is a deterministic testing engine for systems code.
+It provides one Rust-native runtime and one CLI for test execution, fuzzing, distributed schedule exploration, replay, and shrinking.
 
-Status: pre-1.0. This repository is being implemented from [PLAN.md](PLAN.md).
+## Why Teams Use Fozzy
 
-## What Bugs Fozzy Catches
+Fozzy is designed to catch and debug high-cost failures that traditional test runners miss:
 
-Fozzy is built to catch high-cost bugs that normal unit/integration runs miss:
-
-- Nondeterministic failures: race/order bugs that pass once and fail once.
+- Nondeterministic failures: order/race behavior that is hard to reproduce.
 - Distributed consistency bugs: partition/heal/crash/restart edge cases.
-- Timeout and hang regressions: deterministic virtual-time and replayed schedule checks.
-- Flaky test behavior: run-set variance and flake budget enforcement.
-- Input robustness bugs: malformed input, parser edge cases, and fuzz-discovered crashes.
-- Replay drift: cases where a recorded failure no longer reproduces exactly.
-- Artifact integrity issues: corrupted traces, missing checksums (in strict mode), broken exports.
+- Timeout and hang regressions: deterministic virtual-time validation.
+- Flakiness drift: run-set variance and flake-budget policy gates.
+- Input robustness bugs: malformed inputs and mutation-discovered crashes.
+- Replay drift: when a recorded failure no longer reproduces exactly.
+- Artifact integrity problems: corrupted traces, invalid checksums, broken exports.
 
-Outcome: failures are reproducible, shrinkable, and diagnosable, so teams spend less time on “cannot reproduce” and more time fixing root cause.
+Result: every failure can be recorded, replayed, minimized, and shared as a reproducible artifact.
 
-## Execution Scope
+## Core Product Guarantees
 
-Fozzy is a scenario engine with deterministic-first capability backends.
+- Deterministic runtime in `--det` mode (seeded RNG, virtual time, decision logging).
+- Replay-safe trace model (`.fozzy`) with schema/version + checksum integrity support.
+- Strict mode (`--strict`) to promote warning-like conditions to hard failures.
+- Atomic artifact writes and collision-safe recording policies.
+- Machine-readable JSON outputs across run, replay, report, and CI gating flows.
 
-- `proc` defaults to scripted (`proc_when` + `proc_spawn`) for deterministic/replay-safe behavior.
-- `proc` host execution is opt-in for non-deterministic runs via `--proc-backend host` (for `fozzy run` / `fozzy test`).
-- Host `proc_spawn` results are captured in trace decisions so `fozzy replay` stays deterministic without re-executing host processes.
-- `http` defaults to scripted (`http_when` + `http_request`); host HTTP is opt-in via `--http-backend host` (plain `http://` endpoints only).
-- Host `http_request` results are captured in trace decisions so replay does not re-issue outbound requests.
-- `fs` defaults to deterministic virtual overlay semantics; host filesystem mode is opt-in via `--fs-backend host` and sandboxed to the current working directory root.
-- Host backends are rejected in deterministic mode (`--det`) with explicit contract errors.
+## Runtime Backends
 
-Use `fozzy env --json` to inspect active capability backends.
+Fozzy uses deterministic-first capability backends, with host execution available explicitly when needed.
 
-## Test Modes
+- Process:
+`scripted` (`proc_when` + `proc_spawn`) by default, optional host mode via `--proc-backend host`.
+- Filesystem:
+`virtual` overlay by default, optional host mode via `--fs-backend host` (cwd-root sandboxed).
+- HTTP:
+`scripted` (`http_when` + `http_request`) by default, optional host mode via `--http-backend host`.
 
-- `fozzy test`: scenario suite execution for normal CI pipelines (scenario files, not direct shell/cargo/jest command execution).
-- `fozzy run`: single-scenario deterministic debug loop.
-- `fozzy fuzz`: coverage/property fuzzing with trace capture and shrink.
-- `fozzy explore`: schedule/fault exploration for distributed scenarios.
-- `fozzy replay`: exact failure reproduction from a `.fozzy` trace.
-- `fozzy shrink`: minimization to smallest actionable reproducer.
-- `fozzy ci`: canonical gate bundle for trace verify + replay + export integrity (+ optional flake budget).
+Host backends are non-deterministic execution modes and are rejected with `--det`.
+Host proc/http outcomes are captured as replay decisions so `fozzy replay` remains deterministic.
+
+Inspect active runtime capabilities with:
+
+```bash
+fozzy env --json
+```
+
+## CLI Surface
+
+- `fozzy test`: execute scenario suites.
+- `fozzy run`: execute a single scenario.
+- `fozzy fuzz`: mutation/property fuzzing.
+- `fozzy explore`: deterministic distributed schedule/fault exploration.
+- `fozzy replay`: reproduce a recorded trace.
+- `fozzy shrink`: minimize failing traces.
+- `fozzy ci`: local gate bundle (verify + replay + artifact integrity + optional flake budget).
+- `fozzy report`: render/query reports.
+- `fozzy artifacts`: list/export/pack run artifacts.
+
+Full command contract: [CLI.md](CLI.md)
+
+## Quickstart
+
+```bash
+fozzy init --force
+fozzy run tests/example.fozzy.json --det --json
+```
+
+Record/replay/shrink flow:
+
+```bash
+fozzy run tests/fail.fozzy.json --det --json
+fozzy replay .fozzy/runs/<runId>/trace.fozzy --json
+fozzy shrink .fozzy/runs/<runId>/trace.fozzy --minimize all --json
+```
+
+Gate a trace before merge:
+
+```bash
+fozzy ci .fozzy/runs/<runId>/trace.fozzy --json
+```
+
+Strict integrity check:
+
+```bash
+fozzy --strict trace verify .fozzy/runs/<runId>/trace.fozzy --json
+```
 
 ## Install (dev)
 
@@ -49,51 +93,12 @@ cargo install --path .
 fozzy version --json
 ```
 
-## Quickstart
+## Repository Docs
 
-Initialize a project and run the example scenario:
-
-```bash
-fozzy init --force
-fozzy run tests/example.fozzy.json --det --json
-```
-
-Record a trace on failure, then replay and shrink it:
-
-```bash
-fozzy run tests/fail.fozzy.json --det --json
-fozzy replay .fozzy/runs/<runId>/trace.fozzy --json
-fozzy shrink .fozzy/runs/<runId>/trace.fozzy --minimize all --json
-```
-
-Run a local production-style gate for a trace:
-
-```bash
-fozzy ci .fozzy/runs/<runId>/trace.fozzy --json
-```
-
-Verify trace integrity and enforce strict checksum/warning policy:
-
-```bash
-fozzy --strict trace verify .fozzy/runs/<runId>/trace.fozzy --json
-```
-
-Create a reproducer bundle (trace/report/events + env/version/commandline):
-
-```bash
-fozzy artifacts pack .fozzy/runs/<runId>/trace.fozzy --out repro.zip --json
-```
-
-## CLI
-
-The canonical CLI surface is documented in [CLI.md](CLI.md).
-
-## Repo Docs
-
-- [PLAN.md](PLAN.md): execution plan / milestones
-- [RUST-STYLE-GUIDE.md](RUST-STYLE-GUIDE.md): Rust conventions for this codebase
-- [SDK-TS.md](SDK-TS.md): TypeScript SDK contract (thin wrapper over the binary)
-- [sdk-ts/](sdk-ts/): production TypeScript SDK package scaffold (`fozzy-sdk`)
+- [PLAN.md](PLAN.md): production milestone checklist
+- [RUST-STYLE-GUIDE.md](RUST-STYLE-GUIDE.md): Rust coding conventions
+- [SDK-TS.md](SDK-TS.md): TypeScript SDK contract
+- [sdk-ts/](sdk-ts/): TypeScript SDK package (`fozzy-sdk`)
 
 ## License
 
