@@ -173,68 +173,68 @@ Fozzy is a deterministic full-stack testing platform built from first principles
   - ✅ Replay contracts enforced for host execution (proc/http decision capture + legacy warning diagnostics)
 
 ### M12 Memory Mode (Deterministic Memory Correctness Engine)
-- ⬜ Memory capability contract finalized (`memory` as first-class runtime capability, deterministic-first, replay-first)
+- ✅ Memory capability contract finalized (`memory` as first-class runtime capability, deterministic-first, replay-first)
 - ⬜ Schema strategy finalized (trace + report + manifest + memory artifacts versioning)
 - ⬜ Deterministic memory execution contract implemented:
-  - ⬜ Allocation order determinism
-  - ⬜ Leak determinism
-  - ⬜ OOM determinism
+  - ✅ Allocation order determinism
+  - ✅ Leak determinism
+  - ✅ OOM determinism
   - ⬜ Shrink determinism
 
 #### M12.1 Deterministic Tracking Foundation
-- ⬜ Runtime memory state integrated into core execution context (`ExecCtx`) without breaking existing capability patterns
-- ⬜ Deterministic allocation id generation + callsite hashing
-- ⬜ Allocation lifetime recording (alloc/free/in-use/peak)
-- ⬜ Seed-stable allocation ordering preserved under replay
-- ⬜ Memory counters surfaced in `report.json` and `manifest.json`
+- ✅ Runtime memory state integrated into core execution context (`ExecCtx`) without breaking existing capability patterns
+- ✅ Deterministic allocation id generation + callsite hashing
+- ✅ Allocation lifetime recording (alloc/free/in-use/peak)
+- ✅ Seed-stable allocation ordering preserved under replay
+- ✅ Memory counters surfaced in `report.json` and `manifest.json`
 - ⬜ `memory.timeline.json` artifact emitted with stable ordering + schema tag
 
 #### M12.2 Deterministic Leak Detection
-- ⬜ End-of-run leak accounting implemented and replay-stable
-- ⬜ Leak findings integrated with existing finding taxonomy and strict-mode semantics
-- ⬜ Leak budget policy implemented (`--leak-budget`)
-- ⬜ Leak hard-fail policy implemented (`--fail-on-leak`)
-- ⬜ `memory.leaks.json` artifact emitted and included in artifacts list/export/pack
-- ⬜ CI/report integration:
-  - ⬜ `fozzy ci` checks include deterministic leak policy when memory mode is enabled
-  - ⬜ `fozzy report` surfaces leak counts and budget status
+- ✅ End-of-run leak accounting implemented and replay-stable
+- ✅ Leak findings integrated with existing finding taxonomy and strict-mode semantics
+- ✅ Leak budget policy implemented (`--leak-budget`)
+- ✅ Leak hard-fail policy implemented (`--fail-on-leak`)
+- ✅ `memory.leaks.json` artifact emitted and included in artifacts list/export/pack
+- ✅ CI/report integration:
+  - ✅ `fozzy ci` checks include deterministic leak policy when memory mode is enabled
+  - ✅ `fozzy report` surfaces leak counts and budget status
 
 #### M12.3 Deterministic Memory Pressure + OOM Injection
-- ⬜ Virtual memory ceiling support (`--mem-limit-mb`) implemented and replay-stable
-- ⬜ Allocation failure scripting (`--mem-fail-after`) implemented and replay-stable
-- ⬜ Runtime API hooks for memory pressure behavior implemented
-- ⬜ Replay drift detection includes memory-failure decision mismatches
-- ⬜ Deterministic/host-mode contracts documented and enforced
+- ✅ Virtual memory ceiling support (`--mem-limit-mb`) implemented and replay-stable
+- ✅ Allocation failure scripting (`--mem-fail-after`) implemented and replay-stable
+- ✅ Runtime API hooks for memory pressure behavior implemented
+- ✅ Replay drift detection includes memory-failure decision mismatches
+- ✅ Deterministic/host-mode contracts documented and enforced
 
 #### M12.4 Memory-Aware Shrinking
-- ⬜ Shrink objective extended to preserve leak/non-leak outcome class
+- ✅ Shrink objective extended to preserve leak/non-leak outcome class
 - ⬜ Leak-minimal reproduction strategy implemented
-- ⬜ Memory delta comparison artifact added (`memory.delta.json`)
-- ⬜ Shrink output remains replayable and deterministic
-- ⬜ Existing shrink behavior for non-memory traces remains unchanged
+- ✅ Memory delta comparison artifact added (`memory.delta.json`)
+- ✅ Shrink output remains replayable and deterministic
+- ✅ Existing shrink behavior for non-memory traces remains unchanged
 
 #### M12.5 Memory Forensics Artifacts
-- ⬜ Allocation graph model implemented
-- ⬜ `memory.graph.json` artifact emitted with stable deterministic node/edge ordering
-- ⬜ Artifact diff/export/pack support includes memory graph + memory deltas
+- ✅ Allocation graph model implemented
+- ✅ `memory.graph.json` artifact emitted with stable deterministic node/edge ordering
+- ✅ Artifact diff/export/pack support includes memory graph + memory deltas
 - ⬜ Artifact schema docs published for all memory artifact types
 
 #### M12.6 Memory Pressure Fuzzing / Explore Integration
-- ⬜ Fuzz mode integrates memory pressure controls without replay drift
-- ⬜ Explore mode supports deterministic memory pressure fault scheduling
-- ⬜ Fragmentation/pressure-wave controls designed and shipped behind explicit flags
+- ✅ Fuzz mode integrates memory pressure controls without replay drift
+- ✅ Explore mode supports deterministic memory pressure fault scheduling
+- ✅ Fragmentation/pressure-wave controls designed and shipped behind explicit flags
 - ⬜ Coverage/checker model extended for memory-pressure outcomes
 
 #### M12.7 CLI / SDK / Docs Parity
-- ⬜ CLI flags shipped and documented:
-  - ⬜ `--mem-track`
-  - ⬜ `--mem-limit-mb`
-  - ⬜ `--mem-fail-after`
-  - ⬜ `--fail-on-leak`
-  - ⬜ `--leak-budget`
-  - ⬜ `--mem-artifacts`
-- ⬜ `fozzy usage`, `CLI.md`, `README.md`, and scenario docs updated
-- ⬜ TS SDK parity shipped (`sdk-ts/` and `SDK-TS.md`) for all new memory controls
+- ✅ CLI flags shipped and documented:
+  - ✅ `--mem-track`
+  - ✅ `--mem-limit-mb`
+  - ✅ `--mem-fail-after`
+  - ✅ `--fail-on-leak`
+  - ✅ `--leak-budget`
+  - ✅ `--mem-artifacts`
+- ✅ `fozzy usage`, `CLI.md`, `README.md`, and scenario docs updated
+- ✅ TS SDK parity shipped (`sdk-ts/` and `SDK-TS.md`) for all new memory controls
 
 #### M12.8 Verification / Hardening Gate (Production)
 - ⬜ Unit tests:
@@ -246,25 +246,25 @@ Fozzy is a deterministic full-stack testing platform built from first principles
   - ⬜ golden flow coverage for memory run/test/fuzz/explore paths
   - ⬜ CLI parity tests for all memory flags and strict-mode behaviors
   - ⬜ artifacts list/diff/export/pack coverage for memory artifacts
-- ⬜ Determinism audit command gates added for memory scenarios
+- ✅ Determinism audit command gates added for memory scenarios
 - ⬜ End-to-end required gate sequence for memory shipping:
-  - ⬜ `fozzy doctor --deep --scenario <memory_scenario> --runs 5 --seed <seed> --json`
-  - ⬜ `fozzy test --det --strict <memory_scenarios...> --json`
-  - ⬜ `fozzy run <memory_scenario> --det --record <trace.fozzy> --json`
-  - ⬜ `fozzy trace verify <trace.fozzy> --strict --json`
-  - ⬜ `fozzy replay <trace.fozzy> --json`
-  - ⬜ `fozzy ci <trace.fozzy> --json`
-- ⬜ Host-backed runtime checks executed where feasible for delivery confidence:
-  - ⬜ `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
+  - ✅ `fozzy doctor --deep --scenario <memory_scenario> --runs 5 --seed <seed> --json`
+  - ✅ `fozzy test --det --strict <memory_scenarios...> --json`
+  - ✅ `fozzy run <memory_scenario> --det --record <trace.fozzy> --json`
+  - ✅ `fozzy trace verify <trace.fozzy> --strict --json`
+  - ✅ `fozzy replay <trace.fozzy> --json`
+  - ✅ `fozzy ci <trace.fozzy> --json`
+- ✅ Host-backed runtime checks executed where feasible for delivery confidence:
+  - ✅ `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
 
 ## Production Backlog (Next Execution Order)
-1. ⬜ Execute M12.1 deterministic memory tracking foundation.
-2. ⬜ Execute M12.2 deterministic leak detection + CI/report policy integration.
-3. ⬜ Execute M12.3 memory pressure limits + deterministic OOM injection.
+1. ✅ Execute M12.1 deterministic memory tracking foundation.
+2. ✅ Execute M12.2 deterministic leak detection + CI/report policy integration.
+3. ✅ Execute M12.3 memory pressure limits + deterministic OOM injection.
 4. ⬜ Execute M12.4 memory-aware shrinking (`memory.delta.json`) with replay-preservation checks.
-5. ⬜ Execute M12.5 memory forensic artifacts (`memory.graph.json`) + artifact tooling parity.
-6. ⬜ Execute M12.6 fuzz/explore memory-pressure integration.
-7. ⬜ Execute M12.7 CLI/SDK/docs parity.
+5. ✅ Execute M12.5 memory forensic artifacts (`memory.graph.json`) + artifact tooling parity.
+6. ✅ Execute M12.6 fuzz/explore memory-pressure integration.
+7. ✅ Execute M12.7 CLI/SDK/docs parity.
 8. ⬜ Execute M12.8 hardening gate and production release criteria.
 
 ## Definition of Done for 1.0
