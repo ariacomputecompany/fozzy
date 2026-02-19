@@ -18,6 +18,7 @@ fozzy [GLOBAL_FLAGS] <COMMAND> [ARGS] [COMMAND_FLAGS]
 ```
 
 Global flags can be placed before or after subcommands.
+Strict mode is enabled by default; pass `--unsafe` to opt out.
 
 ## Global Flags
 
@@ -30,7 +31,8 @@ Global flags can be placed before or after subcommands.
 | `--fs-backend <virtual\|host>` | Filesystem backend for `fs_*` steps (default from config: `virtual`) |
 | `--http-backend <scripted\|host>` | HTTP backend for `http_*` steps (default from config: `scripted`) |
 | `--json` | Emit machine-readable JSON |
-| `--strict` | Promote warning-like conditions to failures |
+| `--strict` | Keep strict mode enabled (default behavior) |
+| `--unsafe` | Opt out of strict mode and run relaxed checks |
 | `--no-color` | Disable ANSI color output |
 
 ## Command Surface
@@ -74,6 +76,7 @@ fozzy test [globs...] [--det] [--seed <n>] [--jobs <n>] [--timeout <dur>] \
 `fozzy test` executes Fozzy scenario files. It does not directly launch arbitrary host test commands.
 For host execution, use `--proc-backend host`, `--fs-backend host`, and/or `--http-backend host` (non-deterministic mode only). Host-process and host-http responses are captured as replay decisions so `fozzy replay` remains deterministic.
 `http_request` supports request `headers` and response `expect_headers` assertions.
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `run`
 
@@ -84,6 +87,7 @@ fozzy run <scenario> [--det] [--seed <n>] [--timeout <dur>] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
 ```
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `fuzz`
 
@@ -95,6 +99,7 @@ fozzy fuzz <target> [--mode coverage|property] [--seed <n>] [--time <dur>] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
 ```
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `explore`
 
@@ -112,18 +117,21 @@ fozzy explore <scenario> [--seed <n>] [--time <dur>] [--steps <n>] [--nodes <n>]
 `--checker`: `kv_all_equal:<key> | kv_present_on_all:<key> | kv_node_equals:<node>:<key>:<value>`
 
 `--checker` overrides scenario invariants. `kv_all_equal` is evaluated as final-state convergence.
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `replay`
 
 ```bash
 fozzy replay <trace.fozzy> [--step] [--until <dur>] [--dump-events] [--reporter <json|pretty|junit|html>]
 ```
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `trace verify`
 
 ```bash
 fozzy trace verify <trace.fozzy>
 ```
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `shrink`
 
@@ -131,6 +139,7 @@ fozzy trace verify <trace.fozzy>
 fozzy shrink <trace.fozzy> [--out <trace>] [--budget <dur>] [--aggressive] \
   [--minimize input|schedule|faults|all] [--reporter <json|pretty|junit|html>]
 ```
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `corpus`
 
@@ -170,12 +179,14 @@ fozzy report flaky <run-id|trace> <run-id|trace> [more...] [--flake-budget <pct>
 ```bash
 fozzy doctor [--deep] [--scenario <path>] [--runs <n>] [--seed <n>]
 ```
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `ci`
 
 ```bash
 fozzy ci <trace.fozzy> [--flake-run <run-id|trace>]... [--flake-budget <pct>]
 ```
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `env`
 

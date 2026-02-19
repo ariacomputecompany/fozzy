@@ -324,6 +324,7 @@ fn strict_mode_fails_on_stale_trace_verify_warnings() {
         "verify".into(),
         trace_arg.clone(),
         "--json".into(),
+        "--unsafe".into(),
     ]);
     assert_eq!(ok.status.code(), Some(0), "non-strict should pass");
 

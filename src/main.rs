@@ -37,9 +37,13 @@ struct Cli {
     #[arg(long, global = true)]
     no_color: bool,
 
-    /// Treat warning-like conditions as errors (non-zero exit).
-    #[arg(long, global = true)]
+    /// Treat warning-like conditions as errors (non-zero exit). Enabled by default.
+    #[arg(long, global = true, default_value_t = true)]
     strict: bool,
+
+    /// Opt out of strict mode and allow potentially unsafe relaxed checks.
+    #[arg(long = "unsafe", global = true)]
+    unsafe_mode: bool,
 
     /// Proc backend for proc_spawn steps.
     #[arg(long, global = true)]
@@ -441,7 +445,7 @@ fn normalize_global_args(args: impl IntoIterator<Item = String>) -> Vec<String> 
     while i < all.len() {
         let arg = &all[i];
         match arg.as_str() {
-            "--json" | "--no-color" | "--strict" => {
+            "--json" | "--no-color" | "--strict" | "--unsafe" => {
                 globals.push(arg.clone());
                 i += 1;
             }
@@ -461,7 +465,8 @@ fn normalize_global_args(args: impl IntoIterator<Item = String>) -> Vec<String> 
                 || arg.starts_with("--proc-backend=")
                 || arg.starts_with("--fs-backend=")
                 || arg.starts_with("--http-backend=")
-                || arg.starts_with("--strict=") =>
+                || arg.starts_with("--strict=")
+                || arg.starts_with("--unsafe=") =>
             {
                 globals.push(arg.clone());
                 i += 1;
@@ -735,7 +740,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             match command {
                 TraceCommand::Verify { path } => {
                     let out = fozzy::verify_trace_file(path)?;
-                    if cli.strict
+                    if strict_enabled(cli)
                         && (!out.checksum_present
                             || !out.checksum_valid
                             || !out.warnings.is_empty())
@@ -818,7 +823,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                 },
             )?;
             print_json_or_text(cli, &report)?;
-            if cli.strict {
+            if strict_enabled(cli) {
                 let mut reasons = Vec::new();
                 if !report.issues.is_empty() {
                     reasons.push(format!("{} issue(s)", report.issues.len()));
@@ -855,7 +860,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     trace: trace.clone(),
                     flake_runs: flake_runs.clone(),
                     flake_budget_pct: *flake_budget,
-                    strict: cli.strict,
+                    strict: strict_enabled(cli),
                 },
             )?;
             print_json_or_text(cli, &out)?;
@@ -890,7 +895,7 @@ fn print_run_summary(cli: &Cli, summary: &RunSummary) -> anyhow::Result<()> {
 }
 
 fn enforce_strict_run(cli: &Cli, summary: &RunSummary) -> anyhow::Result<()> {
-    if !cli.strict {
+    if !strict_enabled(cli) {
         return Ok(());
     }
 
@@ -908,6 +913,10 @@ fn enforce_strict_run(cli: &Cli, summary: &RunSummary) -> anyhow::Result<()> {
         "strict mode: run contains warning findings: {}",
         warnings.join("; ")
     ))
+}
+
+fn strict_enabled(cli: &Cli) -> bool {
+    cli.strict && !cli.unsafe_mode
 }
 
 fn print_json_or_text<T: serde::Serialize>(cli: &Cli, value: &T) -> anyhow::Result<()> {

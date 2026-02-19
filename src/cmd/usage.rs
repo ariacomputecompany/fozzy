@@ -40,37 +40,37 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy test".to_string(),
                 when: "Run a suite of Fozzy scenarios in CI; turn on --det to make failures replayable. This is not a direct shell/cargo/jest runner.".to_string(),
-                how: "fozzy test --det --seed 1337 --record /tmp/test.fozzy --mem-track --fail-on-leak --leak-budget 0; with multiple scenarios, traces are /tmp/test.1.fozzy, /tmp/test.2.fozzy, etc. Host backends (`--proc-backend host`, `--fs-backend host`, `--http-backend host`) are non-det only.".to_string(),
+                how: "fozzy test --det --seed 1337 --record /tmp/test.fozzy --mem-track --fail-on-leak --leak-budget 0; with multiple scenarios, traces are /tmp/test.1.fozzy, /tmp/test.2.fozzy, etc. Host backends (`--proc-backend host`, `--fs-backend host`, `--http-backend host`) are non-det only. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy run".to_string(),
                 when: "Run a single scenario one-off while iterating locally or debugging a specific failure.".to_string(),
-                how: "fozzy run tests/example.fozzy.json --det --timeout 2s --json --mem-track --mem-limit-mb 256 --mem-fail-after 10000 --mem-artifacts; in --det mode timeout is enforced on virtual elapsed time. For host execution, use `--proc-backend host`, `--fs-backend host`, `--http-backend host` (non-det). `http_request` supports `headers` + `expect_headers` assertions.".to_string(),
+                how: "fozzy run tests/example.fozzy.json --det --timeout 2s --json --mem-track --mem-limit-mb 256 --mem-fail-after 10000 --mem-artifacts; in --det mode timeout is enforced on virtual elapsed time. For host execution, use `--proc-backend host`, `--fs-backend host`, `--http-backend host` (non-det). `http_request` supports `headers` + `expect_headers` assertions. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy replay".to_string(),
                 when: "Reproduce a failure exactly from a recorded trace, to debug without drift.".to_string(),
-                how: "fozzy replay .fozzy/runs/<runId>/trace.fozzy --dump-events --json.".to_string(),
+                how: "fozzy replay .fozzy/runs/<runId>/trace.fozzy --dump-events --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy trace verify".to_string(),
                 when: "Validate trace integrity/version before replaying or handing artifacts to CI/other teams.".to_string(),
-                how: "fozzy trace verify .fozzy/runs/<runId>/trace.fozzy --json (add --strict to fail if schema warnings are present).".to_string(),
+                how: "fozzy trace verify .fozzy/runs/<runId>/trace.fozzy --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy shrink".to_string(),
                 when: "Minimize a failing run to the smallest scenario/trace that still triggers the bug.".to_string(),
-                how: "fozzy shrink trace.fozzy --minimize all --budget 30s --json (then replay the .min.fozzy output).".to_string(),
+                how: "fozzy shrink trace.fozzy --minimize all --budget 30s --json (then replay the .min.fozzy output). Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy fuzz".to_string(),
                 when: "Find new bugs automatically by mutating inputs and exploring states; use for robustness/security testing.".to_string(),
-                how: "fozzy fuzz fn:kv --mode coverage --time 30s --record /tmp/fuzz.fozzy (record writes a trace path for both pass and fail runs).".to_string(),
+                how: "fozzy fuzz fn:kv --mode coverage --time 30s --record /tmp/fuzz.fozzy (record writes a trace path for both pass and fail runs). Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy explore".to_string(),
                 when: "Test distributed/system scenarios by exploring schedules and injecting faults deterministically.".to_string(),
-                how: "fozzy explore tests/kv.explore.fozzy.json --schedule coverage_guided --faults partition-first-two --checker kv_all_equal:k --nodes 3 --steps 200 --json.".to_string(),
+                how: "fozzy explore tests/kv.explore.fozzy.json --schedule coverage_guided --faults partition-first-two --checker kv_all_equal:k --nodes 3 --steps 200 --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy corpus".to_string(),
@@ -90,12 +90,12 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy ci".to_string(),
                 when: "Run a canonical local gate bundle for one trace: verify, replay outcome check, artifacts zip integrity, optional flake budget.".to_string(),
-                how: "fozzy ci .fozzy/runs/<runId>/trace.fozzy --flake-run <run1> --flake-run <run2> --flake-budget 5 --json.".to_string(),
+                how: "fozzy ci .fozzy/runs/<runId>/trace.fozzy --flake-run <run1> --flake-run <run2> --flake-budget 5 --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy doctor".to_string(),
                 when: "Diagnose environment issues and sources of nondeterminism before trusting replay in CI.".to_string(),
-                how: "fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 123 --json.".to_string(),
+                how: "fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 123 --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy env".to_string(),
