@@ -54,15 +54,21 @@ pub fn env_info(config: &crate::Config) -> EnvInfo {
     capabilities.insert(
         "fs".to_string(),
         CapabilityInfo {
-            backend: "virtual_overlay".to_string(),
-            deterministic: true,
+            backend: match config.fs_backend {
+                crate::FsBackend::Virtual => "virtual_overlay".to_string(),
+                crate::FsBackend::Host => "host".to_string(),
+            },
+            deterministic: matches!(config.fs_backend, crate::FsBackend::Virtual),
         },
     );
     capabilities.insert(
         "http".to_string(),
         CapabilityInfo {
-            backend: "scripted".to_string(),
-            deterministic: true,
+            backend: match config.http_backend {
+                crate::HttpBackend::Scripted => "scripted".to_string(),
+                crate::HttpBackend::Host => "host".to_string(),
+            },
+            deterministic: matches!(config.http_backend, crate::HttpBackend::Scripted),
         },
     );
     capabilities.insert(

@@ -181,6 +181,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: Reporter::Json,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
 
         let out = ci_command(
@@ -227,6 +229,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: Reporter::Json,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
 
         let err = ci_command(

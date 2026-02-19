@@ -7,7 +7,9 @@ use uuid::Uuid;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -26,6 +28,46 @@ pub enum ProcBackend {
 }
 
 impl clap::ValueEnum for ProcBackend {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Scripted, Self::Host]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::Scripted => clap::builder::PossibleValue::new("scripted"),
+            Self::Host => clap::builder::PossibleValue::new("host"),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsBackend {
+    Virtual,
+    Host,
+}
+
+impl clap::ValueEnum for FsBackend {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Virtual, Self::Host]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::Virtual => clap::builder::PossibleValue::new("virtual"),
+            Self::Host => clap::builder::PossibleValue::new("host"),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpBackend {
+    Scripted,
+    Host,
+}
+
+impl clap::ValueEnum for HttpBackend {
     fn value_variants<'a>() -> &'a [Self] {
         &[Self::Scripted, Self::Host]
     }
@@ -77,6 +119,8 @@ pub struct RunOptions {
     pub fail_fast: bool,
     pub record_collision: RecordCollisionPolicy,
     pub proc_backend: ProcBackend,
+    pub fs_backend: FsBackend,
+    pub http_backend: HttpBackend,
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +323,8 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             opt.det,
             opt.timeout,
             opt.proc_backend,
+            opt.fs_backend,
+            opt.http_backend,
         ) {
             Ok(run) => run,
             Err(FozzyError::Scenario(msg)) if msg.contains("use `fozzy explore`") => {
@@ -442,6 +488,8 @@ pub fn run_scenario(config: &Config, scenario_path: ScenarioPath, opt: &RunOptio
         opt.det,
         opt.timeout,
         opt.proc_backend,
+        opt.fs_backend,
+        opt.http_backend,
     )?;
     let finished_at = wall_time_iso_utc();
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -540,6 +588,8 @@ pub fn replay_trace(config: &Config, trace_path: TracePath, opt: &ReplayOptions)
         opt.until,
         opt.step,
         ProcBackend::Scripted,
+        FsBackend::Virtual,
+        HttpBackend::Scripted,
     )?;
 
     let finished_at = wall_time_iso_utc();
@@ -647,6 +697,8 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
                 None,
                 false,
                 ProcBackend::Scripted,
+                FsBackend::Virtual,
+                HttpBackend::Scripted,
             )?;
             if shrink_status_matches(target_status, res.status) {
                 candidate = trial;
@@ -685,6 +737,8 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
         true,
         None,
         ProcBackend::Scripted,
+        FsBackend::Virtual,
+        HttpBackend::Scripted,
     )?;
 
     let run_id = Uuid::new_v4().to_string();
@@ -774,6 +828,8 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
                     true,
                     None,
                     ProcBackend::Scripted,
+                    FsBackend::Virtual,
+                    HttpBackend::Scripted,
                 )?;
                 let sig = scenario_run_signature(&run);
                 if let Some(b) = &baseline {
@@ -860,10 +916,24 @@ fn run_scenario_inner(
     det: bool,
     timeout: Option<Duration>,
     proc_backend: ProcBackend,
+    fs_backend: FsBackend,
+    http_backend: HttpBackend,
 ) -> FozzyResult<ScenarioRun> {
     if det && matches!(proc_backend, ProcBackend::Host) {
         return Err(FozzyError::InvalidArgument(
             "host proc backend is not supported in deterministic mode; use --proc-backend scripted or disable --det"
+                .to_string(),
+        ));
+    }
+    if det && matches!(fs_backend, FsBackend::Host) {
+        return Err(FozzyError::InvalidArgument(
+            "host fs backend is not supported in deterministic mode; use --fs-backend virtual or disable --det"
+                .to_string(),
+        ));
+    }
+    if det && matches!(http_backend, HttpBackend::Host) {
+        return Err(FozzyError::InvalidArgument(
+            "host http backend is not supported in deterministic mode; use --http-backend scripted or disable --det"
                 .to_string(),
         ));
     }
@@ -883,6 +953,8 @@ fn run_scenario_inner(
         det,
         timeout,
         proc_backend,
+        fs_backend,
+        http_backend,
     )
 }
 
@@ -893,8 +965,10 @@ fn run_embedded_scenario_inner(
     det: bool,
     timeout: Option<Duration>,
     proc_backend: ProcBackend,
+    fs_backend: FsBackend,
+    http_backend: HttpBackend,
 ) -> FozzyResult<ScenarioRun> {
-    let mut ctx = ExecCtx::new(seed, det, proc_backend);
+    let mut ctx = ExecCtx::new(seed, det, proc_backend, fs_backend, http_backend);
     let started = Instant::now();
     let start_virtual_ms = ctx.clock.now_ms();
     let deadline = timeout.map(|t| started + t);
@@ -967,6 +1041,8 @@ fn run_scenario_replay_inner(
     until: Option<Duration>,
     step: bool,
     proc_backend: ProcBackend,
+    fs_backend: FsBackend,
+    http_backend: HttpBackend,
 ) -> FozzyResult<ScenarioRun> {
     if scenario.version != 1 {
         return Err(FozzyError::Scenario(format!(
@@ -975,7 +1051,7 @@ fn run_scenario_replay_inner(
         )));
     }
 
-    let mut ctx = ExecCtx::new(seed, true, proc_backend);
+    let mut ctx = ExecCtx::new(seed, true, proc_backend, fs_backend, http_backend);
     if let Some(d) = decisions {
         ctx.replay = Some(ReplayCursor::new(d));
     }
@@ -1061,11 +1137,16 @@ fn run_scenario_replay_inner(
 struct ExecCtx {
     det: bool,
     proc_backend: ProcBackend,
+    fs_backend: FsBackend,
+    http_backend: HttpBackend,
+    host_root: PathBuf,
     rng: ChaCha20Rng,
     clock: crate::VirtualClock,
     kv: BTreeMap<String, String>,
     fs: BTreeMap<String, String>,
     fs_snapshots: BTreeMap<String, BTreeMap<String, String>>,
+    host_fs_touched: BTreeSet<PathBuf>,
+    host_fs_snapshots: BTreeMap<String, BTreeMap<PathBuf, Option<Vec<u8>>>>,
     http_rules: Vec<HttpRule>,
     proc_rules: Vec<ProcRule>,
     net_queue: Vec<NetMessage>,
@@ -1081,7 +1162,13 @@ struct ExecCtx {
 }
 
 impl ExecCtx {
-    fn new(seed: u64, det: bool, proc_backend: ProcBackend) -> Self {
+    fn new(
+        seed: u64,
+        det: bool,
+        proc_backend: ProcBackend,
+        fs_backend: FsBackend,
+        http_backend: HttpBackend,
+    ) -> Self {
         let seed_bytes = blake3::hash(&seed.to_le_bytes()).as_bytes().to_owned();
         let mut seed32 = [0u8; 32];
         seed32.copy_from_slice(&seed_bytes[..32]);
@@ -1089,11 +1176,16 @@ impl ExecCtx {
         Self {
             det,
             proc_backend,
+            fs_backend,
+            http_backend,
+            host_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             rng,
             clock: crate::VirtualClock::default(),
             kv: BTreeMap::new(),
             fs: BTreeMap::new(),
             fs_snapshots: BTreeMap::new(),
+            host_fs_touched: BTreeSet::new(),
+            host_fs_snapshots: BTreeMap::new(),
             http_rules: Vec::new(),
             proc_rules: Vec::new(),
             net_queue: Vec::new(),
@@ -1164,6 +1256,138 @@ impl ExecCtx {
         } else {
             None
         }
+    }
+
+    fn resolve_host_fs_path(&self, raw: &str) -> Result<PathBuf, Finding> {
+        let path = Path::new(raw);
+        if path.is_absolute() {
+            return Err(Finding {
+                kind: FindingKind::Checker,
+                title: "host_fs_path".to_string(),
+                message: format!("host fs path must be relative to cwd root: {raw:?}"),
+                location: None,
+            });
+        }
+        for c in path.components() {
+            match c {
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(Finding {
+                        kind: FindingKind::Checker,
+                        title: "host_fs_path".to_string(),
+                        message: format!("host fs path escapes cwd root: {raw:?}"),
+                        location: None,
+                    });
+                }
+                Component::CurDir | Component::Normal(_) => {}
+            }
+        }
+        Ok(self.host_root.join(path))
+    }
+
+    fn host_fs_write(&mut self, raw_path: &str, data: &str) -> Result<(), Finding> {
+        let resolved = self.resolve_host_fs_path(raw_path)?;
+        if let Some(parent) = resolved.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Finding {
+                kind: FindingKind::Assertion,
+                title: "host_fs_write".to_string(),
+                message: format!("failed to create parent dir for {raw_path:?}: {e}"),
+                location: None,
+            })?;
+        }
+        std::fs::write(&resolved, data).map_err(|e| Finding {
+            kind: FindingKind::Assertion,
+            title: "host_fs_write".to_string(),
+            message: format!("failed to write host fs path {raw_path:?}: {e}"),
+            location: None,
+        })?;
+        self.host_fs_touched.insert(resolved);
+        Ok(())
+    }
+
+    fn host_fs_read_assert(&mut self, raw_path: &str, equals: &str) -> Result<(), Finding> {
+        let resolved = self.resolve_host_fs_path(raw_path)?;
+        self.host_fs_touched.insert(resolved.clone());
+        let got = std::fs::read_to_string(&resolved).map_err(|e| Finding {
+            kind: FindingKind::Assertion,
+            title: "host_fs_read_assert".to_string(),
+            message: format!("failed to read host fs path {raw_path:?}: {e}"),
+            location: None,
+        })?;
+        if got != equals {
+            return Err(Finding {
+                kind: FindingKind::Assertion,
+                title: "host_fs_read_assert".to_string(),
+                message: format!("expected {raw_path:?} == {equals:?}, got {got:?}"),
+                location: None,
+            });
+        }
+        Ok(())
+    }
+
+    fn host_fs_snapshot(&mut self, name: &str) -> Result<(), Finding> {
+        let mut snap = BTreeMap::new();
+        for path in &self.host_fs_touched {
+            let value = if path.exists() {
+                Some(std::fs::read(path).map_err(|e| Finding {
+                    kind: FindingKind::Assertion,
+                    title: "host_fs_snapshot".to_string(),
+                    message: format!("failed to read host fs path {:?}: {e}", path),
+                    location: None,
+                })?)
+            } else {
+                None
+            };
+            snap.insert(path.clone(), value);
+        }
+        self.host_fs_snapshots.insert(name.to_string(), snap);
+        Ok(())
+    }
+
+    fn host_fs_restore(&mut self, name: &str) -> Result<(), Finding> {
+        let Some(snapshot) = self.host_fs_snapshots.get(name).cloned() else {
+            return Err(Finding {
+                kind: FindingKind::Checker,
+                title: "host_fs_restore_missing_snapshot".to_string(),
+                message: format!("missing host fs snapshot {name:?}"),
+                location: None,
+            });
+        };
+
+        let mut all_paths = self.host_fs_touched.clone();
+        all_paths.extend(snapshot.keys().cloned());
+
+        for path in &all_paths {
+            match snapshot.get(path) {
+                Some(Some(bytes)) => {
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| Finding {
+                            kind: FindingKind::Assertion,
+                            title: "host_fs_restore".to_string(),
+                            message: format!("failed to create parent dir for {:?}: {e}", path),
+                            location: None,
+                        })?;
+                    }
+                    std::fs::write(path, bytes).map_err(|e| Finding {
+                        kind: FindingKind::Assertion,
+                        title: "host_fs_restore".to_string(),
+                        message: format!("failed to restore file {:?}: {e}", path),
+                        location: None,
+                    })?;
+                }
+                Some(None) | None => {
+                    if path.exists() {
+                        std::fs::remove_file(path).map_err(|e| Finding {
+                            kind: FindingKind::Assertion,
+                            title: "host_fs_restore".to_string(),
+                            message: format!("failed to remove restored file {:?}: {e}", path),
+                            location: None,
+                        })?;
+                    }
+                }
+            }
+        }
+        self.host_fs_touched = snapshot.keys().cloned().collect();
+        Ok(())
     }
 
     fn exec_step(&mut self, step: &crate::Step) -> Result<(), Finding> {
@@ -1399,38 +1623,54 @@ impl ExecCtx {
             }
 
             crate::Step::FsWrite { path, data } => {
-                self.fs.insert(path.clone(), data.clone());
+                if matches!(self.fs_backend, FsBackend::Host) {
+                    self.host_fs_write(path, data)?;
+                } else {
+                    self.fs.insert(path.clone(), data.clone());
+                }
                 Ok(())
             }
 
             crate::Step::FsReadAssert { path, equals } => {
-                let got = self.fs.get(path).cloned();
-                if got.as_deref() != Some(equals.as_str()) {
-                    return Err(Finding {
-                        kind: FindingKind::Assertion,
-                        title: "fs_read_assert".to_string(),
-                        message: format!("expected {path:?} == {equals:?}, got {got:?}"),
-                        location: None,
-                    });
+                if matches!(self.fs_backend, FsBackend::Host) {
+                    self.host_fs_read_assert(path, equals)?;
+                } else {
+                    let got = self.fs.get(path).cloned();
+                    if got.as_deref() != Some(equals.as_str()) {
+                        return Err(Finding {
+                            kind: FindingKind::Assertion,
+                            title: "fs_read_assert".to_string(),
+                            message: format!("expected {path:?} == {equals:?}, got {got:?}"),
+                            location: None,
+                        });
+                    }
                 }
                 Ok(())
             }
 
             crate::Step::FsSnapshot { name } => {
-                self.fs_snapshots.insert(name.clone(), self.fs.clone());
+                if matches!(self.fs_backend, FsBackend::Host) {
+                    self.host_fs_snapshot(name)?;
+                } else {
+                    self.fs_snapshots.insert(name.clone(), self.fs.clone());
+                }
                 Ok(())
             }
 
             crate::Step::FsRestore { name } => {
-                let Some(snapshot) = self.fs_snapshots.get(name).cloned() else {
-                    return Err(Finding {
-                        kind: FindingKind::Checker,
-                        title: "fs_restore_missing_snapshot".to_string(),
-                        message: format!("missing fs snapshot {name:?}"),
-                        location: None,
-                    });
-                };
-                self.fs = snapshot;
+                if matches!(self.fs_backend, FsBackend::Host) {
+                    self.host_fs_restore(name)?;
+                } else {
+                    let Some(snapshot) = self.fs_snapshots.get(name).cloned() else {
+                        return Err(Finding {
+                            kind: FindingKind::Checker,
+                            title: "fs_restore_missing_snapshot".to_string(),
+                            message: format!("missing fs snapshot {name:?}"),
+                            location: None,
+                        });
+                    };
+                    self.fs = snapshot;
+                }
                 Ok(())
             }
 
@@ -1443,6 +1683,14 @@ impl ExecCtx {
                 delay,
                 times,
             } => {
+                if matches!(self.http_backend, HttpBackend::Host) {
+                    return Err(Finding {
+                        kind: FindingKind::Checker,
+                        title: "http_when_backend".to_string(),
+                        message: "http_when is only supported with scripted http backend".to_string(),
+                        location: None,
+                    });
+                }
                 if body.is_some() && json.is_some() {
                     return Err(Finding {
                         kind: FindingKind::Checker,
@@ -1493,42 +1741,86 @@ impl ExecCtx {
                         location: None,
                     });
                 }
-
-                let rule_idx = self
-                    .http_rules
-                    .iter()
-                    .position(|r| r.remaining > 0 && r.method == *method && r.path == *path);
-
-                let Some(idx) = rule_idx else {
-                    return Err(Finding {
+                let (status_code, resp_body, backend) = if let Some(Decision::HttpRequest {
+                    method: replay_method,
+                    path: replay_path,
+                    status_code,
+                    body,
+                }) = self.replay_peek().cloned()
+                {
+                    if replay_method != *method || replay_path != *path {
+                        return Err(Finding {
+                            kind: FindingKind::Checker,
+                            title: "replay_drift".to_string(),
+                            message: format!(
+                                "replay http drift: expected {replay_method} {replay_path}, got {method} {path}"
+                            ),
+                            location: None,
+                        });
+                    }
+                    let _ = self.replay_take_if(|d| matches!(d, Decision::HttpRequest { .. }));
+                    (status_code, body, "replay".to_string())
+                } else if matches!(self.http_backend, HttpBackend::Host) {
+                    if !path.starts_with("http://") && !path.starts_with("https://") {
+                        return Err(Finding {
+                            kind: FindingKind::Checker,
+                            title: "http_host_url".to_string(),
+                            message: format!(
+                                "host http backend requires absolute http/https url, got {path:?}"
+                            ),
+                            location: None,
+                        });
+                    }
+                    let response = dispatch_host_http(method, path, body.as_deref()).map_err(|message| Finding {
                         kind: FindingKind::Assertion,
-                        title: "http_unmatched".to_string(),
-                        message: format!("no http mock matched {method} {path}"),
+                        title: "http_host_request".to_string(),
+                        message,
                         location: None,
+                    })?;
+                    self.decisions.push(Decision::HttpRequest {
+                        method: method.clone(),
+                        path: path.clone(),
+                        status_code: response.status,
+                        body: response.body.clone(),
                     });
-                };
-
-                let mut rule = self.http_rules[idx].clone();
-                if rule.remaining != u64::MAX {
-                    rule.remaining = rule.remaining.saturating_sub(1);
-                }
-                self.http_rules[idx] = rule.clone();
-
-                if self.det && rule.delay_ms > 0 {
-                    self.clock.advance(Duration::from_millis(rule.delay_ms));
-                } else if !self.det && rule.delay_ms > 0 {
-                    std::thread::sleep(Duration::from_millis(rule.delay_ms));
-                }
-
-                let resp_body = if let Some(j) = &rule.json {
-                    serde_json::to_string(j).map_err(|e| Finding {
-                        kind: FindingKind::Checker,
-                        title: "http_json_serialize".to_string(),
-                        message: e.to_string(),
-                        location: None,
-                    })?
+                    (response.status, response.body, "host".to_string())
                 } else {
-                    rule.body.clone().unwrap_or_default()
+                    let rule_idx = self
+                        .http_rules
+                        .iter()
+                        .position(|r| r.remaining > 0 && r.method == *method && r.path == *path);
+                    let Some(idx) = rule_idx else {
+                        return Err(Finding {
+                            kind: FindingKind::Assertion,
+                            title: "http_unmatched".to_string(),
+                            message: format!("no http mock matched {method} {path}"),
+                            location: None,
+                        });
+                    };
+
+                    let mut rule = self.http_rules[idx].clone();
+                    if rule.remaining != u64::MAX {
+                        rule.remaining = rule.remaining.saturating_sub(1);
+                    }
+                    self.http_rules[idx] = rule.clone();
+
+                    if self.det && rule.delay_ms > 0 {
+                        self.clock.advance(Duration::from_millis(rule.delay_ms));
+                    } else if !self.det && rule.delay_ms > 0 {
+                        std::thread::sleep(Duration::from_millis(rule.delay_ms));
+                    }
+
+                    let resp_body = if let Some(j) = &rule.json {
+                        serde_json::to_string(j).map_err(|e| Finding {
+                            kind: FindingKind::Checker,
+                            title: "http_json_serialize".to_string(),
+                            message: e.to_string(),
+                            location: None,
+                        })?
+                    } else {
+                        rule.body.clone().unwrap_or_default()
+                    };
+                    (rule.status, resp_body, "scripted".to_string())
                 };
 
                 self.events.push(TraceEvent {
@@ -1537,9 +1829,10 @@ impl ExecCtx {
                     fields: serde_json::Map::from_iter([
                         ("method".to_string(), serde_json::Value::String(method.clone())),
                         ("path".to_string(), serde_json::Value::String(path.clone())),
+                        ("backend".to_string(), serde_json::Value::String(backend)),
                         (
                             "status".to_string(),
-                            serde_json::Value::Number(serde_json::Number::from(rule.status)),
+                            serde_json::Value::Number(serde_json::Number::from(status_code)),
                         ),
                         (
                             "has_body".to_string(),
@@ -1549,11 +1842,11 @@ impl ExecCtx {
                 });
 
                 if let Some(expected) = expect_status {
-                    if rule.status != *expected {
+                    if status_code != *expected {
                         return Err(Finding {
                             kind: FindingKind::Assertion,
                             title: "http_status".to_string(),
-                            message: format!("expected status {expected}, got {}", rule.status),
+                            message: format!("expected status {expected}, got {}", status_code),
                             location: None,
                         });
                     }
@@ -1590,8 +1883,6 @@ impl ExecCtx {
                 if let Some(key) = save_body_as {
                     self.kv.insert(key.clone(), resp_body);
                 }
-
-                let _ = body;
                 Ok(())
             }
 
@@ -2064,6 +2355,91 @@ impl ExecCtx {
             std::thread::sleep(d);
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct HttpResponseData {
+    status: u16,
+    body: String,
+}
+
+fn dispatch_host_http(method: &str, url: &str, body: Option<&str>) -> Result<HttpResponseData, String> {
+    let method = method.to_ascii_uppercase();
+    if !matches!(
+        method.as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    ) {
+        return Err(format!(
+            "unsupported host http method {method:?}; expected GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS"
+        ));
+    }
+
+    if !url.starts_with("http://") {
+        if url.starts_with("https://") {
+            return Err("https is not supported by the built-in host http backend; use scripted backend or plain http:// endpoint".to_string());
+        }
+        return Err(format!("invalid host http url {url:?}; expected http://<host>[:port]/path"));
+    }
+
+    let without_scheme = &url["http://".len()..];
+    let (host_port, path) = match without_scheme.split_once('/') {
+        Some((h, p)) => (h, format!("/{}", p)),
+        None => (without_scheme, "/".to_string()),
+    };
+    let (host, port) = match host_port.split_once(':') {
+        Some((h, p)) => {
+            let parsed = p
+                .parse::<u16>()
+                .map_err(|e| format!("invalid host http port in {url:?}: {e}"))?;
+            (h, parsed)
+        }
+        None => (host_port, 80u16),
+    };
+    if host.is_empty() {
+        return Err(format!("invalid host http url {url:?}; host is empty"));
+    }
+
+    let mut stream = TcpStream::connect((host, port))
+        .map_err(|e| format!("host http connect failed for {url}: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| format!("failed to set read timeout for {url}: {e}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| format!("failed to set write timeout for {url}: {e}"))?;
+
+    let payload = body.unwrap_or("");
+    let content_len = payload.len();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {content_len}\r\n\r\n{payload}"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("host http write failed for {method} {url}: {e}"))?;
+
+    let mut raw = String::new();
+    stream
+        .read_to_string(&mut raw)
+        .map_err(|e| format!("host http read failed for {method} {url}: {e}"))?;
+
+    let (head, body) = raw
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| format!("host http response missing header/body separator for {method} {url}"))?;
+    let mut lines = head.lines();
+    let status_line = lines
+        .next()
+        .ok_or_else(|| format!("host http response missing status line for {method} {url}"))?;
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| format!("host http malformed status line for {method} {url}: {status_line:?}"))?
+        .parse::<u16>()
+        .map_err(|e| format!("host http invalid status code for {method} {url}: {e}"))?;
+
+    Ok(HttpResponseData {
+        status: status_code,
+        body: body.to_string(),
+    })
 }
 
 #[derive(Debug, Clone)]

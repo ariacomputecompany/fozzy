@@ -9,6 +9,12 @@ pub enum Decision {
     RandBytes { hex: String },
     TimeSleepMs { ms: u64 },
     TimeAdvanceMs { ms: u64 },
+    HttpRequest {
+        method: String,
+        path: String,
+        status_code: u16,
+        body: String,
+    },
     ProcSpawn {
         cmd: String,
         args: Vec<String>,

@@ -854,6 +854,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
         let err = export_artifacts(&cfg, "does-not-exist-input.fozzy", &out).expect_err("must fail");
         assert!(err.to_string().contains("not found"));
@@ -872,6 +874,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
         let err = export_artifacts(&cfg, run_id, &out).expect_err("must fail");
         assert!(err.to_string().contains("no artifacts found"));
@@ -892,6 +896,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
         export_reproducer_pack(&cfg, "r1", &out).expect("pack");
         let file = std::fs::File::open(&out).expect("zip");
@@ -921,6 +927,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
 
         let outside = root.join("outside.json");
@@ -951,6 +959,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
 
         let outside = root.join("outside.json");
@@ -980,6 +990,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
 
         let out_a = root.join("a.zip");
@@ -1006,6 +1018,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
         let out_pack = root.join("pack.zip");
         let out_export = root.join("export.zip");
@@ -1030,6 +1044,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
         let out_pack = root.join("pack.zip");
         let out_export = root.join("export.zip");
@@ -1053,6 +1069,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
 
         let out_dir = root.join("out");
@@ -1075,6 +1093,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
 
         let out_dir = root.join("out");
@@ -1099,6 +1119,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
         let out_pack = root.join("pack.zip");
         let out_export = root.join("export.zip");
@@ -1128,6 +1150,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
             proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
         };
 
         let real_out_dir = root.join("real-out");

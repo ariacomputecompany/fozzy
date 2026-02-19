@@ -25,8 +25,10 @@ Fozzy is a scenario engine with deterministic-first capability backends.
 - `proc` defaults to scripted (`proc_when` + `proc_spawn`) for deterministic/replay-safe behavior.
 - `proc` host execution is opt-in for non-deterministic runs via `--proc-backend host` (for `fozzy run` / `fozzy test`).
 - Host `proc_spawn` results are captured in trace decisions so `fozzy replay` stays deterministic without re-executing host processes.
-- `http` is currently scripted (`http_when` + `http_request`), not live outbound HTTP.
-- `fs` uses deterministic virtual overlay semantics.
+- `http` defaults to scripted (`http_when` + `http_request`); host HTTP is opt-in via `--http-backend host` (plain `http://` endpoints only).
+- Host `http_request` results are captured in trace decisions so replay does not re-issue outbound requests.
+- `fs` defaults to deterministic virtual overlay semantics; host filesystem mode is opt-in via `--fs-backend host` and sandboxed to the current working directory root.
+- Host backends are rejected in deterministic mode (`--det`) with explicit contract errors.
 
 Use `fozzy env --json` to inspect active capability backends.
 

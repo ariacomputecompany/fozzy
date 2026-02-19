@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 fn temp_workspace(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("fozzy-cli-{name}-{}", uuid::Uuid::new_v4()));
@@ -17,6 +20,37 @@ fn run_cli(args: &[String]) -> std::process::Output {
         .args(args)
         .output()
         .expect("run cli")
+}
+
+fn spawn_one_shot_http_server() -> (String, mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind http listener");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let start = std::time::Instant::now();
+        loop {
+            if stop_rx.try_recv().is_ok() || start.elapsed() > Duration::from_secs(10) {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0u8; 1024];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                    let _ = std::io::Write::write_all(&mut stream, response);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    (format!("http://{addr}/ping"), stop_tx)
 }
 
 fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
@@ -720,4 +754,185 @@ fn replay_uses_recorded_proc_decisions_from_host_backend_trace() {
     );
     let doc = parse_json_stdout(&replay);
     assert_eq!(doc.get("status").and_then(|v| v.as_str()), Some("pass"));
+}
+
+#[test]
+fn exit_code_matrix_core_contract() {
+    let ws = temp_workspace("exit-matrix");
+    let pass = ws.join("pass.fozzy.json");
+    let fail = ws.join("fail.fozzy.json");
+    std::fs::write(&pass, fixture("example.fozzy.json")).expect("write pass");
+    std::fs::write(&fail, fixture("fail.fozzy.json")).expect("write fail");
+
+    let pass_out = run_cli(&["run".into(), pass.to_string_lossy().to_string(), "--json".into()]);
+    assert_eq!(pass_out.status.code(), Some(0), "pass run must exit 0");
+
+    let fail_out = run_cli(&["run".into(), fail.to_string_lossy().to_string(), "--json".into()]);
+    assert_eq!(fail_out.status.code(), Some(1), "failing run must exit 1");
+
+    let parse_err = run_cli(&["run".into(), "--json".into()]);
+    assert_eq!(parse_err.status.code(), Some(2), "usage/parse errors must exit 2");
+}
+
+#[test]
+fn concurrent_same_root_runs_are_stable() {
+    let ws = temp_workspace("concurrent-root");
+    let scenario = ws.join("scenario.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+    std::fs::write(ws.join("fozzy.toml"), "base_dir = \".fozzy\"\n").expect("write config");
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let scenario = scenario.clone();
+        let ws = ws.clone();
+        handles.push(thread::spawn(move || {
+            run_cli(&[
+                "run".into(),
+                scenario.to_string_lossy().to_string(),
+                "--cwd".into(),
+                ws.to_string_lossy().to_string(),
+                "--json".into(),
+            ])
+        }));
+    }
+
+    for h in handles {
+        let out = h.join().expect("thread join");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "concurrent run failed: stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn host_fs_backend_executes_real_filesystem_steps() {
+    let ws = temp_workspace("host-fs");
+    let scenario = ws.join("host-fs.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-fs",
+      "steps":[
+        {"type":"fs_write","path":"tmp/host-fs.txt","data":"hello"},
+        {"type":"fs_read_assert","path":"tmp/host-fs.txt","equals":"hello"}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let out = run_cli(&[
+        "--fs-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--cwd".into(),
+        ws.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "host fs run should pass");
+    let written = std::fs::read_to_string(ws.join("tmp").join("host-fs.txt")).expect("read host fs output");
+    assert_eq!(written, "hello");
+}
+
+#[test]
+fn host_fs_backend_rejects_path_escape() {
+    let ws = temp_workspace("host-fs-escape");
+    let scenario = ws.join("host-fs-escape.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-fs-escape",
+      "steps":[
+        {"type":"fs_write","path":"../escape.txt","data":"bad"}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let out = run_cli(&[
+        "--fs-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--cwd".into(),
+        ws.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "path escape must fail as assertion");
+}
+
+#[test]
+fn host_fs_backend_is_rejected_in_deterministic_mode() {
+    let ws = temp_workspace("host-fs-det");
+    let scenario = ws.join("host-fs-det.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-fs-det",
+      "steps":[{"type":"fs_write","path":"x.txt","data":"x"}]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let out = run_cli(&[
+        "--fs-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(2), "det + host fs should fail");
+}
+
+#[test]
+fn host_http_backend_executes_and_replays_from_decisions() {
+    let (url, stop_tx) = spawn_one_shot_http_server();
+    let ws = temp_workspace("host-http");
+    let scenario = ws.join("host-http.fozzy.json");
+    let trace = ws.join("host-http.fozzy");
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-http",
+      "steps":[
+        {{"type":"http_request","method":"GET","path":"{url}","expect_status":200,"expect_body":"ok"}}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let run = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    let _ = stop_tx.send(());
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "host http run should pass: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let replay = run_cli(&["replay".into(), trace.to_string_lossy().to_string(), "--json".into()]);
+    assert_eq!(replay.status.code(), Some(0), "replay must pass");
+}
+
+#[test]
+fn host_http_backend_is_rejected_in_deterministic_mode() {
+    let ws = temp_workspace("host-http-det");
+    let scenario = ws.join("host-http-det.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-http-det",
+      "steps":[{"type":"http_request","method":"GET","path":"http://127.0.0.1:1/x","expect_status":200}]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let out = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(2), "det + host http should fail");
 }

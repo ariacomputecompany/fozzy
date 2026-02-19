@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use fozzy::{
     ArtifactCommand, CiOptions, Config, CorpusCommand, ExitStatus, FlakeBudget, FozzyDuration, InitTemplate,
-    ProcBackend, ReportCommand,
+    FsBackend, HttpBackend, ProcBackend, ReportCommand,
     ExploreOptions, FuzzMode, FuzzOptions, FuzzTarget, RecordCollisionPolicy, Reporter, RunOptions, RunSummary,
     ScenarioPath, ScheduleStrategy, ShrinkMinimize, TracePath,
 };
@@ -44,6 +44,14 @@ struct Cli {
     /// Proc backend for proc_spawn steps.
     #[arg(long, global = true)]
     proc_backend: Option<ProcBackend>,
+
+    /// Filesystem backend for fs_* steps.
+    #[arg(long, global = true)]
+    fs_backend: Option<FsBackend>,
+
+    /// HTTP backend for http_* steps.
+    #[arg(long, global = true)]
+    http_backend: Option<HttpBackend>,
 
     #[command(subcommand)]
     command: Command,
@@ -368,7 +376,7 @@ fn normalize_global_args(args: impl IntoIterator<Item = String>) -> Vec<String> 
                 globals.push(arg.clone());
                 i += 1;
             }
-            "--config" | "--cwd" | "--log" | "--proc-backend" => {
+            "--config" | "--cwd" | "--log" | "--proc-backend" | "--fs-backend" | "--http-backend" => {
                 globals.push(arg.clone());
                 if i + 1 < all.len() {
                     globals.push(all[i + 1].clone());
@@ -381,6 +389,8 @@ fn normalize_global_args(args: impl IntoIterator<Item = String>) -> Vec<String> 
                 || arg.starts_with("--cwd=")
                 || arg.starts_with("--log=")
                 || arg.starts_with("--proc-backend=")
+                || arg.starts_with("--fs-backend=")
+                || arg.starts_with("--http-backend=")
                 || arg.starts_with("--strict=") =>
             {
                 globals.push(arg.clone());
@@ -408,6 +418,8 @@ fn init_tracing(level: &str) -> anyhow::Result<()> {
 
 fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
     let proc_backend = cli.proc_backend.unwrap_or(config.proc_backend);
+    let fs_backend = cli.fs_backend.unwrap_or(config.fs_backend);
+    let http_backend = cli.http_backend.unwrap_or(config.http_backend);
     match &cli.command {
         Command::Init { force, template } => {
             fozzy::init_project(config, &InitTemplate::from_option(template.as_ref()), *force)?;
@@ -440,6 +452,8 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     fail_fast: *fail_fast,
                     record_collision: *record_collision,
                     proc_backend,
+                    fs_backend,
+                    http_backend,
                 },
             )?;
             print_run_summary(cli, &run.summary)?;
@@ -470,6 +484,8 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     fail_fast: false,
                     record_collision: *record_collision,
                     proc_backend,
+                    fs_backend,
+                    http_backend,
                 },
             )?;
             print_run_summary(cli, &run.summary)?;

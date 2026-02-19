@@ -40,12 +40,12 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy test".to_string(),
                 when: "Run a suite of Fozzy scenarios in CI; turn on --det to make failures replayable. This is not a direct shell/cargo/jest runner.".to_string(),
-                how: "fozzy test --det --seed 1337 --record /tmp/test.fozzy; with multiple scenarios, traces are /tmp/test.1.fozzy, /tmp/test.2.fozzy, etc. For real process execution in proc_spawn, use --proc-backend host (non-det), then replay from recorded proc decisions.".to_string(),
+                how: "fozzy test --det --seed 1337 --record /tmp/test.fozzy; with multiple scenarios, traces are /tmp/test.1.fozzy, /tmp/test.2.fozzy, etc. Host backends (`--proc-backend host`, `--fs-backend host`, `--http-backend host`) are non-det only.".to_string(),
             },
             UsageItem {
                 command: "fozzy run".to_string(),
                 when: "Run a single scenario one-off while iterating locally or debugging a specific failure.".to_string(),
-                how: "fozzy run tests/example.fozzy.json --det --timeout 2s --json; in --det mode timeout is enforced on virtual elapsed time. For real process execution in proc_spawn, use --proc-backend host (non-det).".to_string(),
+                how: "fozzy run tests/example.fozzy.json --det --timeout 2s --json; in --det mode timeout is enforced on virtual elapsed time. For host execution, use `--proc-backend host`, `--fs-backend host`, `--http-backend host` (non-det).".to_string(),
             },
             UsageItem {
                 command: "fozzy replay".to_string(),

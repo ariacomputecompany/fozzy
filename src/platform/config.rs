@@ -18,6 +18,14 @@ pub struct Config {
     /// Process backend for proc_spawn steps.
     #[serde(default = "default_proc_backend")]
     pub proc_backend: crate::ProcBackend,
+
+    /// Filesystem backend for fs_* steps.
+    #[serde(default = "default_fs_backend")]
+    pub fs_backend: crate::FsBackend,
+
+    /// HTTP backend for http_request/http_when steps.
+    #[serde(default = "default_http_backend")]
+    pub http_backend: crate::HttpBackend,
 }
 
 fn default_base_dir() -> PathBuf {
@@ -32,12 +40,22 @@ fn default_proc_backend() -> crate::ProcBackend {
     crate::ProcBackend::Scripted
 }
 
+fn default_fs_backend() -> crate::FsBackend {
+    crate::FsBackend::Virtual
+}
+
+fn default_http_backend() -> crate::HttpBackend {
+    crate::HttpBackend::Scripted
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             base_dir: default_base_dir(),
             reporter: default_reporter(),
             proc_backend: default_proc_backend(),
+            fs_backend: default_fs_backend(),
+            http_backend: default_http_backend(),
         }
     }
 }

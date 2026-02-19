@@ -226,11 +226,28 @@ pub fn trace_replay_warnings(trace: &TraceFile) -> Vec<String> {
                 .is_some_and(|backend| backend == "host")
     });
     let has_proc_decisions = trace.decisions.iter().any(|d| matches!(d, Decision::ProcSpawn { .. }));
+    let used_host_http = trace.events.iter().any(|e| {
+        e.name == "http_request"
+            && e.fields
+                .get("backend")
+                .and_then(|v| v.as_str())
+                .is_some_and(|backend| backend == "host")
+    });
+    let has_http_decisions = trace
+        .decisions
+        .iter()
+        .any(|d| matches!(d, Decision::HttpRequest { .. }));
 
     let mut warnings = Vec::new();
     if used_host_proc && !has_proc_decisions {
         warnings.push(
             "trace used host proc backend but does not include proc decisions; replay may drift"
+                .to_string(),
+        );
+    }
+    if used_host_http && !has_http_decisions {
+        warnings.push(
+            "trace used host http backend but does not include http decisions; replay may drift"
                 .to_string(),
         );
     }
