@@ -186,10 +186,19 @@ fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
             "trace {run_name:?} does not contain memory data"
         )));
     };
+    let sibling_graph = path
+        .parent()
+        .map(|p| p.join("memory.graph.json"))
+        .filter(|p| p.exists());
+    let graph = if let Some(graph_path) = sibling_graph {
+        serde_json::from_slice(&std::fs::read(graph_path)?)?
+    } else {
+        MemoryGraph::default()
+    };
     Ok(MemoryBundle {
         summary: memory.summary,
         leaks: memory.leaks,
-        graph: MemoryGraph::default(),
+        graph,
     })
 }
 
@@ -204,6 +213,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> FozzyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ExitStatus, MemoryOptions, MemorySummary, RunIdentity, RunMode, RunSummary};
 
     #[test]
     fn top_sorts_descending_by_bytes() {
@@ -231,5 +241,76 @@ mod tests {
         assert_eq!(leaks[0].bytes, 50);
         assert_eq!(leaks[1].bytes, 20);
         assert_eq!(leaks[2].bytes, 10);
+    }
+
+    #[test]
+    fn memory_diff_from_trace_inputs() {
+        let root = std::env::temp_dir().join(format!("fozzy-memory-cmd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let mk_trace = |path: &Path, leaked: u64| {
+            let trace = crate::TraceFile {
+                format: crate::TRACE_FORMAT.to_string(),
+                version: crate::CURRENT_TRACE_VERSION,
+                engine: crate::version_info(),
+                mode: RunMode::Run,
+                scenario_path: None,
+                scenario: Some(crate::ScenarioV1Steps {
+                    version: 1,
+                    name: "x".to_string(),
+                    steps: Vec::new(),
+                }),
+                fuzz: None,
+                explore: None,
+                memory: Some(crate::MemoryTrace {
+                    options: MemoryOptions::default(),
+                    summary: MemorySummary {
+                        leaked_bytes: leaked,
+                        leaked_allocs: if leaked > 0 { 1 } else { 0 },
+                        ..MemorySummary::default()
+                    },
+                    leaks: Vec::new(),
+                }),
+                decisions: Vec::new(),
+                events: Vec::new(),
+                summary: RunSummary {
+                    status: ExitStatus::Pass,
+                    mode: RunMode::Run,
+                    identity: RunIdentity {
+                        run_id: "r1".to_string(),
+                        seed: 1,
+                        trace_path: None,
+                        report_path: None,
+                        artifacts_dir: None,
+                    },
+                    started_at: "2026-01-01T00:00:00Z".to_string(),
+                    finished_at: "2026-01-01T00:00:00Z".to_string(),
+                    duration_ms: 0,
+                    tests: None,
+                    memory: None,
+                    findings: Vec::new(),
+                },
+                checksum: None,
+            };
+            trace.write_json(path).expect("write trace");
+        };
+        let left = root.join("left.fozzy");
+        let right = root.join("right.fozzy");
+        mk_trace(&left, 10);
+        mk_trace(&right, 30);
+
+        let cfg = Config::default();
+        let out = memory_command(
+            &cfg,
+            &MemoryCommand::Diff {
+                left: left.display().to_string(),
+                right: right.display().to_string(),
+            },
+        )
+        .expect("diff");
+        let obj = out.as_object().expect("object");
+        assert_eq!(
+            obj.get("deltaLeakedBytes").and_then(|v| v.as_i64()),
+            Some(20)
+        );
     }
 }

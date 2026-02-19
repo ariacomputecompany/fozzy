@@ -47,6 +47,14 @@ pub struct Config {
     #[serde(default)]
     pub leak_budget: Option<u64>,
 
+    /// Deterministic fragmentation overhead seed.
+    #[serde(default)]
+    pub mem_fragmentation_seed: Option<u64>,
+
+    /// Deterministic pressure wave pattern, e.g. "1,2,4".
+    #[serde(default)]
+    pub mem_pressure_wave: Option<String>,
+
     /// Emit dedicated memory artifacts.
     #[serde(default)]
     pub mem_artifacts: bool,
@@ -85,6 +93,8 @@ impl Default for Config {
             mem_fail_after: None,
             fail_on_leak: false,
             leak_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
             mem_artifacts: false,
         }
     }

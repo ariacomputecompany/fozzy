@@ -71,6 +71,7 @@ fozzy test [globs...] [--det] [--seed <n>] [--jobs <n>] [--timeout <dur>] \
   [--filter <expr>] [--reporter <json|pretty|junit|html>] \
   [--record <path>] [--record-collision error|overwrite|append] [--fail-fast] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
+  [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
 ```
 
@@ -86,6 +87,7 @@ fozzy run <scenario> [--det] [--seed <n>] [--timeout <dur>] \
   [--reporter <json|pretty|junit|html>] \
   [--record <path>] [--record-collision error|overwrite|append] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
+  [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
 ```
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
@@ -98,6 +100,7 @@ fozzy fuzz <target> [--mode coverage|property] [--seed <n>] [--time <dur>] \
   [--shrink] [--record <path>] [--record-collision error|overwrite|append] \
   [--reporter <json|pretty|junit|html>] [--crash-only] [--minimize] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
+  [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
 ```
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
@@ -110,6 +113,7 @@ fozzy explore <scenario> [--seed <n>] [--time <dur>] [--steps <n>] [--nodes <n>]
   [--record <path>] [--record-collision error|overwrite|append] [--shrink] \
   [--reporter <json|pretty|junit|html>] [--minimize] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
+  [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
 ```
 

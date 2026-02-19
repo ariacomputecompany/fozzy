@@ -62,16 +62,18 @@ impl MemoryState {
     ) -> AllocOutcome {
         let callsite_hash = blake3::hash(callsite.as_bytes()).to_hex().to_string();
         self.alloc_ops = self.alloc_ops.saturating_add(1);
+        let effective_bytes = self.effective_alloc_bytes(bytes);
 
         if let Some(limit_mb) = self.options.limit_mb {
             let limit = limit_mb.saturating_mul(1024 * 1024);
-            if self.in_use_bytes.saturating_add(bytes) > limit {
+            if self.in_use_bytes.saturating_add(effective_bytes) > limit {
                 self.failed_alloc_count = self.failed_alloc_count.saturating_add(1);
                 self.push_timeline(
                     time_ms,
                     "alloc_fail",
                     vec![
                         ("bytes", serde_json::json!(bytes)),
+                        ("effectiveBytes", serde_json::json!(effective_bytes)),
                         ("reason", serde_json::json!("limit_mb")),
                         ("callsiteHash", serde_json::json!(callsite_hash.clone())),
                     ],
@@ -93,6 +95,7 @@ impl MemoryState {
                 "alloc_fail",
                 vec![
                     ("bytes", serde_json::json!(bytes)),
+                    ("effectiveBytes", serde_json::json!(effective_bytes)),
                     ("reason", serde_json::json!("fail_after_allocs")),
                     ("callsiteHash", serde_json::json!(callsite_hash.clone())),
                 ],
@@ -106,12 +109,12 @@ impl MemoryState {
 
         let alloc_id = self.next_alloc_id;
         self.next_alloc_id = self.next_alloc_id.saturating_add(1);
-        self.in_use_bytes = self.in_use_bytes.saturating_add(bytes);
+        self.in_use_bytes = self.in_use_bytes.saturating_add(effective_bytes);
         self.peak_bytes = self.peak_bytes.max(self.in_use_bytes);
         self.live.insert(
             alloc_id,
             AllocRecord {
-                bytes,
+                bytes: effective_bytes,
                 callsite_hash: callsite_hash.clone(),
                 tag: tag.clone(),
             },
@@ -122,6 +125,7 @@ impl MemoryState {
             vec![
                 ("allocId", serde_json::json!(alloc_id)),
                 ("bytes", serde_json::json!(bytes)),
+                ("effectiveBytes", serde_json::json!(effective_bytes)),
                 ("inUseBytes", serde_json::json!(self.in_use_bytes)),
                 ("callsiteHash", serde_json::json!(callsite_hash.clone())),
                 ("tag", serde_json::json!(tag)),
@@ -260,5 +264,34 @@ impl MemoryState {
             kind: kind.to_string(),
             fields: map,
         });
+    }
+
+    fn effective_alloc_bytes(&self, requested: u64) -> u64 {
+        let mut scaled = if let Some(pattern) = &self.options.pressure_wave {
+            let multipliers: Vec<u64> = pattern
+                .split(',')
+                .filter_map(|s| s.trim().parse::<u64>().ok())
+                .filter(|m| *m > 0)
+                .collect();
+            if multipliers.is_empty() {
+                requested
+            } else {
+                let idx = ((self.alloc_ops.saturating_sub(1)) as usize) % multipliers.len();
+                requested.saturating_mul(multipliers[idx])
+            }
+        } else {
+            requested
+        };
+
+        if self.options.fragmentation_seed.is_some() {
+            let mut input = Vec::with_capacity(24);
+            input.extend_from_slice(&self.options.fragmentation_seed.unwrap_or(0).to_le_bytes());
+            input.extend_from_slice(&self.alloc_ops.to_le_bytes());
+            input.extend_from_slice(&requested.to_le_bytes());
+            let h = blake3::hash(&input);
+            let pct = (h.as_bytes()[0] as u64) % 31; // 0..30%
+            scaled = scaled.saturating_add((scaled.saturating_mul(pct)) / 100);
+        }
+        scaled
     }
 }

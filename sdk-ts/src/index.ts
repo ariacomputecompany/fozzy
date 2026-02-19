@@ -49,6 +49,8 @@ export interface MemoryOptions {
   memTrack?: boolean;
   memLimitMb?: number;
   memFailAfter?: number;
+  memFragmentationSeed?: number;
+  memPressureWave?: string;
   failOnLeak?: boolean;
   leakBudget?: number;
   memArtifacts?: boolean;
@@ -427,6 +429,8 @@ function appendMemoryArgs(args: string[], opts: MemoryOptions): void {
   flag(args, opts.memTrack, "--mem-track");
   kv(args, "--mem-limit-mb", opts.memLimitMb);
   kv(args, "--mem-fail-after", opts.memFailAfter);
+  kv(args, "--mem-fragmentation-seed", opts.memFragmentationSeed);
+  kv(args, "--mem-pressure-wave", opts.memPressureWave);
   flag(args, opts.failOnLeak, "--fail-on-leak");
   kv(args, "--leak-budget", opts.leakBudget);
   flag(args, opts.memArtifacts, "--mem-artifacts");

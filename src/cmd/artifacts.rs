@@ -973,6 +973,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
         let err =
             export_artifacts(&cfg, "does-not-exist-input.fozzy", &out).expect_err("must fail");
@@ -1002,6 +1004,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
         let err = export_artifacts(&cfg, run_id, &out).expect_err("must fail");
         assert!(err.to_string().contains("no artifacts found"));
@@ -1030,6 +1034,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
         export_reproducer_pack(&cfg, "r1", &out).expect("pack");
         let file = std::fs::File::open(&out).expect("zip");
@@ -1068,6 +1074,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
 
         let outside = root.join("outside.json");
@@ -1107,6 +1115,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
 
         let outside = root.join("outside.json");
@@ -1155,6 +1165,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
 
         let out_a = root.join("a.zip");
@@ -1189,6 +1201,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
         let out_pack = root.join("pack.zip");
         let out_export = root.join("export.zip");
@@ -1230,6 +1244,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
         let out_pack = root.join("pack.zip");
         let out_export = root.join("export.zip");
@@ -1262,6 +1278,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
 
         let out_dir = root.join("out");
@@ -1299,6 +1317,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
 
         let out_dir = root.join("out");
@@ -1338,6 +1358,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
         let out_pack = root.join("pack.zip");
         let out_export = root.join("export.zip");
@@ -1378,6 +1400,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
 
         let real_out_dir = root.join("real-out");

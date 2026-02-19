@@ -2715,6 +2715,32 @@ impl ExecCtx {
                 Ok(())
             }
 
+            crate::Step::MemoryFragmentation { seed } => {
+                self.memory.options.fragmentation_seed = Some(*seed);
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "memory_fragmentation".to_string(),
+                    fields: serde_json::Map::from_iter([(
+                        "seed".to_string(),
+                        serde_json::json!(seed),
+                    )]),
+                });
+                Ok(())
+            }
+
+            crate::Step::MemoryPressureWave { pattern } => {
+                self.memory.options.pressure_wave = Some(pattern.clone());
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "memory_pressure_wave".to_string(),
+                    fields: serde_json::Map::from_iter([(
+                        "pattern".to_string(),
+                        serde_json::json!(pattern),
+                    )]),
+                });
+                Ok(())
+            }
+
             crate::Step::MemoryCheckpoint { name } => {
                 self.memory.checkpoint(name, self.clock.now_ms());
                 self.events.push(TraceEvent {

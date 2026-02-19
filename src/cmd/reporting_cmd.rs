@@ -583,6 +583,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
 
         let out = flaky_command(
@@ -622,6 +624,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
         };
 
         let err =

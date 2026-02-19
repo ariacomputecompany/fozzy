@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "name": "memory-pressure-wave",
+  "steps": [
+    { "type": "memory_limit_mb", "mb": 1 },
+    { "type": "memory_fragmentation", "seed": 7 },
+    { "type": "memory_pressure_wave", "pattern": "1,2,4" },
+    { "type": "memory_alloc", "bytes": 200000, "key": "a" },
+    { "type": "memory_alloc", "bytes": 200000, "key": "b" },
+    { "type": "memory_alloc", "bytes": 200000, "key": "c" },
+    { "type": "memory_free", "key": "a" },
+    { "type": "memory_checkpoint", "name": "post-pressure" }
+  ]
+}

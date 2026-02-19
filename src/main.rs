@@ -125,6 +125,14 @@ enum Command {
         #[arg(long)]
         mem_fail_after: Option<u64>,
 
+        /// Deterministic fragmentation overhead seed.
+        #[arg(long)]
+        mem_fragmentation_seed: Option<u64>,
+
+        /// Deterministic pressure wave pattern (for example \"1,2,4\").
+        #[arg(long)]
+        mem_pressure_wave: Option<String>,
+
         /// Fail run on any detected leak.
         #[arg(long)]
         fail_on_leak: bool,
@@ -167,6 +175,10 @@ enum Command {
         mem_limit_mb: Option<u64>,
         #[arg(long)]
         mem_fail_after: Option<u64>,
+        #[arg(long)]
+        mem_fragmentation_seed: Option<u64>,
+        #[arg(long)]
+        mem_pressure_wave: Option<String>,
         #[arg(long)]
         fail_on_leak: bool,
         #[arg(long)]
@@ -226,6 +238,10 @@ enum Command {
         #[arg(long)]
         mem_fail_after: Option<u64>,
         #[arg(long)]
+        mem_fragmentation_seed: Option<u64>,
+        #[arg(long)]
+        mem_pressure_wave: Option<String>,
+        #[arg(long)]
         fail_on_leak: bool,
         #[arg(long)]
         leak_budget: Option<u64>,
@@ -280,6 +296,10 @@ enum Command {
         mem_limit_mb: Option<u64>,
         #[arg(long)]
         mem_fail_after: Option<u64>,
+        #[arg(long)]
+        mem_fragmentation_seed: Option<u64>,
+        #[arg(long)]
+        mem_pressure_wave: Option<String>,
         #[arg(long)]
         fail_on_leak: bool,
         #[arg(long)]
@@ -528,6 +548,8 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             mem_track,
             mem_limit_mb,
             mem_fail_after,
+            mem_fragmentation_seed,
+            mem_pressure_wave,
             fail_on_leak,
             leak_budget,
             mem_artifacts,
@@ -536,6 +558,10 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                 track: *mem_track || config.mem_track,
                 limit_mb: mem_limit_mb.or(config.mem_limit_mb),
                 fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
+                fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
+                pressure_wave: mem_pressure_wave
+                    .clone()
+                    .or_else(|| config.mem_pressure_wave.clone()),
                 fail_on_leak: *fail_on_leak || config.fail_on_leak,
                 leak_budget_bytes: leak_budget.or(config.leak_budget),
                 artifacts: *mem_artifacts || config.mem_artifacts || *mem_track || config.mem_track,
@@ -575,6 +601,8 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             mem_track,
             mem_limit_mb,
             mem_fail_after,
+            mem_fragmentation_seed,
+            mem_pressure_wave,
             fail_on_leak,
             leak_budget,
             mem_artifacts,
@@ -583,6 +611,10 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                 track: *mem_track || config.mem_track,
                 limit_mb: mem_limit_mb.or(config.mem_limit_mb),
                 fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
+                fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
+                pressure_wave: mem_pressure_wave
+                    .clone()
+                    .or_else(|| config.mem_pressure_wave.clone()),
                 fail_on_leak: *fail_on_leak || config.fail_on_leak,
                 leak_budget_bytes: leak_budget.or(config.leak_budget),
                 artifacts: *mem_artifacts || config.mem_artifacts || *mem_track || config.mem_track,
@@ -629,6 +661,8 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             mem_track,
             mem_limit_mb,
             mem_fail_after,
+            mem_fragmentation_seed,
+            mem_pressure_wave,
             fail_on_leak,
             leak_budget,
             mem_artifacts,
@@ -637,6 +671,10 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                 track: *mem_track || config.mem_track,
                 limit_mb: mem_limit_mb.or(config.mem_limit_mb),
                 fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
+                fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
+                pressure_wave: mem_pressure_wave
+                    .clone()
+                    .or_else(|| config.mem_pressure_wave.clone()),
                 fail_on_leak: *fail_on_leak || config.fail_on_leak,
                 leak_budget_bytes: leak_budget.or(config.leak_budget),
                 artifacts: *mem_artifacts || config.mem_artifacts || *mem_track || config.mem_track,
@@ -684,6 +722,8 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
             mem_track,
             mem_limit_mb,
             mem_fail_after,
+            mem_fragmentation_seed,
+            mem_pressure_wave,
             fail_on_leak,
             leak_budget,
             mem_artifacts,
@@ -692,6 +732,10 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                 track: *mem_track || config.mem_track,
                 limit_mb: mem_limit_mb.or(config.mem_limit_mb),
                 fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
+                fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
+                pressure_wave: mem_pressure_wave
+                    .clone()
+                    .or_else(|| config.mem_pressure_wave.clone()),
                 fail_on_leak: *fail_on_leak || config.fail_on_leak,
                 leak_budget_bytes: leak_budget.or(config.leak_budget),
                 artifacts: *mem_artifacts || config.mem_artifacts || *mem_track || config.mem_track,

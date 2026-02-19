@@ -298,6 +298,8 @@ export interface MemoryOptions {
   memTrack?: boolean;
   memLimitMb?: number;
   memFailAfter?: number;
+  memFragmentationSeed?: number;
+  memPressureWave?: string;
   failOnLeak?: boolean;
   leakBudget?: number;
   memArtifacts?: boolean;

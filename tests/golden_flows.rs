@@ -49,6 +49,8 @@ fn golden_run_record_replay_shrink_replay_min() {
         fail_on_leak: false,
         leak_budget: None,
         mem_artifacts: false,
+        mem_fragmentation_seed: None,
+        mem_pressure_wave: None,
     };
     let trace = ws.join("run.trace.fozzy");
     let run = run_scenario(
@@ -135,6 +137,8 @@ fn golden_fuzz_record_replay_shrink_replay_min() {
         fail_on_leak: false,
         leak_budget: None,
         mem_artifacts: false,
+        mem_fragmentation_seed: None,
+        mem_pressure_wave: None,
     };
     let trace = ws.join("fuzz.trace.fozzy");
     let target: FuzzTarget = "fn:utf8".parse().expect("target parse");
@@ -227,6 +231,8 @@ fn golden_explore_record_replay_shrink_replay_min() {
         fail_on_leak: false,
         leak_budget: None,
         mem_artifacts: false,
+        mem_fragmentation_seed: None,
+        mem_pressure_wave: None,
     };
     let trace = ws.join("explore.trace.fozzy");
     let run = explore(

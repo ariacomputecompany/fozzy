@@ -17,6 +17,10 @@ pub struct MemoryOptions {
     pub fail_on_leak: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub leak_budget_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fragmentation_seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pressure_wave: Option<String>,
     pub artifacts: bool,
 }
 
@@ -28,6 +32,8 @@ impl Default for MemoryOptions {
             fail_after_allocs: None,
             fail_on_leak: false,
             leak_budget_bytes: None,
+            fragmentation_seed: None,
+            pressure_wave: None,
             artifacts: false,
         }
     }

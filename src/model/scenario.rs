@@ -291,6 +291,12 @@ pub enum Step {
     MemoryFailAfterAllocs {
         count: u64,
     },
+    MemoryFragmentation {
+        seed: u64,
+    },
+    MemoryPressureWave {
+        pattern: String,
+    },
     MemoryCheckpoint {
         name: String,
     },
@@ -362,6 +368,8 @@ impl Step {
             Step::MemoryFree { .. } => "memory_free",
             Step::MemoryLimitMb { .. } => "memory_limit_mb",
             Step::MemoryFailAfterAllocs { .. } => "memory_fail_after_allocs",
+            Step::MemoryFragmentation { .. } => "memory_fragmentation",
+            Step::MemoryPressureWave { .. } => "memory_pressure_wave",
             Step::MemoryCheckpoint { .. } => "memory_checkpoint",
             Step::MemoryAssertInUseBytes { .. } => "memory_assert_in_use_bytes",
             Step::AssertThrows { .. } => "assert_throws",
