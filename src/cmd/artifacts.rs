@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::{Config, FozzyResult, RunManifest, RunSummary, TraceFile};
+use crate::{Config, ExitStatus, FozzyError, FozzyResult, RunManifest, RunSummary, TraceFile};
 
 #[derive(Debug, Subcommand)]
 pub enum ArtifactCommand {
@@ -563,7 +563,83 @@ pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<P
         }
     }
 
+    if let Some(alias_path) = resolve_run_alias(config, run)? {
+        return Ok(alias_path);
+    }
+
     Ok(config.runs_dir().join(run))
+}
+
+fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
+    let key = run.trim().to_ascii_lowercase();
+    if key != "latest" && key != "last-pass" && key != "last-fail" {
+        return Ok(None);
+    }
+
+    let runs_dir = config.runs_dir();
+    if !runs_dir.exists() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "run alias {run:?} cannot be resolved: runs directory not found ({})",
+            runs_dir.display()
+        )));
+    }
+
+    #[derive(Clone)]
+    struct Candidate {
+        dir: PathBuf,
+        finished_at: String,
+        status: ExitStatus,
+    }
+
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for entry in std::fs::read_dir(&runs_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let dir = entry.path();
+        let report = dir.join("report.json");
+        if !report.exists() {
+            continue;
+        }
+        let bytes = std::fs::read(&report)?;
+        let summary: RunSummary = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        candidates.push(Candidate {
+            dir,
+            finished_at: summary.finished_at,
+            status: summary.status,
+        });
+    }
+
+    if candidates.is_empty() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "run alias {run:?} cannot be resolved: no completed runs with report.json found"
+        )));
+    }
+
+    candidates.sort_by(|a, b| {
+        a.finished_at
+            .cmp(&b.finished_at)
+            .then_with(|| a.dir.cmp(&b.dir))
+    });
+    candidates.reverse();
+
+    let selected = match key.as_str() {
+        "latest" => candidates.first(),
+        "last-pass" => candidates.iter().find(|c| c.status == ExitStatus::Pass),
+        "last-fail" => candidates.iter().find(|c| c.status != ExitStatus::Pass),
+        _ => None,
+    };
+
+    match selected {
+        Some(c) => Ok(Some(c.dir.clone())),
+        None => Err(FozzyError::InvalidArgument(format!(
+            "run alias {run:?} cannot be resolved: no matching run found"
+        ))),
+    }
 }
 
 fn push_if_exists(
@@ -1222,6 +1298,53 @@ mod tests {
             !out_export.exists(),
             "export zip should not be created on incomplete run"
         );
+    }
+
+    #[test]
+    fn resolve_artifacts_dir_supports_latest_last_pass_last_fail_aliases() {
+        let root = std::env::temp_dir().join(format!("fozzy-aliases-{}", uuid::Uuid::new_v4()));
+        let runs = root.join(".fozzy").join("runs");
+        std::fs::create_dir_all(&runs).expect("runs dir");
+        let mk = |id: &str, status: &str, finished: &str| {
+            let dir = runs.join(id);
+            std::fs::create_dir_all(&dir).expect("run dir");
+            let report = format!(
+                r#"{{
+  "status":"{status}",
+  "mode":"run",
+  "identity":{{"runId":"{id}","seed":1}},
+  "startedAt":"2026-02-19T00:00:00Z",
+  "finishedAt":"{finished}",
+  "durationMs":1
+}}"#
+            );
+            std::fs::write(dir.join("report.json"), report).expect("report");
+        };
+        mk("r1", "pass", "2026-02-19T00:00:01Z");
+        mk("r2", "fail", "2026-02-19T00:00:02Z");
+        mk("r3", "pass", "2026-02-19T00:00:03Z");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let latest = resolve_artifacts_dir(&cfg, "latest").expect("latest");
+        assert!(latest.ends_with("r3"));
+        let last_pass = resolve_artifacts_dir(&cfg, "last-pass").expect("last-pass");
+        assert!(last_pass.ends_with("r3"));
+        let last_fail = resolve_artifacts_dir(&cfg, "last-fail").expect("last-fail");
+        assert!(last_fail.ends_with("r2"));
     }
 
     #[test]

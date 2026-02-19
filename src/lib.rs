@@ -40,6 +40,8 @@ mod reporting_cmd;
 mod scenario;
 #[path = "runtime/scheduler.rs"]
 mod scheduler;
+#[path = "cmd/schema.rs"]
+mod schema;
 #[path = "runtime/timeline.rs"]
 mod timeline;
 #[path = "runtime/tracefile.rs"]
@@ -67,6 +69,7 @@ pub use reporting::*;
 pub use reporting_cmd::*;
 pub use scenario::*;
 pub use scheduler::*;
+pub use schema::*;
 pub use timeline::*;
 pub use tracefile::*;
 pub use usage::*;

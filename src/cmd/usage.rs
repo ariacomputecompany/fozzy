@@ -30,12 +30,17 @@ impl UsageDoc {
 
 pub fn usage_doc() -> UsageDoc {
     UsageDoc {
-        title: "Fozzy CLI usage (what to use when)".to_string(),
+        title: "Fozzy CLI usage (use the full surface by default)".to_string(),
         items: vec![
+            UsageItem {
+                command: "fozzy full".to_string(),
+                when: "Run the complete Fozzy surface-area gate with setup guidance and graceful skip behavior for missing inputs.".to_string(),
+                how: "fozzy full --scenario-root tests --seed 1337 --doctor-runs 5 --fuzz-time 2s --explore-steps 200 --explore-nodes 3. This command exercises init/test/run/fuzz/explore/replay/trace verify/shrink/corpus/artifacts/report/memory/doctor/ci/env/version/usage. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
+            },
             UsageItem {
                 command: "fozzy init".to_string(),
                 when: "Start a new project or bootstrap config/artifact directories.".to_string(),
-                how: "fozzy init --force; then edit fozzy.toml and add scenarios under tests/.".to_string(),
+                how: "fozzy init --template rust --with run,memory,explore,fuzz,host --force (or just `fozzy init` for all scaffold types by default). Then edit tests/*.fozzy.json inputs/assertions and run `fozzy full --scenario-root tests --seed 7`.".to_string(),
             },
             UsageItem {
                 command: "fozzy test".to_string(),
@@ -113,6 +118,11 @@ pub fn usage_doc() -> UsageDoc {
                 command: "fozzy version".to_string(),
                 when: "Print version/build metadata for bug reports and CI logs.".to_string(),
                 how: "fozzy version --json.".to_string(),
+            },
+            UsageItem {
+                command: "fozzy schema".to_string(),
+                when: "Inspect supported scenario-file variants and step types for authoring and automation.".to_string(),
+                how: "fozzy schema --json.".to_string(),
             },
         ],
     }

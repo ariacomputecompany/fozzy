@@ -391,7 +391,16 @@ pub struct Scenario {
 impl Scenario {
     pub fn load(path: &ScenarioPath) -> FozzyResult<Self> {
         let bytes = std::fs::read(path.as_path())?;
-        let file: ScenarioFile = serde_json::from_slice(&bytes)?;
+        let file: ScenarioFile = serde_json::from_slice(&bytes).map_err(|err| {
+            FozzyError::Scenario(format!(
+                "failed to parse scenario {}: {err}. expected one of: \
+                 steps variant {{version,name,steps:[{{type:...}}]}}, \
+                 distributed variant {{version,name,distributed:{{node_count|nodes,steps,invariants?}}}}, \
+                 or suites variant {{version,name,suites}}. \
+                 try `fozzy schema --json` for full step/type definitions and examples.",
+                path.as_path().display()
+            ))
+        })?;
         match file {
             ScenarioFile::Steps(s) => {
                 if s.version != 1 {

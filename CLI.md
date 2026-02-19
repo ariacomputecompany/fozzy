@@ -19,6 +19,7 @@ fozzy [GLOBAL_FLAGS] <COMMAND> [ARGS] [COMMAND_FLAGS]
 
 Global flags can be placed before or after subcommands.
 Strict mode is enabled by default; pass `--unsafe` to opt out.
+Execution policy: use the full command surface by default. Skip commands only when the target system truly does not have the required scope/inputs.
 
 ## Global Flags
 
@@ -39,7 +40,8 @@ Strict mode is enabled by default; pass `--unsafe` to opt out.
 
 | Command | Use When | Example |
 |---|---|---|
-| `init` | Create project config/scaffold | `fozzy init --template rust` |
+| `init` | Create project config/scaffold (with test-type starters) | `fozzy init --template rust --with run,memory,explore,fuzz,host` |
+| `full` | Run the complete command-surface gate with guidance and graceful skips | `fozzy full --scenario-root tests --seed 7` |
 | `test` | Run suites/globs of scenarios | `fozzy test tests/**/*.fozzy.json --det` |
 | `run` | Run one scenario directly | `fozzy run tests/example.fozzy.json` |
 | `fuzz` | Mutation/property fuzzing | `fozzy fuzz fn:utf8 --runs 1000` |
@@ -55,14 +57,32 @@ Strict mode is enabled by default; pass `--unsafe` to opt out.
 | `ci` | Run local gate bundle for a trace | `fozzy ci trace.fozzy --flake-run r1 --flake-run r2 --flake-budget 5` |
 | `env` | Print runtime capability info | `fozzy env --json` |
 | `version` | Print version/build info | `fozzy version --json` |
+| `schema` | Print supported scenario file/step schema | `fozzy schema --json` |
 
 ## Command Syntax
 
 ### `init`
 
 ```bash
-fozzy init [--force] [--template <rust>]
+fozzy init [--force] [--template <rust|ts|minimal>] \
+  [--with <run,fuzz,explore,memory,host,all>] [--all-tests]
 ```
+
+By default, `fozzy init` scaffolds all test types (`all`) so projects run out of the box.
+Use `--with` to explicitly select scaffold types.
+Generated files include starter scenarios plus `tests/INIT_GUIDE.md` with commands and setup guidance.
+
+### `full`
+
+```bash
+fozzy full [--scenario-root <dir>] [--seed <n>] [--doctor-runs <n>] \
+  [--fuzz-time <dur>] [--explore-steps <n>] [--explore-nodes <n>]
+```
+
+`fozzy full` is the hand-holding end-to-end gate. It targets the full CLI surface:
+`init`, `test`, `run`, `fuzz`, `explore`, `replay`, `trace verify`, `shrink`, `corpus`, `artifacts`, `report`, `memory`, `doctor`, `ci`, `env`, `version`, `usage`.
+If a required input is missing (for example no distributed scenario), it records a graceful skip instead of crashing.
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `test`
 
@@ -166,6 +186,7 @@ fozzy artifacts pack <run-id|trace> --out <dir|zip>
 ```
 
 `pack` includes reproducer metadata (`env`, `version`, `commandline`).
+Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
 
 ### `report`
 
@@ -178,6 +199,7 @@ fozzy report flaky <run-id|trace> <run-id|trace> [more...] [--flake-budget <pct>
 
 `report query --jq` supports path-style selectors (subset):
 ` .a.b`, `a.b`, `.arr[0]`, `.arr[].field`, `$.a.b`
+Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
 
 ### `memory`
 
@@ -188,6 +210,7 @@ fozzy memory top <run-id|trace> [--limit <n>]
 ```
 
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
+Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
 
 ### `doctor`
 
@@ -214,3 +237,14 @@ fozzy env
 ```bash
 fozzy version
 ```
+
+### `schema`
+
+```bash
+fozzy schema
+```
+
+Prints a machine-readable scenario surface:
+- top-level file variants (`steps`, `distributed`, `suites`)
+- supported `steps[].type` values
+- supported distributed step and invariant types

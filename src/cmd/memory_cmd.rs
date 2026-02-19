@@ -4,7 +4,9 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::{Config, FozzyError, FozzyResult, MemoryGraph, MemoryLeak, MemorySummary, TraceFile};
+use crate::{
+    Config, ExitStatus, FozzyError, FozzyResult, MemoryGraph, MemoryLeak, MemorySummary, TraceFile,
+};
 
 #[derive(Debug, Subcommand)]
 pub enum MemoryCommand {
@@ -138,7 +140,16 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
         return load_from_trace(&input, run);
     }
 
-    let artifacts_dir = crate::resolve_artifacts_dir(config, run)?;
+    let artifacts_dir = match crate::resolve_artifacts_dir(config, run) {
+        Ok(dir) => dir,
+        Err(err) => {
+            if let Some(dir) = resolve_memory_alias_dir(config, run)? {
+                dir
+            } else {
+                return Err(err);
+            }
+        }
+    };
     let leaks_path = artifacts_dir.join("memory.leaks.json");
     let graph_path = artifacts_dir.join("memory.graph.json");
     if leaks_path.exists() || graph_path.exists() {
@@ -162,12 +173,144 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
 
     let trace_path = artifacts_dir.join("trace.fozzy");
     if trace_path.exists() {
-        return load_from_trace(&trace_path, run);
+        match load_from_trace(&trace_path, run) {
+            Ok(bundle) => return Ok(bundle),
+            Err(err) => {
+                if let Some(dir) = resolve_memory_alias_dir(config, run)? {
+                    let leaks_path = dir.join("memory.leaks.json");
+                    let graph_path = dir.join("memory.graph.json");
+                    if leaks_path.exists() || graph_path.exists() {
+                        let summary = load_summary_from_report(&dir)?;
+                        let leaks: Vec<MemoryLeak> = if leaks_path.exists() {
+                            serde_json::from_slice(&std::fs::read(leaks_path)?)?
+                        } else {
+                            Vec::new()
+                        };
+                        let graph: MemoryGraph = if graph_path.exists() {
+                            serde_json::from_slice(&std::fs::read(graph_path)?)?
+                        } else {
+                            MemoryGraph::default()
+                        };
+                        return Ok(MemoryBundle {
+                            summary,
+                            leaks,
+                            graph,
+                        });
+                    }
+                    let alt_trace = dir.join("trace.fozzy");
+                    if alt_trace.exists() {
+                        return load_from_trace(&alt_trace, run);
+                    }
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    if let Some(dir) = resolve_memory_alias_dir(config, run)? {
+        let leaks_path = dir.join("memory.leaks.json");
+        let graph_path = dir.join("memory.graph.json");
+        if leaks_path.exists() || graph_path.exists() {
+            let summary = load_summary_from_report(&dir)?;
+            let leaks: Vec<MemoryLeak> = if leaks_path.exists() {
+                serde_json::from_slice(&std::fs::read(leaks_path)?)?
+            } else {
+                Vec::new()
+            };
+            let graph: MemoryGraph = if graph_path.exists() {
+                serde_json::from_slice(&std::fs::read(graph_path)?)?
+            } else {
+                MemoryGraph::default()
+            };
+            return Ok(MemoryBundle {
+                summary,
+                leaks,
+                graph,
+            });
+        }
+        let trace_path = dir.join("trace.fozzy");
+        if trace_path.exists() {
+            return load_from_trace(&trace_path, run);
+        }
     }
 
     Err(FozzyError::InvalidArgument(format!(
         "no memory data found for {run:?}"
     )))
+}
+
+fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
+    let key = run.trim().to_ascii_lowercase();
+    if key != "latest" && key != "last-pass" && key != "last-fail" {
+        return Ok(None);
+    }
+    let runs_dir = config.runs_dir();
+    if !runs_dir.exists() {
+        return Ok(None);
+    }
+
+    #[derive(Clone)]
+    struct Candidate {
+        dir: PathBuf,
+        finished_at: String,
+        status: ExitStatus,
+    }
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for entry in std::fs::read_dir(&runs_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let dir = entry.path();
+        let report_path = dir.join("report.json");
+        if !report_path.exists() {
+            continue;
+        }
+        let summary: crate::RunSummary = match serde_json::from_slice(&std::fs::read(report_path)?)
+        {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let trace_memory = dir.join("trace.fozzy");
+        let trace_has_memory = if trace_memory.exists() {
+            TraceFile::read_json(&trace_memory)
+                .ok()
+                .and_then(|t| t.memory)
+                .is_some()
+        } else {
+            false
+        };
+        let has_memory = summary.memory.is_some()
+            || dir.join("memory.leaks.json").exists()
+            || dir.join("memory.timeline.json").exists()
+            || dir.join("memory.graph.json").exists()
+            || trace_has_memory;
+        if !has_memory {
+            continue;
+        }
+        candidates.push(Candidate {
+            dir,
+            finished_at: summary.finished_at,
+            status: summary.status,
+        });
+    }
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    candidates.sort_by(|a, b| {
+        a.finished_at
+            .cmp(&b.finished_at)
+            .then_with(|| a.dir.cmp(&b.dir))
+    });
+    candidates.reverse();
+
+    let selected = match key.as_str() {
+        "latest" => candidates.first(),
+        "last-pass" => candidates.iter().find(|c| c.status == ExitStatus::Pass),
+        "last-fail" => candidates.iter().find(|c| c.status != ExitStatus::Pass),
+        _ => None,
+    };
+    Ok(selected.map(|c| c.dir.clone()))
 }
 
 fn load_summary_from_report(artifacts_dir: &Path) -> FozzyResult<MemorySummary> {
