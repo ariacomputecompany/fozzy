@@ -58,6 +58,7 @@ fozzy env --json
 - `fozzy shrink`: minimize failing traces.
 - `fozzy ci`: local gate bundle (verify + replay + artifact integrity + optional flake budget).
 - `fozzy report`: render/query reports.
+- `fozzy memory`: inspect memory graphs, leak tops, and memory diffs.
 - `fozzy artifacts`: list/export/pack run artifacts.
 
 Full command contract: [CLI.md](CLI.md)

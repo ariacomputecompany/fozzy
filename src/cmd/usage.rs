@@ -88,6 +88,13 @@ pub fn usage_doc() -> UsageDoc {
                 how: "fozzy report show <runId|trace> --format junit; fozzy report query <runId> --jq '.findings[].title'; fozzy report flaky <run1> <run2> --flake-budget 5.".to_string(),
             },
             UsageItem {
+                command: "fozzy memory".to_string(),
+                when: "Inspect memory-focused diagnostics (graph, leak top-N, run-to-run memory deltas)."
+                    .to_string(),
+                how: "fozzy memory top <runId|trace> --limit 20; fozzy memory diff <left> <right>; fozzy memory graph <runId|trace> --out memory.graph.export.json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out."
+                    .to_string(),
+            },
+            UsageItem {
                 command: "fozzy ci".to_string(),
                 when: "Run a canonical local gate bundle for one trace: verify, replay outcome check, artifacts zip integrity, optional flake budget.".to_string(),
                 how: "fozzy ci .fozzy/runs/<runId>/trace.fozzy --flake-run <run1> --flake-run <run2> --flake-budget 5 --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),

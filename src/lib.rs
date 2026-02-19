@@ -28,6 +28,8 @@ mod fsutil;
 mod fuzz;
 #[path = "model/memory.rs"]
 mod memory;
+#[path = "cmd/memory_cmd.rs"]
+mod memory_cmd;
 #[path = "runtime/memorycap.rs"]
 mod memorycap;
 #[path = "model/reporting.rs"]
@@ -59,6 +61,7 @@ pub use explore::*;
 pub use fsutil::*;
 pub use fuzz::*;
 pub use memory::*;
+pub use memory_cmd::*;
 pub use memorycap::*;
 pub use reporting::*;
 pub use reporting_cmd::*;

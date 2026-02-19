@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use fozzy::{
     ArtifactCommand, CiOptions, Config, CorpusCommand, ExitStatus, ExploreOptions, FlakeBudget,
     FozzyDuration, FsBackend, FuzzMode, FuzzOptions, FuzzTarget, HttpBackend, InitTemplate,
-    MemoryOptions, ProcBackend, RecordCollisionPolicy, ReportCommand, Reporter, RunOptions,
-    RunSummary, ScenarioPath, ScheduleStrategy, ShrinkMinimize, TracePath,
+    MemoryCommand, MemoryOptions, ProcBackend, RecordCollisionPolicy, ReportCommand, Reporter,
+    RunOptions, RunSummary, ScenarioPath, ScheduleStrategy, ShrinkMinimize, TracePath,
 };
 
 #[derive(Debug, Parser)]
@@ -348,6 +348,12 @@ enum Command {
     Report {
         #[command(subcommand)]
         command: ReportCommand,
+    },
+
+    /// Inspect memory artifacts and summaries
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
     },
 
     /// Diagnose nondeterminism + environment issues
@@ -803,6 +809,12 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
 
         Command::Report { command } => {
             let out = fozzy::report_command(config, command)?;
+            print_json_or_text(cli, &out)?;
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Memory { command } => {
+            let out = fozzy::memory_command(config, command)?;
             print_json_or_text(cli, &out)?;
             Ok(ExitCode::SUCCESS)
         }

@@ -50,6 +50,7 @@ Strict mode is enabled by default; pass `--unsafe` to opt out.
 | `corpus` | Manage fuzz corpus files | `fozzy corpus export .fozzy/corpus --out corpus.zip` |
 | `artifacts` | List/diff/export run artifacts | `fozzy artifacts pack <runId> --out pack.zip` |
 | `report` | Render/query reports | `fozzy report show <runId> --format json` |
+| `memory` | Inspect memory graph/diff/top leaks | `fozzy memory top <runId|trace>` |
 | `doctor` | Diagnose determinism/env issues | `fozzy doctor --deep --scenario tests/example.fozzy.json` |
 | `ci` | Run local gate bundle for a trace | `fozzy ci trace.fozzy --flake-run r1 --flake-run r2 --flake-budget 5` |
 | `env` | Print runtime capability info | `fozzy env --json` |
@@ -173,6 +174,16 @@ fozzy report flaky <run-id|trace> <run-id|trace> [more...] [--flake-budget <pct>
 
 `report query --jq` supports path-style selectors (subset):
 ` .a.b`, `a.b`, `.arr[0]`, `.arr[].field`, `$.a.b`
+
+### `memory`
+
+```bash
+fozzy memory graph <run-id|trace> [--out <path>]
+fozzy memory diff <left-run-id|trace> <right-run-id|trace>
+fozzy memory top <run-id|trace> [--limit <n>]
+```
+
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `doctor`
 
