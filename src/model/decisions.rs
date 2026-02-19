@@ -5,14 +5,24 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Decision {
-    RandU64 { value: u64 },
-    RandBytes { hex: String },
-    TimeSleepMs { ms: u64 },
-    TimeAdvanceMs { ms: u64 },
+    RandU64 {
+        value: u64,
+    },
+    RandBytes {
+        hex: String,
+    },
+    TimeSleepMs {
+        ms: u64,
+    },
+    TimeAdvanceMs {
+        ms: u64,
+    },
     HttpRequest {
         method: String,
         path: String,
         status_code: u16,
+        #[serde(default)]
+        headers: std::collections::BTreeMap<String, String>,
         body: String,
     },
     ProcSpawn {
@@ -22,11 +32,24 @@ pub enum Decision {
         stdout: String,
         stderr: String,
     },
-    SchedulerPick { task_id: u64, label: String },
-    NetDeliverPick { message_id: u64 },
-    NetDrop { message_id: u64, dropped: bool },
-    Step { index: usize, name: String },
-    ExploreDeliver { msg_id: u64 },
+    SchedulerPick {
+        task_id: u64,
+        label: String,
+    },
+    NetDeliverPick {
+        message_id: u64,
+    },
+    NetDrop {
+        message_id: u64,
+        dropped: bool,
+    },
+    Step {
+        index: usize,
+        name: String,
+    },
+    ExploreDeliver {
+        msg_id: u64,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -48,7 +71,10 @@ pub struct DecisionCursor<'a> {
 
 impl<'a> DecisionCursor<'a> {
     pub fn new(decisions: &'a [Decision]) -> Self {
-        Self { decisions, index: 0 }
+        Self {
+            decisions,
+            index: 0,
+        }
     }
 
     pub fn next(&mut self) -> Option<&'a Decision> {

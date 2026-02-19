@@ -167,7 +167,8 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Added replay/trace semantics for host-proc runs: traces now capture proc result decisions and replay consumes them deterministically; verify warns on legacy host-proc traces without proc decisions
 - ✅ Expanded host backend architecture beyond proc:
   - ✅ Host FS backend (`--fs-backend host`) with cwd-root sandboxing and explicit path-escape rejection
-  - ✅ Host HTTP backend (`--http-backend host`) for explicit plain `http://` requests with deterministic replay decisions
+  - ✅ Host HTTP backend (`--http-backend host`) now supports both `http://` and `https://` endpoints with deterministic replay decisions
+  - ✅ HTTP DSL expanded for production assertions: `http_request.headers` (request headers) and `http_request.expect_headers` / `http_when.headers` (response headers)
   - ✅ Determinism contracts enforced (`--det` rejects host fs/http/proc backends with explicit errors)
   - ✅ Replay contracts enforced for host execution (proc/http decision capture + legacy warning diagnostics)
 

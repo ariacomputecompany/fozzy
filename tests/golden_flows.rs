@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
 use fozzy::{
-    explore, fuzz, replay_trace, run_scenario, shrink_trace, Config, ExploreOptions, ExitStatus, FsBackend,
-    FuzzMode, FuzzOptions, FuzzTarget, HttpBackend, ProcBackend, RecordCollisionPolicy, ReplayOptions, Reporter,
-    RunOptions, ScenarioPath, ScheduleStrategy, ShrinkMinimize, ShrinkOptions, TracePath,
+    Config, ExitStatus, ExploreOptions, FsBackend, FuzzMode, FuzzOptions, FuzzTarget, HttpBackend,
+    ProcBackend, RecordCollisionPolicy, ReplayOptions, Reporter, RunOptions, ScenarioPath,
+    ScheduleStrategy, ShrinkMinimize, ShrinkOptions, TracePath, explore, fuzz, replay_trace,
+    run_scenario, shrink_trace,
 };
 
 fn temp_workspace(name: &str) -> PathBuf {
@@ -13,8 +14,13 @@ fn temp_workspace(name: &str) -> PathBuf {
 }
 
 fn fixture(name: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join(name);
-    std::fs::read_to_string(path).expect("read fixture")
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let tests_path = root.join("tests").join(name);
+    if tests_path.exists() {
+        return std::fs::read_to_string(tests_path).expect("read fixture");
+    }
+    let fixtures_path = root.join("fixtures").join(name);
+    std::fs::read_to_string(fixtures_path).expect("read fixture")
 }
 
 fn outcome_class(s: ExitStatus) -> &'static str {
@@ -71,7 +77,10 @@ fn golden_run_record_replay_shrink_replay_min() {
         },
     )
     .expect("replay");
-    assert_eq!(outcome_class(run.summary.status), outcome_class(replay.summary.status));
+    assert_eq!(
+        outcome_class(run.summary.status),
+        outcome_class(replay.summary.status)
+    );
 
     let min = ws.join("run.min.fozzy");
     let shrunk = shrink_trace(
@@ -150,7 +159,10 @@ fn golden_fuzz_record_replay_shrink_replay_min() {
         },
     )
     .expect("fuzz replay");
-    assert_eq!(outcome_class(run.summary.status), outcome_class(replay.summary.status));
+    assert_eq!(
+        outcome_class(run.summary.status),
+        outcome_class(replay.summary.status)
+    );
 
     let min = ws.join("fuzz.min.fozzy");
     let shrunk = shrink_trace(
@@ -229,7 +241,10 @@ fn golden_explore_record_replay_shrink_replay_min() {
         },
     )
     .expect("explore replay");
-    assert_eq!(outcome_class(run.summary.status), outcome_class(replay.summary.status));
+    assert_eq!(
+        outcome_class(run.summary.status),
+        outcome_class(replay.summary.status)
+    );
 
     let min = ws.join("explore.min.fozzy");
     let shrunk = shrink_trace(

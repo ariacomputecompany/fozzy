@@ -11,8 +11,13 @@ fn temp_workspace(name: &str) -> PathBuf {
 }
 
 fn fixture(name: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join(name);
-    std::fs::read_to_string(path).expect("read fixture")
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let tests_path = root.join("tests").join(name);
+    if tests_path.exists() {
+        return std::fs::read_to_string(tests_path).expect("read fixture");
+    }
+    let fixtures_path = root.join("fixtures").join(name);
+    std::fs::read_to_string(fixtures_path).expect("read fixture")
 }
 
 fn run_cli(args: &[String]) -> std::process::Output {
@@ -39,7 +44,8 @@ fn spawn_one_shot_http_server() -> (String, mpsc::Sender<()>) {
                 Ok((mut stream, _)) => {
                     let mut buf = [0u8; 1024];
                     let _ = std::io::Read::read(&mut stream, &mut buf);
-                    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                    let response =
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
                     let _ = std::io::Write::write_all(&mut stream, response);
                     break;
                 }
@@ -51,6 +57,49 @@ fn spawn_one_shot_http_server() -> (String, mpsc::Sender<()>) {
         }
     });
     (format!("http://{addr}/ping"), stop_tx)
+}
+
+fn spawn_header_http_server() -> (String, mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind http listener");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let start = std::time::Instant::now();
+        loop {
+            if stop_rx.try_recv().is_ok() || start.elapsed() > Duration::from_secs(10) {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0u8; 4096];
+                    let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let has_auth = req
+                        .lines()
+                        .any(|line| line.eq_ignore_ascii_case("authorization: bearer demo-token"));
+                    let (status, body) = if has_auth {
+                        ("200 OK", "ok")
+                    } else {
+                        ("401 Unauthorized", "missing-auth")
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\nX-Trace-Id: abc-123\r\nX-Service: fozzy-test\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    (format!("http://{addr}/headers"), stop_tx)
 }
 
 fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
@@ -142,13 +191,21 @@ fn build_zip_with_raw_entries(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
 fn common_global_and_mode_flags_parse_across_run_like_commands() {
     let ws = temp_workspace("parity");
     std::fs::write(ws.join("fozzy.toml"), "base_dir = \".fozzy\"\n").expect("write config");
-    std::fs::write(ws.join("example.fozzy.json"), fixture("example.fozzy.json")).expect("write example");
-    std::fs::write(ws.join("kv.explore.fozzy.json"), fixture("kv.explore.fozzy.json")).expect("write explore");
+    std::fs::write(ws.join("example.fozzy.json"), fixture("example.fozzy.json"))
+        .expect("write example");
+    std::fs::write(
+        ws.join("kv.explore.fozzy.json"),
+        fixture("kv.explore.fozzy.json"),
+    )
+    .expect("write explore");
 
     let cfg = ws.join("fozzy.toml").to_string_lossy().to_string();
     let cwd = ws.to_string_lossy().to_string();
     let run_scenario = ws.join("example.fozzy.json").to_string_lossy().to_string();
-    let explore_scenario = ws.join("kv.explore.fozzy.json").to_string_lossy().to_string();
+    let explore_scenario = ws
+        .join("kv.explore.fozzy.json")
+        .to_string_lossy()
+        .to_string();
 
     let run = run_cli(&[
         "run".into(),
@@ -262,7 +319,12 @@ fn strict_mode_fails_on_stale_trace_verify_warnings() {
     std::fs::write(&trace, raw).expect("write trace");
     let trace_arg = trace.to_string_lossy().to_string();
 
-    let ok = run_cli(&["trace".into(), "verify".into(), trace_arg.clone(), "--json".into()]);
+    let ok = run_cli(&[
+        "trace".into(),
+        "verify".into(),
+        trace_arg.clone(),
+        "--json".into(),
+    ]);
     assert_eq!(ok.status.code(), Some(0), "non-strict should pass");
 
     let strict = run_cli(&[
@@ -355,14 +417,13 @@ fn strict_rejects_checksumless_trace_in_verify_and_ci() {
         trace_arg.clone(),
         "--json".into(),
     ]);
-    assert_eq!(strict_verify.status.code(), Some(2), "strict trace verify should fail");
+    assert_eq!(
+        strict_verify.status.code(),
+        Some(2),
+        "strict trace verify should fail"
+    );
 
-    let strict_ci = run_cli(&[
-        "--strict".into(),
-        "ci".into(),
-        trace_arg,
-        "--json".into(),
-    ]);
+    let strict_ci = run_cli(&["--strict".into(), "ci".into(), trace_arg, "--json".into()]);
     assert_eq!(strict_ci.status.code(), Some(2), "strict ci should fail");
 }
 
@@ -402,7 +463,11 @@ fn strict_trace_verify_json_emits_single_error_document() {
 
     let stdout = String::from_utf8_lossy(&strict.stdout);
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(lines.len(), 1, "must emit a single JSON document on stdout, got: {stdout}");
+    assert_eq!(
+        lines.len(),
+        1,
+        "must emit a single JSON document on stdout, got: {stdout}"
+    );
 
     let doc: serde_json::Value = serde_json::from_str(lines[0]).expect("stdout json");
     assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
@@ -455,22 +520,14 @@ fn invalid_trace_header_is_rejected_in_non_strict_verify_replay_and_ci() {
         "trace verify must reject bad format in non-strict mode"
     );
 
-    let replay_bad_version = run_cli(&[
-        "replay".into(),
-        bad_version_arg.clone(),
-        "--json".into(),
-    ]);
+    let replay_bad_version = run_cli(&["replay".into(), bad_version_arg.clone(), "--json".into()]);
     assert_eq!(
         replay_bad_version.status.code(),
         Some(2),
         "replay must reject bad version in non-strict mode"
     );
 
-    let ci_bad_version = run_cli(&[
-        "ci".into(),
-        bad_version_arg,
-        "--json".into(),
-    ]);
+    let ci_bad_version = run_cli(&["ci".into(), bad_version_arg, "--json".into()]);
     assert_eq!(
         ci_bad_version.status.code(),
         Some(2),
@@ -518,11 +575,21 @@ fn corpus_import_rejects_raw_duplicate_entries_in_strict_and_non_strict() {
     let zip = ws.join("dup.zip");
     let out = ws.join("out");
     std::fs::create_dir_all(&out).expect("out");
-    std::fs::write(&zip, build_zip_with_raw_entries(&[(b"same.txt", b"A"), (b"same.txt", b"B")]))
-        .expect("zip");
+    std::fs::write(
+        &zip,
+        build_zip_with_raw_entries(&[(b"same.txt", b"A"), (b"same.txt", b"B")]),
+    )
+    .expect("zip");
 
     for strict in [false, true] {
-        let mut args = vec!["corpus".into(), "import".into(), zip.to_string_lossy().to_string(), "--out".into(), out.to_string_lossy().to_string(), "--json".into()];
+        let mut args = vec![
+            "corpus".into(),
+            "import".into(),
+            zip.to_string_lossy().to_string(),
+            "--out".into(),
+            out.to_string_lossy().to_string(),
+            "--json".into(),
+        ];
         if strict {
             args.insert(0, "--strict".into());
         }
@@ -530,11 +597,12 @@ fn corpus_import_rejects_raw_duplicate_entries_in_strict_and_non_strict() {
         assert_eq!(outp.status.code(), Some(2), "duplicate import must fail");
         let doc = parse_json_stdout(&outp);
         assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
-        assert!(doc
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .contains("duplicate output file in archive is not allowed"));
+        assert!(
+            doc.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("duplicate output file in archive is not allowed")
+        );
     }
 }
 
@@ -551,19 +619,31 @@ fn corpus_import_rejects_raw_nul_collision_in_strict_and_non_strict() {
     .expect("zip");
 
     for strict in [false, true] {
-        let mut args = vec!["corpus".into(), "import".into(), zip.to_string_lossy().to_string(), "--out".into(), out.to_string_lossy().to_string(), "--json".into()];
+        let mut args = vec![
+            "corpus".into(),
+            "import".into(),
+            zip.to_string_lossy().to_string(),
+            "--out".into(),
+            out.to_string_lossy().to_string(),
+            "--json".into(),
+        ];
         if strict {
             args.insert(0, "--strict".into());
         }
         let outp = run_cli(&args);
-        assert_eq!(outp.status.code(), Some(2), "nul collision import must fail");
+        assert_eq!(
+            outp.status.code(),
+            Some(2),
+            "nul collision import must fail"
+        );
         let doc = parse_json_stdout(&outp);
         assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
-        assert!(doc
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .contains("unsafe archive entry path rejected"));
+        assert!(
+            doc.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("unsafe archive entry path rejected")
+        );
     }
 }
 
@@ -599,7 +679,11 @@ fn ci_rejects_flake_budget_without_flake_runs() {
         "5".into(),
         "--json".into(),
     ]);
-    assert_eq!(normal.status.code(), Some(2), "normal mode should reject misconfig");
+    assert_eq!(
+        normal.status.code(),
+        Some(2),
+        "normal mode should reject misconfig"
+    );
 
     let strict = run_cli(&[
         "--strict".into(),
@@ -609,7 +693,11 @@ fn ci_rejects_flake_budget_without_flake_runs() {
         "5".into(),
         "--json".into(),
     ]);
-    assert_eq!(strict.status.code(), Some(2), "strict mode should reject misconfig");
+    assert_eq!(
+        strict.status.code(),
+        Some(2),
+        "strict mode should reject misconfig"
+    );
 }
 
 #[test]
@@ -653,7 +741,11 @@ fn report_flaky_rejects_duplicate_inputs() {
         "--config".into(),
         cfg,
     ]);
-    assert_eq!(out.status.code(), Some(2), "duplicate runs should be rejected");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "duplicate runs should be rejected"
+    );
 }
 
 #[cfg(unix)]
@@ -712,11 +804,12 @@ fn host_proc_backend_is_rejected_in_deterministic_mode() {
     assert_eq!(out.status.code(), Some(2), "det + host proc should fail");
     let doc = parse_json_stdout(&out);
     assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
-    assert!(doc
-        .get("message")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .contains("host proc backend is not supported in deterministic mode"));
+    assert!(
+        doc.get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("host proc backend is not supported in deterministic mode")
+    );
 }
 
 #[cfg(unix)]
@@ -745,7 +838,11 @@ fn replay_uses_recorded_proc_decisions_from_host_backend_trace() {
     ]);
     assert_eq!(run.status.code(), Some(0), "host run should pass");
 
-    let replay = run_cli(&["replay".into(), trace.to_string_lossy().to_string(), "--json".into()]);
+    let replay = run_cli(&[
+        "replay".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
     assert_eq!(
         replay.status.code(),
         Some(0),
@@ -764,14 +861,26 @@ fn exit_code_matrix_core_contract() {
     std::fs::write(&pass, fixture("example.fozzy.json")).expect("write pass");
     std::fs::write(&fail, fixture("fail.fozzy.json")).expect("write fail");
 
-    let pass_out = run_cli(&["run".into(), pass.to_string_lossy().to_string(), "--json".into()]);
+    let pass_out = run_cli(&[
+        "run".into(),
+        pass.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
     assert_eq!(pass_out.status.code(), Some(0), "pass run must exit 0");
 
-    let fail_out = run_cli(&["run".into(), fail.to_string_lossy().to_string(), "--json".into()]);
+    let fail_out = run_cli(&[
+        "run".into(),
+        fail.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
     assert_eq!(fail_out.status.code(), Some(1), "failing run must exit 1");
 
     let parse_err = run_cli(&["run".into(), "--json".into()]);
-    assert_eq!(parse_err.status.code(), Some(2), "usage/parse errors must exit 2");
+    assert_eq!(
+        parse_err.status.code(),
+        Some(2),
+        "usage/parse errors must exit 2"
+    );
 }
 
 #[test]
@@ -830,7 +939,8 @@ fn host_fs_backend_executes_real_filesystem_steps() {
         "--json".into(),
     ]);
     assert_eq!(out.status.code(), Some(0), "host fs run should pass");
-    let written = std::fs::read_to_string(ws.join("tmp").join("host-fs.txt")).expect("read host fs output");
+    let written =
+        std::fs::read_to_string(ws.join("tmp").join("host-fs.txt")).expect("read host fs output");
     assert_eq!(written, "hello");
 }
 
@@ -855,7 +965,11 @@ fn host_fs_backend_rejects_path_escape() {
         ws.to_string_lossy().to_string(),
         "--json".into(),
     ]);
-    assert_eq!(out.status.code(), Some(1), "path escape must fail as assertion");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "path escape must fail as assertion"
+    );
 }
 
 #[test]
@@ -912,8 +1026,51 @@ fn host_http_backend_executes_and_replays_from_decisions() {
         String::from_utf8_lossy(&run.stderr)
     );
 
-    let replay = run_cli(&["replay".into(), trace.to_string_lossy().to_string(), "--json".into()]);
+    let replay = run_cli(&[
+        "replay".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
     assert_eq!(replay.status.code(), Some(0), "replay must pass");
+}
+
+#[test]
+fn http_request_supports_headers_and_response_header_assertions() {
+    let (url, stop_tx) = spawn_header_http_server();
+    let ws = temp_workspace("host-http-headers");
+    let scenario = ws.join("host-http-headers.fozzy.json");
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-http-headers",
+      "steps":[
+        {{
+          "type":"http_request",
+          "method":"GET",
+          "path":"{url}",
+          "headers":{{"Authorization":"Bearer demo-token"}},
+          "expect_status":200,
+          "expect_headers":{{"x-trace-id":"abc-123","x-service":"fozzy-test"}},
+          "expect_body":"ok"
+        }}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let run = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    let _ = stop_tx.send(());
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "header request/assertions should pass: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
 }
 
 #[test]
@@ -935,4 +1092,64 @@ fn host_http_backend_is_rejected_in_deterministic_mode() {
         "--json".into(),
     ]);
     assert_eq!(out.status.code(), Some(2), "det + host http should fail");
+}
+
+#[test]
+fn host_http_backend_accepts_https_scheme() {
+    let ws = temp_workspace("host-http-https");
+    let scenario = ws.join("host-http-https.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-http-https",
+      "steps":[{"type":"http_request","method":"GET","path":"https://127.0.0.1:1/x","expect_status":200}]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let out = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "request should fail at network/tls layer"
+    );
+    let doc = parse_json_stdout(&out);
+    let msg = doc
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        !msg.contains("https is not supported"),
+        "https must be supported by host backend, got: {msg}"
+    );
+}
+
+#[test]
+fn scripted_http_when_supports_response_headers_assertions() {
+    let ws = temp_workspace("scripted-http-headers");
+    let scenario = ws.join("scripted-http-headers.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"scripted-http-headers",
+      "steps":[
+        {"type":"http_when","method":"GET","path":"/ping","status":200,"headers":{"x-test":"yes","content-type":"text/plain"},"body":"ok"},
+        {"type":"http_request","method":"GET","path":"/ping","expect_status":200,"expect_headers":{"x-test":"yes","content-type":"text/plain"},"expect_body":"ok"}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let out = run_cli(&[
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "scripted response headers should assert: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

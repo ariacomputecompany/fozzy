@@ -45,7 +45,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy run".to_string(),
                 when: "Run a single scenario one-off while iterating locally or debugging a specific failure.".to_string(),
-                how: "fozzy run tests/example.fozzy.json --det --timeout 2s --json; in --det mode timeout is enforced on virtual elapsed time. For host execution, use `--proc-backend host`, `--fs-backend host`, `--http-backend host` (non-det).".to_string(),
+                how: "fozzy run tests/example.fozzy.json --det --timeout 2s --json; in --det mode timeout is enforced on virtual elapsed time. For host execution, use `--proc-backend host`, `--fs-backend host`, `--http-backend host` (non-det). `http_request` supports `headers` + `expect_headers` assertions.".to_string(),
             },
             UsageItem {
                 command: "fozzy replay".to_string(),

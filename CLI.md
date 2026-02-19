@@ -71,6 +71,7 @@ fozzy test [globs...] [--det] [--seed <n>] [--jobs <n>] [--timeout <dur>] \
 
 `fozzy test` executes Fozzy scenario files. It does not directly launch arbitrary host test commands.
 For host execution, use `--proc-backend host`, `--fs-backend host`, and/or `--http-backend host` (non-deterministic mode only). Host-process and host-http responses are captured as replay decisions so `fozzy replay` remains deterministic.
+`http_request` supports request `headers` and response `expect_headers` assertions.
 
 ### `run`
 

@@ -7,15 +7,13 @@ use uuid::Uuid;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::{
-    wall_time_iso_utc, Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, Reporter,
-    RunIdentity, RunMode, RunSummary, Scenario, ScenarioPath, ScenarioV1Steps, TraceEvent,
-    TraceFile, TracePath, write_trace_with_policy,
+    Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, Reporter, RunIdentity,
+    RunMode, RunSummary, Scenario, ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile, TracePath,
+    wall_time_iso_utc, write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -351,7 +349,11 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
     let finished_at = wall_time_iso_utc();
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
-    let status = if failed == 0 { ExitStatus::Pass } else { ExitStatus::Fail };
+    let status = if failed == 0 {
+        ExitStatus::Pass
+    } else {
+        ExitStatus::Fail
+    };
 
     let artifacts_dir = config.runs_dir().join(&run_id);
     std::fs::create_dir_all(&artifacts_dir)?;
@@ -370,7 +372,11 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
         started_at,
         finished_at,
         duration_ms,
-        tests: Some(crate::TestCounts { passed, failed, skipped }),
+        tests: Some(crate::TestCounts {
+            passed,
+            failed,
+            skipped,
+        }),
         findings,
     };
 
@@ -382,10 +388,16 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
     }
 
     if matches!(opt.reporter, Reporter::Junit) {
-        std::fs::write(artifacts_dir.join("junit.xml"), crate::render_junit_xml(&summary))?;
+        std::fs::write(
+            artifacts_dir.join("junit.xml"),
+            crate::render_junit_xml(&summary),
+        )?;
     }
     if matches!(opt.reporter, Reporter::Html) {
-        std::fs::write(artifacts_dir.join("report.html"), crate::render_html(&summary))?;
+        std::fs::write(
+            artifacts_dir.join("report.html"),
+            crate::render_html(&summary),
+        )?;
     }
 
     Ok(RunResult { summary })
@@ -430,7 +442,9 @@ fn write_test_traces(
         return Ok(());
     }
 
-    let parent = record_base.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let parent = record_base
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
     let file_name = record_base
         .file_name()
         .and_then(|s| s.to_str())
@@ -473,7 +487,11 @@ fn write_test_traces(
     Ok(())
 }
 
-pub fn run_scenario(config: &Config, scenario_path: ScenarioPath, opt: &RunOptions) -> FozzyResult<RunResult> {
+pub fn run_scenario(
+    config: &Config,
+    scenario_path: ScenarioPath,
+    opt: &RunOptions,
+) -> FozzyResult<RunResult> {
     let seed = opt.seed.unwrap_or_else(gen_seed);
     let run_id = Uuid::new_v4().to_string();
 
@@ -519,14 +537,23 @@ pub fn run_scenario(config: &Config, scenario_path: ScenarioPath, opt: &RunOptio
 
     std::fs::write(&report_path, serde_json::to_vec_pretty(&report_summary)?)?;
     crate::write_run_manifest(&report_summary, &artifacts_dir)?;
-    std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec_pretty(&run.events)?)?;
+    std::fs::write(
+        artifacts_dir.join("events.json"),
+        serde_json::to_vec_pretty(&run.events)?,
+    )?;
     crate::write_timeline(&run.events, &artifacts_dir.join("timeline.json"))?;
 
     if matches!(opt.reporter, Reporter::Junit) {
-        std::fs::write(artifacts_dir.join("junit.xml"), crate::render_junit_xml(&report_summary))?;
+        std::fs::write(
+            artifacts_dir.join("junit.xml"),
+            crate::render_junit_xml(&report_summary),
+        )?;
     }
     if matches!(opt.reporter, Reporter::Html) {
-        std::fs::write(artifacts_dir.join("report.html"), crate::render_html(&report_summary))?;
+        std::fs::write(
+            artifacts_dir.join("report.html"),
+            crate::render_html(&report_summary),
+        )?;
     }
 
     let should_record = opt.record_trace_to.is_some() || run.status != ExitStatus::Pass;
@@ -553,7 +580,11 @@ pub fn run_scenario(config: &Config, scenario_path: ScenarioPath, opt: &RunOptio
     Ok(RunResult { summary })
 }
 
-pub fn replay_trace(config: &Config, trace_path: TracePath, opt: &ReplayOptions) -> FozzyResult<RunResult> {
+pub fn replay_trace(
+    config: &Config,
+    trace_path: TracePath,
+    opt: &ReplayOptions,
+) -> FozzyResult<RunResult> {
     let trace = TraceFile::read_json(trace_path.as_path())?;
     if trace.fuzz.is_some() && trace.scenario.is_none() {
         return crate::replay_fuzz_trace(config, &trace);
@@ -565,10 +596,9 @@ pub fn replay_trace(config: &Config, trace_path: TracePath, opt: &ReplayOptions)
     let seed = trace.summary.identity.seed;
     let run_id = Uuid::new_v4().to_string();
 
-    let scenario = trace
-        .scenario
-        .clone()
-        .ok_or_else(|| FozzyError::Trace("trace missing embedded scenario; cannot replay".to_string()))?;
+    let scenario = trace.scenario.clone().ok_or_else(|| {
+        FozzyError::Trace("trace missing embedded scenario; cannot replay".to_string())
+    })?;
 
     let scenario_path = trace
         .scenario_path
@@ -632,14 +662,21 @@ pub fn replay_trace(config: &Config, trace_path: TracePath, opt: &ReplayOptions)
     std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
     if opt.dump_events {
-        std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec_pretty(&run.events)?)?;
+        std::fs::write(
+            artifacts_dir.join("events.json"),
+            serde_json::to_vec_pretty(&run.events)?,
+        )?;
         crate::write_timeline(&run.events, &artifacts_dir.join("timeline.json"))?;
     }
 
     Ok(RunResult { summary })
 }
 
-pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions) -> FozzyResult<ShrinkResult> {
+pub fn shrink_trace(
+    config: &Config,
+    trace_path: TracePath,
+    opt: &ShrinkOptions,
+) -> FozzyResult<ShrinkResult> {
     let trace = TraceFile::read_json(trace_path.as_path())?;
     if trace.fuzz.is_some() && trace.scenario.is_none() {
         return crate::shrink_fuzz_trace(config, trace_path, opt);
@@ -650,10 +687,9 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
     let target_status = trace.summary.status;
     let seed = trace.summary.identity.seed;
 
-    let scenario = trace
-        .scenario
-        .clone()
-        .ok_or_else(|| FozzyError::Trace("trace missing embedded scenario; cannot shrink".to_string()))?;
+    let scenario = trace.scenario.clone().ok_or_else(|| {
+        FozzyError::Trace("trace missing embedded scenario; cannot shrink".to_string())
+    })?;
 
     if opt.minimize != ShrinkMinimize::All && opt.minimize != ShrinkMinimize::Input {
         return Err(FozzyError::InvalidArgument(
@@ -805,7 +841,8 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
         if std::env::var("RUST_BACKTRACE").is_ok() {
             signals.push(NondeterminismSignal {
                 source: "env".to_string(),
-                detail: "RUST_BACKTRACE is set; ok, but note it can change stderr output".to_string(),
+                detail: "RUST_BACKTRACE is set; ok, but note it can change stderr output"
+                    .to_string(),
             });
         }
     }
@@ -852,7 +889,8 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
                         runs
                     ),
                     hint: Some(
-                        "Run `fozzy run --det --seed <seed>` repeatedly and compare traces/events.".to_string(),
+                        "Run `fozzy run --det --seed <seed>` repeatedly and compare traces/events."
+                            .to_string(),
                     ),
                 });
             }
@@ -876,7 +914,11 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
     Ok(DoctorReport {
         ok,
         issues,
-        nondeterminism_signals: if signals.is_empty() { None } else { Some(signals) },
+        nondeterminism_signals: if signals.is_empty() {
+            None
+        } else {
+            Some(signals)
+        },
         determinism_audit,
     })
 }
@@ -1056,7 +1098,10 @@ fn run_scenario_replay_inner(
         ctx.replay = Some(ReplayCursor::new(d));
     }
     let has_scheduler_pick = decisions
-        .map(|d| d.iter().any(|x| matches!(x, Decision::SchedulerPick { .. })))
+        .map(|d| {
+            d.iter()
+                .any(|x| matches!(x, Decision::SchedulerPick { .. }))
+        })
         .unwrap_or(false);
 
     let started = Instant::now();
@@ -1078,7 +1123,11 @@ fn run_scenario_replay_inner(
                         message: "replay stopped at --until budget".to_string(),
                         location: None,
                     });
-                    return Ok(ctx.finish(ExitStatus::Timeout, PathBuf::from(scenario_path), scenario.clone()));
+                    return Ok(ctx.finish(
+                        ExitStatus::Timeout,
+                        PathBuf::from(scenario_path),
+                        scenario.clone(),
+                    ));
                 }
             }
 
@@ -1089,7 +1138,11 @@ fn run_scenario_replay_inner(
             ctx.expect_scheduler_pick(item.id, &item.label)?;
             if let Err(finding) = ctx.exec_step(step_def) {
                 ctx.findings.push(finding);
-                return Ok(ctx.finish(ExitStatus::Fail, PathBuf::from(scenario_path), scenario.clone()));
+                return Ok(ctx.finish(
+                    ExitStatus::Fail,
+                    PathBuf::from(scenario_path),
+                    scenario.clone(),
+                ));
             }
         }
     } else {
@@ -1102,7 +1155,11 @@ fn run_scenario_replay_inner(
                         message: "replay stopped at --until budget".to_string(),
                         location: None,
                     });
-                    return Ok(ctx.finish(ExitStatus::Timeout, PathBuf::from(scenario_path), scenario.clone()));
+                    return Ok(ctx.finish(
+                        ExitStatus::Timeout,
+                        PathBuf::from(scenario_path),
+                        scenario.clone(),
+                    ));
                 }
             }
 
@@ -1113,7 +1170,11 @@ fn run_scenario_replay_inner(
             ctx.expect_step(idx)?;
             if let Err(finding) = ctx.exec_step(step_def) {
                 ctx.findings.push(finding);
-                return Ok(ctx.finish(ExitStatus::Fail, PathBuf::from(scenario_path), scenario.clone()));
+                return Ok(ctx.finish(
+                    ExitStatus::Fail,
+                    PathBuf::from(scenario_path),
+                    scenario.clone(),
+                ));
             }
         }
     }
@@ -1123,14 +1184,25 @@ fn run_scenario_replay_inner(
             ctx.findings.push(Finding {
                 kind: FindingKind::Checker,
                 title: "replay_unused_decisions".to_string(),
-                message: format!("replay finished with {} unused decisions", cursor.remaining()),
+                message: format!(
+                    "replay finished with {} unused decisions",
+                    cursor.remaining()
+                ),
                 location: None,
             });
-            return Ok(ctx.finish(ExitStatus::Fail, PathBuf::from(scenario_path), scenario.clone()));
+            return Ok(ctx.finish(
+                ExitStatus::Fail,
+                PathBuf::from(scenario_path),
+                scenario.clone(),
+            ));
         }
     }
 
-    Ok(ctx.finish(ExitStatus::Pass, PathBuf::from(scenario_path), scenario.clone()))
+    Ok(ctx.finish(
+        ExitStatus::Pass,
+        PathBuf::from(scenario_path),
+        scenario.clone(),
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -1201,7 +1273,12 @@ impl ExecCtx {
         }
     }
 
-    fn finish(self, status: ExitStatus, scenario_path: PathBuf, embedded: ScenarioV1Steps) -> ScenarioRun {
+    fn finish(
+        self,
+        status: ExitStatus,
+        scenario_path: PathBuf,
+        embedded: ScenarioV1Steps,
+    ) -> ScenarioRun {
         ScenarioRun {
             status,
             findings: self.findings,
@@ -1218,8 +1295,12 @@ impl ExecCtx {
         };
         match cursor.next() {
             Some(Decision::Step { index, .. }) if *index == idx => Ok(()),
-            Some(other) => Err(FozzyError::Trace(format!("replay drift at step {idx}: expected step decision, got {other:?}"))),
-            None => Err(FozzyError::Trace(format!("replay drift at step {idx}: missing decision"))),
+            Some(other) => Err(FozzyError::Trace(format!(
+                "replay drift at step {idx}: expected step decision, got {other:?}"
+            ))),
+            None => Err(FozzyError::Trace(format!(
+                "replay drift at step {idx}: missing decision"
+            ))),
         }
     }
 
@@ -1436,7 +1517,9 @@ impl ExecCtx {
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "assert_ok".to_string(),
-                        message: msg.clone().unwrap_or_else(|| "assert_ok failed".to_string()),
+                        message: msg
+                            .clone()
+                            .unwrap_or_else(|| "assert_ok failed".to_string()),
                         location: None,
                     });
                 }
@@ -1448,7 +1531,9 @@ impl ExecCtx {
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "assert_eq_int".to_string(),
-                        message: msg.clone().unwrap_or_else(|| format!("expected {a} == {b}")),
+                        message: msg
+                            .clone()
+                            .unwrap_or_else(|| format!("expected {a} == {b}")),
                         location: None,
                     });
                 }
@@ -1460,7 +1545,9 @@ impl ExecCtx {
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "assert_ne_int".to_string(),
-                        message: msg.clone().unwrap_or_else(|| format!("expected {a} != {b}")),
+                        message: msg
+                            .clone()
+                            .unwrap_or_else(|| format!("expected {a} != {b}")),
                         location: None,
                     });
                 }
@@ -1472,7 +1559,9 @@ impl ExecCtx {
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "assert_eq_str".to_string(),
-                        message: msg.clone().unwrap_or_else(|| format!("expected {a:?} == {b:?}")),
+                        message: msg
+                            .clone()
+                            .unwrap_or_else(|| format!("expected {a:?} == {b:?}")),
                         location: None,
                     });
                 }
@@ -1484,7 +1573,9 @@ impl ExecCtx {
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "assert_ne_str".to_string(),
-                        message: msg.clone().unwrap_or_else(|| format!("expected {a:?} != {b:?}")),
+                        message: msg
+                            .clone()
+                            .unwrap_or_else(|| format!("expected {a:?} != {b:?}")),
                         location: None,
                     });
                 }
@@ -1541,7 +1632,8 @@ impl ExecCtx {
                     return Err(Finding {
                         kind: FindingKind::Checker,
                         title: "advance_requires_det".to_string(),
-                        message: "Advance is only supported in deterministic mode (--det)".to_string(),
+                        message: "Advance is only supported in deterministic mode (--det)"
+                            .to_string(),
                         location: None,
                     });
                 }
@@ -1587,7 +1679,11 @@ impl ExecCtx {
                 Ok(())
             }
 
-            crate::Step::GetKvAssert { key, equals, is_null } => {
+            crate::Step::GetKvAssert {
+                key,
+                equals,
+                is_null,
+            } => {
                 let v = self.kv.get(key).cloned();
                 if is_null.unwrap_or(false) {
                     if v.is_some() {
@@ -1678,6 +1774,7 @@ impl ExecCtx {
                 method,
                 path,
                 status,
+                headers,
                 body,
                 json,
                 delay,
@@ -1687,7 +1784,8 @@ impl ExecCtx {
                     return Err(Finding {
                         kind: FindingKind::Checker,
                         title: "http_when_backend".to_string(),
-                        message: "http_when is only supported with scripted http backend".to_string(),
+                        message: "http_when is only supported with scripted http backend"
+                            .to_string(),
                         location: None,
                     });
                 }
@@ -1716,6 +1814,7 @@ impl ExecCtx {
                     method: method.clone(),
                     path: path.clone(),
                     status: *status,
+                    headers: canonical_headers(headers.as_ref())?,
                     body: body.clone(),
                     json: json.clone(),
                     delay_ms,
@@ -1727,8 +1826,10 @@ impl ExecCtx {
             crate::Step::HttpRequest {
                 method,
                 path,
+                headers,
                 body,
                 expect_status,
+                expect_headers,
                 expect_body,
                 expect_json,
                 save_body_as,
@@ -1737,16 +1838,21 @@ impl ExecCtx {
                     return Err(Finding {
                         kind: FindingKind::Checker,
                         title: "http_request_invalid".to_string(),
-                        message: "HttpRequest: cannot set both expect_body and expect_json".to_string(),
+                        message: "HttpRequest: cannot set both expect_body and expect_json"
+                            .to_string(),
                         location: None,
                     });
                 }
-                let (status_code, resp_body, backend) = if let Some(Decision::HttpRequest {
-                    method: replay_method,
-                    path: replay_path,
-                    status_code,
-                    body,
-                }) = self.replay_peek().cloned()
+                let (status_code, resp_headers, resp_body, backend) = if let Some(
+                    Decision::HttpRequest {
+                        method: replay_method,
+                        path: replay_path,
+                        status_code,
+                        headers,
+                        body,
+                    },
+                ) =
+                    self.replay_peek().cloned()
                 {
                     if replay_method != *method || replay_path != *path {
                         return Err(Finding {
@@ -1759,7 +1865,7 @@ impl ExecCtx {
                         });
                     }
                     let _ = self.replay_take_if(|d| matches!(d, Decision::HttpRequest { .. }));
-                    (status_code, body, "replay".to_string())
+                    (status_code, headers, body, "replay".to_string())
                 } else if matches!(self.http_backend, HttpBackend::Host) {
                     if !path.starts_with("http://") && !path.starts_with("https://") {
                         return Err(Finding {
@@ -1771,19 +1877,28 @@ impl ExecCtx {
                             location: None,
                         });
                     }
-                    let response = dispatch_host_http(method, path, body.as_deref()).map_err(|message| Finding {
-                        kind: FindingKind::Assertion,
-                        title: "http_host_request".to_string(),
-                        message,
-                        location: None,
-                    })?;
+                    let request_headers = canonical_headers(headers.as_ref())?;
+                    let response =
+                        dispatch_host_http(method, path, &request_headers, body.as_deref())
+                            .map_err(|message| Finding {
+                                kind: FindingKind::Assertion,
+                                title: "http_host_request".to_string(),
+                                message,
+                                location: None,
+                            })?;
                     self.decisions.push(Decision::HttpRequest {
                         method: method.clone(),
                         path: path.clone(),
                         status_code: response.status,
+                        headers: response.headers.clone(),
                         body: response.body.clone(),
                     });
-                    (response.status, response.body, "host".to_string())
+                    (
+                        response.status,
+                        response.headers,
+                        response.body,
+                        "host".to_string(),
+                    )
                 } else {
                     let rule_idx = self
                         .http_rules
@@ -1820,14 +1935,22 @@ impl ExecCtx {
                     } else {
                         rule.body.clone().unwrap_or_default()
                     };
-                    (rule.status, resp_body, "scripted".to_string())
+                    (
+                        rule.status,
+                        rule.headers.clone(),
+                        resp_body,
+                        "scripted".to_string(),
+                    )
                 };
 
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "http_request".to_string(),
                     fields: serde_json::Map::from_iter([
-                        ("method".to_string(), serde_json::Value::String(method.clone())),
+                        (
+                            "method".to_string(),
+                            serde_json::Value::String(method.clone()),
+                        ),
                         ("path".to_string(), serde_json::Value::String(path.clone())),
                         ("backend".to_string(), serde_json::Value::String(backend)),
                         (
@@ -1837,6 +1960,12 @@ impl ExecCtx {
                         (
                             "has_body".to_string(),
                             serde_json::Value::Bool(!resp_body.is_empty()),
+                        ),
+                        (
+                            "header_count".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(
+                                resp_headers.len() as u64
+                            )),
                         ),
                     ]),
                 });
@@ -1864,12 +1993,13 @@ impl ExecCtx {
                 }
 
                 if let Some(expected) = expect_json {
-                    let got: serde_json::Value = serde_json::from_str(&resp_body).map_err(|e| Finding {
-                        kind: FindingKind::Assertion,
-                        title: "http_json_parse".to_string(),
-                        message: e.to_string(),
-                        location: None,
-                    })?;
+                    let got: serde_json::Value =
+                        serde_json::from_str(&resp_body).map_err(|e| Finding {
+                            kind: FindingKind::Assertion,
+                            title: "http_json_parse".to_string(),
+                            message: e.to_string(),
+                            location: None,
+                        })?;
                     if got != *expected {
                         return Err(Finding {
                             kind: FindingKind::Assertion,
@@ -1877,6 +2007,23 @@ impl ExecCtx {
                             message: "http response json mismatch".to_string(),
                             location: None,
                         });
+                    }
+                }
+
+                if let Some(expected_headers) = expect_headers {
+                    let expected = canonical_headers(Some(expected_headers))?;
+                    for (k, v) in expected {
+                        let got = resp_headers.get(&k);
+                        if got != Some(&v) {
+                            return Err(Finding {
+                                kind: FindingKind::Assertion,
+                                title: "http_headers".to_string(),
+                                message: format!(
+                                    "http response header mismatch for {k:?}: expected {v:?}, got {got:?}"
+                                ),
+                                location: None,
+                            });
+                        }
                     }
                 }
 
@@ -1946,7 +2093,10 @@ impl ExecCtx {
                     Some(_) | None => None,
                 };
 
-                let idx = self.proc_rules.iter().position(|r| r.remaining > 0 && r.cmd == *cmd && r.args == call_args);
+                let idx = self
+                    .proc_rules
+                    .iter()
+                    .position(|r| r.remaining > 0 && r.cmd == *cmd && r.args == call_args);
                 let rule = if let Some(rule) = replay_rule {
                     rule
                 } else if let Some(idx) = idx {
@@ -1963,7 +2113,10 @@ impl ExecCtx {
                         .map_err(|e| Finding {
                             kind: FindingKind::Assertion,
                             title: "proc_spawn_host".to_string(),
-                            message: format!("host proc spawn failed for {cmd:?} {:?}: {e}", call_args),
+                            message: format!(
+                                "host proc spawn failed for {cmd:?} {:?}: {e}",
+                                call_args
+                            ),
                             location: None,
                         })?;
                     ProcRule {
@@ -2092,7 +2245,10 @@ impl ExecCtx {
             crate::Step::NetDeliverOne { strategy } => {
                 let mut deliverable = Vec::new();
                 for (idx, msg) in self.net_queue.iter().enumerate() {
-                    if self.net_partitions.contains(&sorted_pair(&msg.from, &msg.to)) {
+                    if self
+                        .net_partitions
+                        .contains(&sorted_pair(&msg.from, &msg.to))
+                    {
                         continue;
                     }
                     deliverable.push((idx, msg.id));
@@ -2124,7 +2280,8 @@ impl ExecCtx {
                                 location: None,
                             });
                         }
-                        let _ = self.replay_take_if(|d| matches!(d, Decision::NetDeliverPick { .. }));
+                        let _ =
+                            self.replay_take_if(|d| matches!(d, Decision::NetDeliverPick { .. }));
                         id
                     }
                     _ => {
@@ -2140,11 +2297,16 @@ impl ExecCtx {
                     message_id: picked_message_id,
                 });
 
-                let Some((idx, _)) = deliverable.into_iter().find(|(_, id)| *id == picked_message_id) else {
+                let Some((idx, _)) = deliverable
+                    .into_iter()
+                    .find(|(_, id)| *id == picked_message_id)
+                else {
                     return Err(Finding {
                         kind: FindingKind::Checker,
                         title: "net_deliver".to_string(),
-                        message: format!("selected message id {picked_message_id} no longer in queue"),
+                        message: format!(
+                            "selected message id {picked_message_id} no longer in queue"
+                        ),
                         location: None,
                     });
                 };
@@ -2164,9 +2326,9 @@ impl ExecCtx {
                     }
                 }
 
-                let should_drop = match self.replay_take_if(|d| {
-                    matches!(d, Decision::NetDrop { message_id, .. } if *message_id == msg.id)
-                }) {
+                let should_drop = match self.replay_take_if(
+                    |d| matches!(d, Decision::NetDrop { message_id, .. } if *message_id == msg.id),
+                ) {
                     Some(Decision::NetDrop { dropped, .. }) => dropped,
                     _ => {
                         if self.net_drop_rate <= 0.0 {
@@ -2195,7 +2357,10 @@ impl ExecCtx {
                     return Ok(());
                 }
 
-                self.net_inbox.entry(msg.to.clone()).or_default().push(msg.clone());
+                self.net_inbox
+                    .entry(msg.to.clone())
+                    .or_default()
+                    .push(msg.clone());
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "net_deliver".to_string(),
@@ -2208,7 +2373,11 @@ impl ExecCtx {
                 Ok(())
             }
 
-            crate::Step::NetRecvAssert { node, from, payload } => {
+            crate::Step::NetRecvAssert {
+                node,
+                from,
+                payload,
+            } => {
                 let inbox = self.net_inbox.entry(node.clone()).or_default();
                 let pos = inbox.iter().position(|m| {
                     if let Some(f) = from {
@@ -2222,7 +2391,9 @@ impl ExecCtx {
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "net_recv_assert".to_string(),
-                        message: format!("no matching inbox message for node {node:?} payload {payload:?}"),
+                        message: format!(
+                            "no matching inbox message for node {node:?} payload {payload:?}"
+                        ),
                         location: None,
                     });
                 };
@@ -2231,7 +2402,9 @@ impl ExecCtx {
             }
 
             crate::Step::AssertThrows { steps } => self.exec_expect_failure("assert_throws", steps),
-            crate::Step::AssertRejects { steps } => self.exec_expect_failure("assert_rejects", steps),
+            crate::Step::AssertRejects { steps } => {
+                self.exec_expect_failure("assert_rejects", steps)
+            }
 
             crate::Step::AssertEventuallyKv {
                 key,
@@ -2298,9 +2471,9 @@ impl ExecCtx {
                         return Err(Finding {
                             kind: FindingKind::Assertion,
                             title: "assert_never_kv".to_string(),
-                            message: msg
-                                .clone()
-                                .unwrap_or_else(|| format!("key {key:?} became forbidden value {equals:?}")),
+                            message: msg.clone().unwrap_or_else(|| {
+                                format!("key {key:?} became forbidden value {equals:?}")
+                            }),
                             location: None,
                         });
                     }
@@ -2360,10 +2533,46 @@ impl ExecCtx {
 #[derive(Debug, Clone)]
 struct HttpResponseData {
     status: u16,
+    headers: BTreeMap<String, String>,
     body: String,
 }
 
-fn dispatch_host_http(method: &str, url: &str, body: Option<&str>) -> Result<HttpResponseData, String> {
+fn canonical_headers(
+    headers: Option<&BTreeMap<String, String>>,
+) -> Result<BTreeMap<String, String>, Finding> {
+    let mut out = BTreeMap::new();
+    let Some(headers) = headers else {
+        return Ok(out);
+    };
+    for (k, v) in headers {
+        let key = k.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            return Err(Finding {
+                kind: FindingKind::Checker,
+                title: "http_header_invalid".to_string(),
+                message: "http header name cannot be empty".to_string(),
+                location: None,
+            });
+        }
+        if key.contains('\n') || key.contains('\r') || v.contains('\n') || v.contains('\r') {
+            return Err(Finding {
+                kind: FindingKind::Checker,
+                title: "http_header_invalid".to_string(),
+                message: format!("http header contains forbidden newline: {k:?}"),
+                location: None,
+            });
+        }
+        out.insert(key, v.to_string());
+    }
+    Ok(out)
+}
+
+fn dispatch_host_http(
+    method: &str,
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    body: Option<&str>,
+) -> Result<HttpResponseData, String> {
     let method = method.to_ascii_uppercase();
     if !matches!(
         method.as_str(),
@@ -2374,71 +2583,43 @@ fn dispatch_host_http(method: &str, url: &str, body: Option<&str>) -> Result<Htt
         ));
     }
 
-    if !url.starts_with("http://") {
-        if url.starts_with("https://") {
-            return Err("https is not supported by the built-in host http backend; use scripted backend or plain http:// endpoint".to_string());
-        }
-        return Err(format!("invalid host http url {url:?}; expected http://<host>[:port]/path"));
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(format!(
+            "invalid host http url {url:?}; expected http(s)://<host>[:port]/path"
+        ));
     }
-
-    let without_scheme = &url["http://".len()..];
-    let (host_port, path) = match without_scheme.split_once('/') {
-        Some((h, p)) => (h, format!("/{}", p)),
-        None => (without_scheme, "/".to_string()),
-    };
-    let (host, port) = match host_port.split_once(':') {
-        Some((h, p)) => {
-            let parsed = p
-                .parse::<u16>()
-                .map_err(|e| format!("invalid host http port in {url:?}: {e}"))?;
-            (h, parsed)
-        }
-        None => (host_port, 80u16),
-    };
-    if host.is_empty() {
-        return Err(format!("invalid host http url {url:?}; host is empty"));
+    let mut req = ureq::request(&method, url);
+    for (k, v) in headers {
+        req = req.set(k, v);
     }
-
-    let mut stream = TcpStream::connect((host, port))
-        .map_err(|e| format!("host http connect failed for {url}: {e}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .map_err(|e| format!("failed to set read timeout for {url}: {e}"))?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .map_err(|e| format!("failed to set write timeout for {url}: {e}"))?;
-
-    let payload = body.unwrap_or("");
-    let content_len = payload.len();
-    let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {content_len}\r\n\r\n{payload}"
-    );
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("host http write failed for {method} {url}: {e}"))?;
-
-    let mut raw = String::new();
-    stream
-        .read_to_string(&mut raw)
-        .map_err(|e| format!("host http read failed for {method} {url}: {e}"))?;
-
-    let (head, body) = raw
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| format!("host http response missing header/body separator for {method} {url}"))?;
-    let mut lines = head.lines();
-    let status_line = lines
-        .next()
-        .ok_or_else(|| format!("host http response missing status line for {method} {url}"))?;
-    let status_code = status_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| format!("host http malformed status line for {method} {url}: {status_line:?}"))?
-        .parse::<u16>()
-        .map_err(|e| format!("host http invalid status code for {method} {url}: {e}"))?;
-
+    let result = if let Some(payload) = body {
+        req.send_string(payload)
+    } else {
+        req.call()
+    };
+    let response = match result {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(_, resp)) => resp,
+        Err(err) => {
+            return Err(format!(
+                "host http request failed for {method} {url}: {err}"
+            ));
+        }
+    };
+    let mut out_headers = BTreeMap::new();
+    for name in response.headers_names() {
+        if let Some(val) = response.header(&name) {
+            out_headers.insert(name.to_ascii_lowercase(), val.to_string());
+        }
+    }
+    let status_code = response.status();
+    let body = response
+        .into_string()
+        .map_err(|e| format!("host http body read failed for {method} {url}: {e}"))?;
     Ok(HttpResponseData {
         status: status_code,
-        body: body.to_string(),
+        headers: out_headers,
+        body,
     })
 }
 
@@ -2447,6 +2628,7 @@ struct HttpRule {
     method: String,
     path: String,
     status: u16,
+    headers: BTreeMap<String, String>,
     body: Option<String>,
     json: Option<serde_json::Value>,
     delay_ms: u64,

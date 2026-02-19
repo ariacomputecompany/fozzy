@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use std::path::{Path, PathBuf};
 
-use crate::{parse_duration, FozzyError, FozzyResult};
+use crate::{FozzyError, FozzyResult, parse_duration};
 
 #[derive(Debug, Clone)]
 pub struct ScenarioPath {
@@ -64,47 +64,133 @@ pub struct DistributedDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DistributedStep {
-    ClientPut { node: String, key: String, value: String },
-    ClientGetAssert { node: String, key: String, equals: Option<String>, is_null: Option<bool> },
-    Partition { a: String, b: String },
-    Heal { a: String, b: String },
-    Crash { node: String },
-    Restart { node: String },
-    Tick { duration: String },
+    ClientPut {
+        node: String,
+        key: String,
+        value: String,
+    },
+    ClientGetAssert {
+        node: String,
+        key: String,
+        equals: Option<String>,
+        is_null: Option<bool>,
+    },
+    Partition {
+        a: String,
+        b: String,
+    },
+    Heal {
+        a: String,
+        b: String,
+    },
+    Crash {
+        node: String,
+    },
+    Restart {
+        node: String,
+    },
+    Tick {
+        duration: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DistributedInvariant {
-    KvAllEqual { key: String },
-    KvPresentOnAll { key: String },
-    KvNodeEquals { node: String, key: String, equals: String },
+    KvAllEqual {
+        key: String,
+    },
+    KvPresentOnAll {
+        key: String,
+    },
+    KvNodeEquals {
+        node: String,
+        key: String,
+        equals: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Step {
-    TraceEvent { name: String, #[serde(default)] fields: serde_json::Map<String, serde_json::Value> },
-    RandU64 { #[serde(default)] key: Option<String> },
-    AssertOk { value: bool, #[serde(default)] msg: Option<String> },
-    AssertEqInt { a: i64, b: i64, #[serde(default)] msg: Option<String> },
-    AssertNeInt { a: i64, b: i64, #[serde(default)] msg: Option<String> },
-    AssertEqStr { a: String, b: String, #[serde(default)] msg: Option<String> },
-    AssertNeStr { a: String, b: String, #[serde(default)] msg: Option<String> },
-    Sleep { duration: String },
-    Advance { duration: String },
-    Freeze { #[serde(default)] at_ms: Option<u64> },
+    TraceEvent {
+        name: String,
+        #[serde(default)]
+        fields: serde_json::Map<String, serde_json::Value>,
+    },
+    RandU64 {
+        #[serde(default)]
+        key: Option<String>,
+    },
+    AssertOk {
+        value: bool,
+        #[serde(default)]
+        msg: Option<String>,
+    },
+    AssertEqInt {
+        a: i64,
+        b: i64,
+        #[serde(default)]
+        msg: Option<String>,
+    },
+    AssertNeInt {
+        a: i64,
+        b: i64,
+        #[serde(default)]
+        msg: Option<String>,
+    },
+    AssertEqStr {
+        a: String,
+        b: String,
+        #[serde(default)]
+        msg: Option<String>,
+    },
+    AssertNeStr {
+        a: String,
+        b: String,
+        #[serde(default)]
+        msg: Option<String>,
+    },
+    Sleep {
+        duration: String,
+    },
+    Advance {
+        duration: String,
+    },
+    Freeze {
+        #[serde(default)]
+        at_ms: Option<u64>,
+    },
     Unfreeze,
-    SetKv { key: String, value: String },
-    GetKvAssert { key: String, equals: Option<String>, is_null: Option<bool> },
-    FsWrite { path: String, data: String },
-    FsReadAssert { path: String, equals: String },
-    FsSnapshot { name: String },
-    FsRestore { name: String },
+    SetKv {
+        key: String,
+        value: String,
+    },
+    GetKvAssert {
+        key: String,
+        equals: Option<String>,
+        is_null: Option<bool>,
+    },
+    FsWrite {
+        path: String,
+        data: String,
+    },
+    FsReadAssert {
+        path: String,
+        equals: String,
+    },
+    FsSnapshot {
+        name: String,
+    },
+    FsRestore {
+        name: String,
+    },
     HttpWhen {
         method: String,
         path: String,
         status: u16,
+        #[serde(default)]
+        headers: Option<std::collections::BTreeMap<String, String>>,
         #[serde(default)]
         body: Option<String>,
         #[serde(default)]
@@ -118,9 +204,13 @@ pub enum Step {
         method: String,
         path: String,
         #[serde(default)]
+        headers: Option<std::collections::BTreeMap<String, String>>,
+        #[serde(default)]
         body: Option<String>,
         #[serde(default)]
         expect_status: Option<u16>,
+        #[serde(default)]
+        expect_headers: Option<std::collections::BTreeMap<String, String>>,
         #[serde(default)]
         expect_body: Option<String>,
         #[serde(default)]
@@ -204,8 +294,12 @@ pub enum Step {
         #[serde(default)]
         msg: Option<String>,
     },
-    Fail { message: String },
-    Panic { message: String },
+    Fail {
+        message: String,
+    },
+    Panic {
+        message: String,
+    },
 }
 
 impl Step {
@@ -267,7 +361,10 @@ impl Scenario {
                         s.version
                     )));
                 }
-                Ok(Self { name: s.name, steps: s.steps })
+                Ok(Self {
+                    name: s.name,
+                    steps: s.steps,
+                })
             }
             ScenarioFile::Suites(_s) => Err(FozzyError::Scenario(format!(
                 "scenario file {} uses `suites` without an executable step DSL (v0.1 only supports `steps`)",
@@ -286,11 +383,16 @@ impl Scenario {
                 Step::Sleep { duration } | Step::Advance { duration } => {
                     parse_duration(duration)?;
                 }
-                Step::AssertEventuallyKv { within, poll, .. } | Step::AssertNeverKv { within, poll, .. } => {
+                Step::AssertEventuallyKv { within, poll, .. }
+                | Step::AssertNeverKv { within, poll, .. } => {
                     parse_duration(within)?;
                     parse_duration(poll)?;
                 }
-                Step::GetKvAssert { equals: Some(_), is_null: Some(true), .. } => {
+                Step::GetKvAssert {
+                    equals: Some(_),
+                    is_null: Some(true),
+                    ..
+                } => {
                     return Err(FozzyError::Scenario(
                         "GetKvAssert: cannot set both equals and is_null=true".to_string(),
                     ));
@@ -310,9 +412,17 @@ impl Scenario {
                     name: "setup".to_string(),
                     fields: serde_json::Map::new(),
                 },
-                Step::RandU64 { key: Some("rand".to_string()) },
-                Step::Sleep { duration: "10ms".to_string() },
-                Step::AssertEqInt { a: 1, b: 1, msg: None },
+                Step::RandU64 {
+                    key: Some("rand".to_string()),
+                },
+                Step::Sleep {
+                    duration: "10ms".to_string(),
+                },
+                Step::AssertEqInt {
+                    a: 1,
+                    b: 1,
+                    msg: None,
+                },
             ],
         }
     }

@@ -35,6 +35,8 @@ Fozzy uses deterministic-first capability backends, with host execution availabl
 `virtual` overlay by default, optional host mode via `--fs-backend host` (cwd-root sandboxed).
 - HTTP:
 `scripted` (`http_when` + `http_request`) by default, optional host mode via `--http-backend host`.
+`http_request` supports request headers and response-header assertions (`expect_headers`) in both scripted and host modes.
+Host HTTP backend supports both `http://` and `https://` endpoints.
 
 Host backends are non-deterministic execution modes and are rejected with `--det`.
 Host proc/http outcomes are captured as replay decisions so `fozzy replay` remains deterministic.
@@ -69,7 +71,7 @@ fozzy run tests/example.fozzy.json --det --json
 Record/replay/shrink flow:
 
 ```bash
-fozzy run tests/fail.fozzy.json --det --json
+fozzy run fixtures/fail.fozzy.json --det --json
 fozzy replay .fozzy/runs/<runId>/trace.fozzy --json
 fozzy shrink .fozzy/runs/<runId>/trace.fozzy --minimize all --json
 ```
