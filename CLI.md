@@ -26,6 +26,7 @@ Global flags can be placed before or after subcommands.
 | `--config <path>` | Config file path (default: `fozzy.toml`) |
 | `--cwd <path>` | Execute in the specified working directory |
 | `--log <trace\|debug\|info\|warn\|error>` | Log level |
+| `--proc-backend <scripted\|host>` | Process backend for `proc_spawn` (default from config: `scripted`) |
 | `--json` | Emit machine-readable JSON |
 | `--strict` | Promote warning-like conditions to failures |
 | `--no-color` | Disable ANSI color output |
@@ -67,6 +68,7 @@ fozzy test [globs...] [--det] [--seed <n>] [--jobs <n>] [--timeout <dur>] \
 ```
 
 `fozzy test` executes Fozzy scenario files. It does not directly launch arbitrary host test commands.
+For `proc_spawn`, use `--proc-backend host` to execute real OS processes (non-deterministic mode only). Recorded traces capture process results as replay decisions so `fozzy replay` remains deterministic.
 
 ### `run`
 

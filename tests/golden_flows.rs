@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use fozzy::{
     explore, fuzz, replay_trace, run_scenario, shrink_trace, Config, ExploreOptions, ExitStatus, FuzzMode,
-    FuzzOptions, FuzzTarget, RecordCollisionPolicy, ReplayOptions, Reporter, RunOptions, ScenarioPath, ScheduleStrategy,
+    FuzzOptions, FuzzTarget, ProcBackend, RecordCollisionPolicy, ReplayOptions, Reporter, RunOptions, ScenarioPath, ScheduleStrategy,
     ShrinkMinimize, ShrinkOptions, TracePath,
 };
 
@@ -34,6 +34,7 @@ fn golden_run_record_replay_shrink_replay_min() {
     let cfg = Config {
         base_dir: ws.join(".fozzy"),
         reporter: Reporter::Json,
+        proc_backend: ProcBackend::Scripted,
     };
     let trace = ws.join("run.trace.fozzy");
     let run = run_scenario(
@@ -49,6 +50,7 @@ fn golden_run_record_replay_shrink_replay_min() {
             jobs: None,
             fail_fast: false,
             record_collision: RecordCollisionPolicy::Overwrite,
+            proc_backend: ProcBackend::Scripted,
         },
     )
     .expect("run");
@@ -104,6 +106,7 @@ fn golden_fuzz_record_replay_shrink_replay_min() {
     let cfg = Config {
         base_dir: ws.join(".fozzy"),
         reporter: Reporter::Json,
+        proc_backend: ProcBackend::Scripted,
     };
     let trace = ws.join("fuzz.trace.fozzy");
     let target: FuzzTarget = "fn:utf8".parse().expect("target parse");
@@ -183,6 +186,7 @@ fn golden_explore_record_replay_shrink_replay_min() {
     let cfg = Config {
         base_dir: ws.join(".fozzy"),
         reporter: Reporter::Json,
+        proc_backend: ProcBackend::Scripted,
     };
     let trace = ws.join("explore.trace.fozzy");
     let run = explore(

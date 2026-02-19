@@ -9,6 +9,13 @@ pub enum Decision {
     RandBytes { hex: String },
     TimeSleepMs { ms: u64 },
     TimeAdvanceMs { ms: u64 },
+    ProcSpawn {
+        cmd: String,
+        args: Vec<String>,
+        exit_code: i32,
+        stdout: String,
+        stderr: String,
+    },
     SchedulerPick { task_id: u64, label: String },
     NetDeliverPick { message_id: u64 },
     NetDrop { message_id: u64, dropped: bool },

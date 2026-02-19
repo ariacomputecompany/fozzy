@@ -14,6 +14,10 @@ pub struct Config {
     /// Default reporter for CLI commands.
     #[serde(default = "default_reporter")]
     pub reporter: crate::Reporter,
+
+    /// Process backend for proc_spawn steps.
+    #[serde(default = "default_proc_backend")]
+    pub proc_backend: crate::ProcBackend,
 }
 
 fn default_base_dir() -> PathBuf {
@@ -24,11 +28,16 @@ fn default_reporter() -> crate::Reporter {
     crate::Reporter::Pretty
 }
 
+fn default_proc_backend() -> crate::ProcBackend {
+    crate::ProcBackend::Scripted
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             base_dir: default_base_dir(),
             reporter: default_reporter(),
+            proc_backend: default_proc_backend(),
         }
     }
 }

@@ -621,3 +621,103 @@ fn report_flaky_rejects_duplicate_inputs() {
     ]);
     assert_eq!(out.status.code(), Some(2), "duplicate runs should be rejected");
 }
+
+#[cfg(unix)]
+#[test]
+fn host_proc_backend_executes_real_proc_spawn_for_run() {
+    let ws = temp_workspace("host-proc-run");
+    let scenario = ws.join("host-proc.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc",
+      "steps":[
+        {"type":"proc_spawn","cmd":"/usr/bin/true","expect_exit":0}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let out = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "host proc run should pass, stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = parse_json_stdout(&out);
+    assert_eq!(doc.get("status").and_then(|v| v.as_str()), Some("pass"));
+}
+
+#[cfg(unix)]
+#[test]
+fn host_proc_backend_is_rejected_in_deterministic_mode() {
+    let ws = temp_workspace("host-proc-det");
+    let scenario = ws.join("host-proc-det.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc-det",
+      "steps":[
+        {"type":"proc_spawn","cmd":"/usr/bin/true","expect_exit":0}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let out = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(2), "det + host proc should fail");
+    let doc = parse_json_stdout(&out);
+    assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
+    assert!(doc
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .contains("host proc backend is not supported in deterministic mode"));
+}
+
+#[cfg(unix)]
+#[test]
+fn replay_uses_recorded_proc_decisions_from_host_backend_trace() {
+    let ws = temp_workspace("host-proc-replay");
+    let scenario = ws.join("host-proc-replay.fozzy.json");
+    let trace = ws.join("host-proc-replay.fozzy");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc-replay",
+      "steps":[
+        {"type":"proc_spawn","cmd":"/bin/echo","args":["hi"],"expect_exit":0,"expect_stdout":"hi\n"}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(run.status.code(), Some(0), "host run should pass");
+
+    let replay = run_cli(&["replay".into(), trace.to_string_lossy().to_string(), "--json".into()]);
+    assert_eq!(
+        replay.status.code(),
+        Some(0),
+        "replay should pass from recorded proc decisions, stderr={}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let doc = parse_json_stdout(&replay);
+    assert_eq!(doc.get("status").and_then(|v| v.as_str()), Some("pass"));
+}

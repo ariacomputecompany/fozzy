@@ -35,7 +35,7 @@ pub fn version_info() -> VersionInfo {
     }
 }
 
-pub fn env_info(_config: &crate::Config) -> EnvInfo {
+pub fn env_info(config: &crate::Config) -> EnvInfo {
     let mut capabilities = BTreeMap::new();
     capabilities.insert(
         "time".to_string(),
@@ -75,8 +75,11 @@ pub fn env_info(_config: &crate::Config) -> EnvInfo {
     capabilities.insert(
         "proc".to_string(),
         CapabilityInfo {
-            backend: "scripted".to_string(),
-            deterministic: true,
+            backend: match config.proc_backend {
+                crate::ProcBackend::Scripted => "scripted".to_string(),
+                crate::ProcBackend::Host => "host".to_string(),
+            },
+            deterministic: matches!(config.proc_backend, crate::ProcBackend::Scripted),
         },
     );
 

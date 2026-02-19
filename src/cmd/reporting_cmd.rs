@@ -533,6 +533,7 @@ mod tests {
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
         };
 
         let out = flaky_command(
@@ -563,6 +564,7 @@ mod tests {
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
         };
 
         let err = flaky_command(&cfg, &[a.clone(), a, b], None).expect_err("must reject duplicates");

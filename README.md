@@ -20,9 +20,11 @@ Outcome: failures are reproducible, shrinkable, and diagnosable, so teams spend 
 
 ## Execution Scope
 
-Fozzy is a deterministic scenario engine, not a drop-in executor for arbitrary repo test commands.
+Fozzy is a scenario engine with deterministic-first capability backends.
 
-- `proc` is currently scripted (`proc_when` + `proc_spawn`), not host process execution.
+- `proc` defaults to scripted (`proc_when` + `proc_spawn`) for deterministic/replay-safe behavior.
+- `proc` host execution is opt-in for non-deterministic runs via `--proc-backend host` (for `fozzy run` / `fozzy test`).
+- Host `proc_spawn` results are captured in trace decisions so `fozzy replay` stays deterministic without re-executing host processes.
 - `http` is currently scripted (`http_when` + `http_request`), not live outbound HTTP.
 - `fs` uses deterministic virtual overlay semantics.
 

@@ -18,6 +18,26 @@ use crate::{
 
 use crate::{FozzyError, FozzyResult};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcBackend {
+    Scripted,
+    Host,
+}
+
+impl clap::ValueEnum for ProcBackend {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Scripted, Self::Host]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::Scripted => clap::builder::PossibleValue::new("scripted"),
+            Self::Host => clap::builder::PossibleValue::new("host"),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum InitTemplate {
     Ts,
@@ -56,6 +76,7 @@ pub struct RunOptions {
     pub jobs: Option<usize>,
     pub fail_fast: bool,
     pub record_collision: RecordCollisionPolicy,
+    pub proc_backend: ProcBackend,
 }
 
 #[derive(Debug, Clone)]
@@ -250,7 +271,15 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             }
         }
 
-        let run = match run_scenario_inner(config, RunMode::Test, ScenarioPath::new(p.clone()), seed, opt.det, opt.timeout) {
+        let run = match run_scenario_inner(
+            config,
+            RunMode::Test,
+            ScenarioPath::new(p.clone()),
+            seed,
+            opt.det,
+            opt.timeout,
+            opt.proc_backend,
+        ) {
             Ok(run) => run,
             Err(FozzyError::Scenario(msg)) if msg.contains("use `fozzy explore`") => {
                 skipped += 1;
@@ -405,7 +434,15 @@ pub fn run_scenario(config: &Config, scenario_path: ScenarioPath, opt: &RunOptio
     let started_at = wall_time_iso_utc();
     let started = Instant::now();
 
-    let run = run_scenario_inner(config, RunMode::Run, scenario_path.clone(), seed, opt.det, opt.timeout)?;
+    let run = run_scenario_inner(
+        config,
+        RunMode::Run,
+        scenario_path.clone(),
+        seed,
+        opt.det,
+        opt.timeout,
+        opt.proc_backend,
+    )?;
     let finished_at = wall_time_iso_utc();
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
@@ -502,6 +539,7 @@ pub fn replay_trace(config: &Config, trace_path: TracePath, opt: &ReplayOptions)
         Some(&trace.decisions),
         opt.until,
         opt.step,
+        ProcBackend::Scripted,
     )?;
 
     let finished_at = wall_time_iso_utc();
@@ -512,7 +550,10 @@ pub fn replay_trace(config: &Config, trace_path: TracePath, opt: &ReplayOptions)
     let report_path = artifacts_dir.join("report.json");
 
     let mut findings = run.findings.clone();
-    for warning in crate::trace_schema_warnings(trace.version) {
+    for warning in crate::trace_schema_warnings(trace.version)
+        .into_iter()
+        .chain(crate::trace_replay_warnings(&trace))
+    {
         findings.push(Finding {
             kind: FindingKind::Checker,
             title: "stale_trace_schema".to_string(),
@@ -605,6 +646,7 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
                 None, // not replaying decisions; we just want to see if it still fails
                 None,
                 false,
+                ProcBackend::Scripted,
             )?;
             if shrink_status_matches(target_status, res.status) {
                 candidate = trial;
@@ -636,7 +678,14 @@ pub fn shrink_trace(config: &Config, trace_path: TracePath, opt: &ShrinkOptions)
         .unwrap_or_else(|| crate::default_min_trace_path(trace_path.as_path()));
 
     // Re-run once to produce a replayable trace for the minimized scenario.
-    let run = run_embedded_scenario_inner(out_scenario.clone(), PathBuf::from("<shrunk>"), seed, true, None)?;
+    let run = run_embedded_scenario_inner(
+        out_scenario.clone(),
+        PathBuf::from("<shrunk>"),
+        seed,
+        true,
+        None,
+        ProcBackend::Scripted,
+    )?;
 
     let run_id = Uuid::new_v4().to_string();
     let started_at = wall_time_iso_utc();
@@ -717,7 +766,15 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
             let mut baseline: Option<String> = None;
 
             for i in 0..runs {
-                let run = run_scenario_inner(config, RunMode::Run, path.clone(), seed, true, None)?;
+                let run = run_scenario_inner(
+                    config,
+                    RunMode::Run,
+                    path.clone(),
+                    seed,
+                    true,
+                    None,
+                    ProcBackend::Scripted,
+                )?;
                 let sig = scenario_run_signature(&run);
                 if let Some(b) = &baseline {
                     if b != &sig && first_mismatch_run.is_none() {
@@ -802,7 +859,14 @@ fn run_scenario_inner(
     seed: u64,
     det: bool,
     timeout: Option<Duration>,
+    proc_backend: ProcBackend,
 ) -> FozzyResult<ScenarioRun> {
+    if det && matches!(proc_backend, ProcBackend::Host) {
+        return Err(FozzyError::InvalidArgument(
+            "host proc backend is not supported in deterministic mode; use --proc-backend scripted or disable --det"
+                .to_string(),
+        ));
+    }
     let loaded = Scenario::load(&scenario_path)?;
     loaded.validate()?;
 
@@ -812,7 +876,14 @@ fn run_scenario_inner(
         steps: loaded.steps.clone(),
     };
 
-    run_embedded_scenario_inner(embedded, scenario_path.as_path().to_path_buf(), seed, det, timeout)
+    run_embedded_scenario_inner(
+        embedded,
+        scenario_path.as_path().to_path_buf(),
+        seed,
+        det,
+        timeout,
+        proc_backend,
+    )
 }
 
 fn run_embedded_scenario_inner(
@@ -821,8 +892,9 @@ fn run_embedded_scenario_inner(
     seed: u64,
     det: bool,
     timeout: Option<Duration>,
+    proc_backend: ProcBackend,
 ) -> FozzyResult<ScenarioRun> {
-    let mut ctx = ExecCtx::new(seed, det);
+    let mut ctx = ExecCtx::new(seed, det, proc_backend);
     let started = Instant::now();
     let start_virtual_ms = ctx.clock.now_ms();
     let deadline = timeout.map(|t| started + t);
@@ -894,6 +966,7 @@ fn run_scenario_replay_inner(
     decisions: Option<&[Decision]>,
     until: Option<Duration>,
     step: bool,
+    proc_backend: ProcBackend,
 ) -> FozzyResult<ScenarioRun> {
     if scenario.version != 1 {
         return Err(FozzyError::Scenario(format!(
@@ -902,7 +975,7 @@ fn run_scenario_replay_inner(
         )));
     }
 
-    let mut ctx = ExecCtx::new(seed, true);
+    let mut ctx = ExecCtx::new(seed, true, proc_backend);
     if let Some(d) = decisions {
         ctx.replay = Some(ReplayCursor::new(d));
     }
@@ -987,6 +1060,7 @@ fn run_scenario_replay_inner(
 #[derive(Debug, Clone)]
 struct ExecCtx {
     det: bool,
+    proc_backend: ProcBackend,
     rng: ChaCha20Rng,
     clock: crate::VirtualClock,
     kv: BTreeMap<String, String>,
@@ -1007,13 +1081,14 @@ struct ExecCtx {
 }
 
 impl ExecCtx {
-    fn new(seed: u64, det: bool) -> Self {
+    fn new(seed: u64, det: bool, proc_backend: ProcBackend) -> Self {
         let seed_bytes = blake3::hash(&seed.to_le_bytes()).as_bytes().to_owned();
         let mut seed32 = [0u8; 32];
         seed32.copy_from_slice(&seed_bytes[..32]);
         let rng = ChaCha20Rng::from_seed(seed32);
         Self {
             det,
+            proc_backend,
             rng,
             clock: crate::VirtualClock::default(),
             kv: BTreeMap::new(),
@@ -1548,10 +1623,67 @@ impl ExecCtx {
                 save_stdout_as,
             } => {
                 let call_args = args.clone().unwrap_or_default();
-                let idx = self.proc_rules.iter().position(|r| {
-                    r.remaining > 0 && r.cmd == *cmd && r.args == call_args
-                });
-                let Some(idx) = idx else {
+                let replay_rule = match self.replay_peek().cloned() {
+                    Some(Decision::ProcSpawn {
+                        cmd: replay_cmd,
+                        args: replay_args,
+                        exit_code,
+                        stdout,
+                        stderr,
+                    }) => {
+                        if replay_cmd != *cmd || replay_args != call_args {
+                            return Err(Finding {
+                                kind: FindingKind::Checker,
+                                title: "replay_drift".to_string(),
+                                message: format!(
+                                    "replay proc drift: expected {replay_cmd:?} {:?}, got {cmd:?} {:?}",
+                                    replay_args, call_args
+                                ),
+                                location: None,
+                            });
+                        }
+                        let _ = self.replay_take_if(|d| matches!(d, Decision::ProcSpawn { .. }));
+                        Some(ProcRule {
+                            cmd: cmd.clone(),
+                            args: call_args.clone(),
+                            exit_code,
+                            stdout,
+                            stderr,
+                            remaining: 0,
+                        })
+                    }
+                    Some(_) | None => None,
+                };
+
+                let idx = self.proc_rules.iter().position(|r| r.remaining > 0 && r.cmd == *cmd && r.args == call_args);
+                let rule = if let Some(rule) = replay_rule {
+                    rule
+                } else if let Some(idx) = idx {
+                    let mut rule = self.proc_rules[idx].clone();
+                    if rule.remaining != u64::MAX {
+                        rule.remaining = rule.remaining.saturating_sub(1);
+                    }
+                    self.proc_rules[idx] = rule.clone();
+                    rule
+                } else if matches!(self.proc_backend, ProcBackend::Host) {
+                    let output = std::process::Command::new(cmd)
+                        .args(&call_args)
+                        .output()
+                        .map_err(|e| Finding {
+                            kind: FindingKind::Assertion,
+                            title: "proc_spawn_host".to_string(),
+                            message: format!("host proc spawn failed for {cmd:?} {:?}: {e}", call_args),
+                            location: None,
+                        })?;
+                    ProcRule {
+                        cmd: cmd.clone(),
+                        args: call_args.clone(),
+                        exit_code: output.status.code().unwrap_or(-1),
+                        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                        remaining: 0,
+                    }
+                } else {
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "proc_unmatched".to_string(),
@@ -1562,18 +1694,26 @@ impl ExecCtx {
                         location: None,
                     });
                 };
-
-                let mut rule = self.proc_rules[idx].clone();
-                if rule.remaining != u64::MAX {
-                    rule.remaining = rule.remaining.saturating_sub(1);
-                }
-                self.proc_rules[idx] = rule.clone();
+                self.decisions.push(Decision::ProcSpawn {
+                    cmd: cmd.clone(),
+                    args: call_args.clone(),
+                    exit_code: rule.exit_code,
+                    stdout: rule.stdout.clone(),
+                    stderr: rule.stderr.clone(),
+                });
 
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "proc_spawn".to_string(),
                     fields: serde_json::Map::from_iter([
                         ("cmd".to_string(), serde_json::Value::String(cmd.clone())),
+                        (
+                            "backend".to_string(),
+                            serde_json::Value::String(match self.proc_backend {
+                                ProcBackend::Scripted => "scripted".to_string(),
+                                ProcBackend::Host => "host".to_string(),
+                            }),
+                        ),
                         (
                             "exit_code".to_string(),
                             serde_json::Value::Number(serde_json::Number::from(rule.exit_code)),

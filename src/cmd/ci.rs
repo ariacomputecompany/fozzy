@@ -180,6 +180,7 @@ mod tests {
         let cfg = Config {
             base_dir: root.join(".fozzy"),
             reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
         };
 
         let out = ci_command(
@@ -225,6 +226,7 @@ mod tests {
         let cfg = Config {
             base_dir: root.join(".fozzy"),
             reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
         };
 
         let err = ci_command(

@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use fozzy::{
     ArtifactCommand, CiOptions, Config, CorpusCommand, ExitStatus, FlakeBudget, FozzyDuration, InitTemplate,
-    ReportCommand,
+    ProcBackend, ReportCommand,
     ExploreOptions, FuzzMode, FuzzOptions, FuzzTarget, RecordCollisionPolicy, Reporter, RunOptions, RunSummary,
     ScenarioPath, ScheduleStrategy, ShrinkMinimize, TracePath,
 };
@@ -40,6 +40,10 @@ struct Cli {
     /// Treat warning-like conditions as errors (non-zero exit).
     #[arg(long, global = true)]
     strict: bool,
+
+    /// Proc backend for proc_spawn steps.
+    #[arg(long, global = true)]
+    proc_backend: Option<ProcBackend>,
 
     #[command(subcommand)]
     command: Command,
@@ -364,7 +368,7 @@ fn normalize_global_args(args: impl IntoIterator<Item = String>) -> Vec<String> 
                 globals.push(arg.clone());
                 i += 1;
             }
-            "--config" | "--cwd" | "--log" => {
+            "--config" | "--cwd" | "--log" | "--proc-backend" => {
                 globals.push(arg.clone());
                 if i + 1 < all.len() {
                     globals.push(all[i + 1].clone());
@@ -376,6 +380,7 @@ fn normalize_global_args(args: impl IntoIterator<Item = String>) -> Vec<String> 
             _ if arg.starts_with("--config=")
                 || arg.starts_with("--cwd=")
                 || arg.starts_with("--log=")
+                || arg.starts_with("--proc-backend=")
                 || arg.starts_with("--strict=") =>
             {
                 globals.push(arg.clone());
@@ -402,6 +407,7 @@ fn init_tracing(level: &str) -> anyhow::Result<()> {
 }
 
 fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
+    let proc_backend = cli.proc_backend.unwrap_or(config.proc_backend);
     match &cli.command {
         Command::Init { force, template } => {
             fozzy::init_project(config, &InitTemplate::from_option(template.as_ref()), *force)?;
@@ -433,6 +439,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     jobs: *jobs,
                     fail_fast: *fail_fast,
                     record_collision: *record_collision,
+                    proc_backend,
                 },
             )?;
             print_run_summary(cli, &run.summary)?;
@@ -462,6 +469,7 @@ fn run_command(cli: &Cli, config: &Config) -> anyhow::Result<ExitCode> {
                     jobs: None,
                     fail_fast: false,
                     record_collision: *record_collision,
+                    proc_backend,
                 },
             )?;
             print_run_summary(cli, &run.summary)?;

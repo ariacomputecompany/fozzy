@@ -159,6 +159,14 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Local parity/golden hardening tests added: run-like common flag parsing and end-to-end `record -> replay -> shrink -> replay(min)` for run/fuzz/explore
 - ✅ End-to-end golden flows (`record -> replay -> shrink -> replay(min)`) per mode
 
+### M11 Host Capability Execution
+- ✅ Added explicit process backend mode (`proc_backend = scripted|host`) with CLI override (`--proc-backend`) and config default
+- ✅ Implemented host `proc_spawn` execution path for `fozzy run` / `fozzy test` (non-deterministic mode)
+- ✅ Added deterministic safety gate: `--det` + `--proc-backend host` is rejected with explicit error
+- ✅ Improved contract/docs/diagnostics for scripted-vs-host proc behavior
+- ✅ Added replay/trace semantics for host-proc runs: traces now capture proc result decisions and replay consumes them deterministically; verify warns on legacy host-proc traces without proc decisions
+- ⬜ Expand host backend architecture beyond proc (http/fs) with explicit safety and determinism contracts
+
 ## Production Backlog (Next Execution Order)
 1. ✅ Expand M3 with stricter network capability contracts and richer record/replay semantics.
 2. ✅ Deepen M5 with stronger coverage accounting + target plugin interfaces.
