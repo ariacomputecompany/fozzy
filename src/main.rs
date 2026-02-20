@@ -2197,7 +2197,10 @@ fn print_clap_error_and_exit(json: bool, err: clap::Error) -> ExitCode {
             "code": "error",
             "message": err.to_string().trim_end(),
         });
-        println!("{out}");
+        match serde_json::to_string_pretty(&out) {
+            Ok(s) => println!("{s}"),
+            Err(_) => println!("{out}"),
+        }
     } else {
         let _ = err.print();
     }

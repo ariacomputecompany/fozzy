@@ -15,7 +15,7 @@ impl CliLogger {
 
     pub fn print_serialized<T: Serialize>(&self, value: &T) -> Result<()> {
         if self.json {
-            println!("{}", serde_json::to_string(value)?);
+            self.print_json(value)?;
             return Ok(());
         }
 
@@ -26,7 +26,7 @@ impl CliLogger {
 
     pub fn print_run_summary(&self, summary: &RunSummary) -> Result<()> {
         if self.json {
-            println!("{}", serde_json::to_string(summary)?);
+            self.print_json(summary)?;
             return Ok(());
         }
 
@@ -113,7 +113,7 @@ impl CliLogger {
 
     pub fn print_usage(&self, doc: &UsageDoc) -> Result<()> {
         if self.json {
-            println!("{}", serde_json::to_string(doc)?);
+            self.print_json(doc)?;
             return Ok(());
         }
 
@@ -137,7 +137,10 @@ impl CliLogger {
                 "code": "error",
                 "message": msg,
             });
-            println!("{out}");
+            match serde_json::to_string_pretty(&out) {
+                Ok(s) => println!("{s}"),
+                Err(_) => println!("{out}"),
+            }
             return;
         }
         eprintln!("{} {msg}", self.style("error", "31;1"));
@@ -150,10 +153,18 @@ impl CliLogger {
                 "code": "warning",
                 "message": msg,
             });
-            eprintln!("{out}");
+            match serde_json::to_string_pretty(&out) {
+                Ok(s) => eprintln!("{s}"),
+                Err(_) => eprintln!("{out}"),
+            }
             return;
         }
         eprintln!("{} {msg}", self.style("warn", "33;1"));
+    }
+
+    pub fn print_json<T: Serialize>(&self, value: &T) -> Result<()> {
+        println!("{}", serde_json::to_string_pretty(value)?);
+        Ok(())
     }
 
     fn style(&self, text: &str, ansi: &str) -> String {

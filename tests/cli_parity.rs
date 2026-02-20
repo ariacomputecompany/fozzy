@@ -479,14 +479,7 @@ fn strict_trace_verify_json_emits_single_error_document() {
     assert_eq!(strict.status.code(), Some(2), "strict should fail");
 
     let stdout = String::from_utf8_lossy(&strict.stdout);
-    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(
-        lines.len(),
-        1,
-        "must emit a single JSON document on stdout, got: {stdout}"
-    );
-
-    let doc: serde_json::Value = serde_json::from_str(lines[0]).expect("stdout json");
+    let doc: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout json");
     assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
 }
 
