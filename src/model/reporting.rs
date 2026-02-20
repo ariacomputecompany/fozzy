@@ -1,6 +1,7 @@
 //! Reporting types and renderers.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -110,7 +111,7 @@ pub struct Finding {
     pub location: Option<FindingLocation>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingKind {
     Assertion,
@@ -118,6 +119,45 @@ pub enum FindingKind {
     Hang,
     Invariant,
     Checker,
+}
+
+pub fn collapse_findings(findings: Vec<Finding>) -> Vec<Finding> {
+    let mut grouped = BTreeMap::<
+        (
+            FindingKind,
+            String,
+            String,
+            Option<String>,
+            Option<u32>,
+            Option<u32>,
+        ),
+        (Finding, u32),
+    >::new();
+
+    for finding in findings {
+        let key = (
+            finding.kind.clone(),
+            finding.title.clone(),
+            finding.message.clone(),
+            finding.location.as_ref().and_then(|l| l.file.clone()),
+            finding.location.as_ref().and_then(|l| l.line),
+            finding.location.as_ref().and_then(|l| l.col),
+        );
+        grouped
+            .entry(key)
+            .and_modify(|(_, n)| *n = n.saturating_add(1))
+            .or_insert((finding, 1));
+    }
+
+    grouped
+        .into_values()
+        .map(|(mut finding, n)| {
+            if n > 1 {
+                finding.message = format!("{} (repeated {} times)", finding.message, n);
+            }
+            finding
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,4 +410,33 @@ fn xml_escape(s: &str) -> String {
 
 fn html_escape(s: &str) -> String {
     xml_escape(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collapse_findings_groups_identical_entries() {
+        let findings = vec![
+            Finding {
+                kind: FindingKind::Checker,
+                title: "http_when_backend".to_string(),
+                message: "http_when requires scripted backend".to_string(),
+                location: None,
+            },
+            Finding {
+                kind: FindingKind::Checker,
+                title: "http_when_backend".to_string(),
+                message: "http_when requires scripted backend".to_string(),
+                location: None,
+            },
+        ];
+        let collapsed = collapse_findings(findings);
+        assert_eq!(collapsed.len(), 1);
+        assert!(
+            collapsed[0].message.contains("repeated 2 times"),
+            "expected repetition count to be appended"
+        );
+    }
 }

@@ -581,7 +581,7 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             skipped,
         }),
         memory: aggregate_memory_summary(&test_runs),
-        findings,
+        findings: crate::collapse_findings(findings),
     };
 
     std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
