@@ -235,6 +235,15 @@ Fozzy is a deterministic full-stack testing platform built from first principles
   - ✅ `--mem-artifacts`
 - ✅ `fozzy usage`, `CLI.md`, `README.md`, and scenario docs updated
 - ✅ TS SDK parity shipped (`sdk-ts/` and `SDK-TS.md`) for all new memory controls
+- ✅ `fozzy full` policy controls added for production CI roots:
+  - ✅ `--allow-expected-failures`
+  - ✅ `--scenario-filter`
+  - ✅ `--skip-steps`
+  - ✅ `--required-steps`
+- ✅ Scenario authoring ergonomics expanded:
+  - ✅ `fozzy schema` command alias: `fozzy steps`
+  - ✅ `fozzy validate <scenario> --json` command for parse/shape diagnostics
+- ✅ Run-selector alias parity across report/artifacts/memory with CI guidance to prefer explicit run ids/trace paths in race-sensitive automation
 
 #### M12.8 Verification / Hardening Gate (Production)
 - ⬜ Unit tests:

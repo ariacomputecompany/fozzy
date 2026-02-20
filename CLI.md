@@ -57,7 +57,8 @@ Execution policy: use the full command surface by default. Skip commands only wh
 | `ci` | Run local gate bundle for a trace | `fozzy ci trace.fozzy --flake-run r1 --flake-run r2 --flake-budget 5` |
 | `env` | Print runtime capability info | `fozzy env --json` |
 | `version` | Print version/build info | `fozzy version --json` |
-| `schema` | Print supported scenario file/step schema | `fozzy schema --json` |
+| `schema` | Print supported scenario file/step schema (`steps` alias) | `fozzy schema --json` |
+| `validate` | Validate scenario parse/shape with diagnostics | `fozzy validate tests/example.fozzy.json --json` |
 
 ## Command Syntax
 
@@ -76,12 +77,15 @@ Generated files include starter scenarios plus `tests/INIT_GUIDE.md` with comman
 
 ```bash
 fozzy full [--scenario-root <dir>] [--seed <n>] [--doctor-runs <n>] \
-  [--fuzz-time <dur>] [--explore-steps <n>] [--explore-nodes <n>]
+  [--fuzz-time <dur>] [--explore-steps <n>] [--explore-nodes <n>] \
+  [--allow-expected-failures] [--scenario-filter <substring>] \
+  [--skip-steps <comma,list>] [--required-steps <comma,list>]
 ```
 
 `fozzy full` is the hand-holding end-to-end gate. It targets the full CLI surface:
 `init`, `test`, `run`, `fuzz`, `explore`, `replay`, `trace verify`, `shrink`, `corpus`, `artifacts`, `report`, `memory`, `doctor`, `ci`, `env`, `version`, `usage`.
 If a required input is missing (for example no distributed scenario), it records a graceful skip instead of crashing.
+Use `--allow-expected-failures` for mixed pass/fail scenario roots where fail-class replay parity is expected, and use `--scenario-filter`/step policies to scope CI contracts.
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `test`
@@ -175,6 +179,7 @@ fozzy corpus minimize <dir> [--budget <dur>]
 fozzy corpus export <dir> --out <zip>
 fozzy corpus import <zip> --out <dir>
 ```
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `artifacts`
 
@@ -187,6 +192,8 @@ fozzy artifacts pack <run-id|trace> --out <dir|zip>
 
 `pack` includes reproducer metadata (`env`, `version`, `commandline`).
 Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
+For race-sensitive CI automation, prefer explicit `runId` or trace paths over aliases.
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `report`
 
@@ -200,6 +207,8 @@ fozzy report flaky <run-id|trace> <run-id|trace> [more...] [--flake-budget <pct>
 `report query --jq` supports path-style selectors (subset):
 ` .a.b`, `a.b`, `.arr[0]`, `.arr[].field`, `$.a.b`
 Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
+For race-sensitive CI automation, prefer explicit `runId` or trace paths over aliases.
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `memory`
 
@@ -211,6 +220,7 @@ fozzy memory top <run-id|trace> [--limit <n>]
 
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
+For race-sensitive CI automation, prefer explicit `runId` or trace paths over aliases.
 
 ### `doctor`
 
@@ -248,3 +258,14 @@ Prints a machine-readable scenario surface:
 - top-level file variants (`steps`, `distributed`, `suites`)
 - supported `steps[].type` values
 - supported distributed step and invariant types
+Alias: `fozzy steps --json`.
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
+
+### `validate`
+
+```bash
+fozzy validate <scenario.fozzy.json>
+```
+
+Validates parse + step-shape semantics and returns non-zero on invalid scenarios.
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.

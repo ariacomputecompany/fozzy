@@ -431,7 +431,11 @@ enum Command {
     Usage,
 
     /// Print scenario/schema surface (file variants + step kinds) for automation.
+    #[command(alias = "steps")]
     Schema,
+
+    /// Validate a scenario file and emit parser/step-shape diagnostics.
+    Validate { scenario: PathBuf },
 
     /// Run an end-to-end full-surface Fozzy gate with setup guidance and graceful skips.
     Full {
@@ -458,6 +462,22 @@ enum Command {
         /// Explore node count override used for distributed scenarios.
         #[arg(long, default_value_t = 3)]
         explore_nodes: usize,
+
+        /// Treat fail-class scenario outcomes as valid if replay/ci preserve the outcome class.
+        #[arg(long)]
+        allow_expected_failures: bool,
+
+        /// Run only scenarios whose path contains this substring.
+        #[arg(long)]
+        scenario_filter: Option<String>,
+
+        /// Skip specific full steps (comma-separated list).
+        #[arg(long, value_delimiter = ',')]
+        skip_steps: Vec<String>,
+
+        /// If set, only these full steps are considered required (others are marked skipped).
+        #[arg(long, value_delimiter = ',')]
+        required_steps: Vec<String>,
     },
 }
 
@@ -1032,6 +1052,36 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::Validate { scenario } => {
+            let scenario_path = ScenarioPath::new(scenario.clone());
+            let out = match fozzy::Scenario::load(&scenario_path) {
+                Ok(loaded) => match loaded.validate() {
+                    Ok(()) => serde_json::json!({
+                        "ok": true,
+                        "scenario": scenario.display().to_string(),
+                        "name": loaded.name,
+                        "steps": loaded.steps.len()
+                    }),
+                    Err(err) => serde_json::json!({
+                        "ok": false,
+                        "scenario": scenario.display().to_string(),
+                        "error": err.to_string()
+                    }),
+                },
+                Err(err) => serde_json::json!({
+                    "ok": false,
+                    "scenario": scenario.display().to_string(),
+                    "error": err.to_string()
+                }),
+            };
+            logger.print_serialized(&out)?;
+            Ok(if out.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(2)
+            })
+        }
+
         Command::Full {
             scenario_root,
             seed,
@@ -1039,6 +1089,10 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             fuzz_time,
             explore_steps,
             explore_nodes,
+            allow_expected_failures,
+            scenario_filter,
+            skip_steps,
+            required_steps,
         } => {
             let report = run_full_command(
                 config,
@@ -1050,6 +1104,10 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
                 *explore_nodes,
                 strict_enabled(cli),
                 cli.unsafe_mode,
+                *allow_expected_failures,
+                scenario_filter.as_deref(),
+                skip_steps,
+                required_steps,
             )?;
             let has_failed = report
                 .steps
@@ -1076,6 +1134,10 @@ fn run_full_command(
     explore_nodes: usize,
     strict: bool,
     unsafe_mode: bool,
+    allow_expected_failures: bool,
+    scenario_filter: Option<&str>,
+    skip_steps: &[String],
+    required_steps: &[String],
 ) -> anyhow::Result<FullReport> {
     let mut steps = Vec::<FullStepResult>::new();
     let mut push = |name: &str, status: FullStepStatus, detail: String| {
@@ -1145,7 +1207,17 @@ fn run_full_command(
         Err(err) => push("init", FullStepStatus::Failed, err.to_string()),
     }
 
-    let discovered = discover_scenarios(scenario_root);
+    let mut discovered = discover_scenarios(scenario_root);
+    if let Some(filter) = scenario_filter
+        && !filter.is_empty()
+    {
+        discovered
+            .steps
+            .retain(|p| p.to_string_lossy().contains(filter));
+        discovered
+            .distributed
+            .retain(|p| p.to_string_lossy().contains(filter));
+    }
     let parse_error_count = discovered.parse_errors.len();
     let parsed_summary = format!(
         "discovered step_scenarios={} distributed_scenarios={} parse_errors={}",
@@ -1439,7 +1511,17 @@ fn run_full_command(
                 shrunk_trace = Some(PathBuf::from(shrink.out_trace_path.clone()));
                 push(
                     "shrink",
-                    if shrink.result.summary.status == ExitStatus::Pass {
+                    if allow_expected_failures {
+                        if let Some(primary) = primary_status {
+                            if shrink_status_matches(primary, shrink.result.summary.status) {
+                                FullStepStatus::Passed
+                            } else {
+                                FullStepStatus::Failed
+                            }
+                        } else {
+                            FullStepStatus::Passed
+                        }
+                    } else if shrink.result.summary.status == ExitStatus::Pass {
                         FullStepStatus::Passed
                     } else {
                         FullStepStatus::Failed
@@ -1913,6 +1995,8 @@ fn run_full_command(
         "environment capability snapshot collected".to_string(),
     );
 
+    apply_full_policy_filters(&mut steps, skip_steps, required_steps);
+
     Ok(FullReport {
         schema_version: "fozzy.full_report.v1".to_string(),
         strict,
@@ -1984,6 +2068,43 @@ fn selected_init_test_types(with: &[InitTestType], all_tests: bool) -> Vec<InitT
     });
     out.dedup();
     out
+}
+
+fn apply_full_policy_filters(
+    steps: &mut [FullStepResult],
+    skip_steps: &[String],
+    required_steps: &[String],
+) {
+    use std::collections::BTreeSet;
+    let skip: BTreeSet<String> = skip_steps
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .collect();
+    let required: BTreeSet<String> = required_steps
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .collect();
+
+    for step in steps {
+        let key = step.name.to_ascii_lowercase();
+        if !required.is_empty() && !required.contains(&key) {
+            step.status = FullStepStatus::Skipped;
+            step.detail = format!("skipped by required-steps policy; {}", step.detail);
+            continue;
+        }
+        if skip.contains(&key) {
+            step.status = FullStepStatus::Skipped;
+            step.detail = format!("skipped by skip-steps policy; {}", step.detail);
+        }
+    }
+}
+
+fn shrink_status_matches(target: ExitStatus, candidate: ExitStatus) -> bool {
+    if target == ExitStatus::Pass {
+        candidate == ExitStatus::Pass
+    } else {
+        candidate != ExitStatus::Pass
+    }
 }
 
 fn is_negative_fixture_scenario(path: &Path) -> bool {

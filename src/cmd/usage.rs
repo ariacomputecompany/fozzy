@@ -35,7 +35,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy full".to_string(),
                 when: "Run the complete Fozzy surface-area gate with setup guidance and graceful skip behavior for missing inputs.".to_string(),
-                how: "fozzy full --scenario-root tests --seed 1337 --doctor-runs 5 --fuzz-time 2s --explore-steps 200 --explore-nodes 3. This command exercises init/test/run/fuzz/explore/replay/trace verify/shrink/corpus/artifacts/report/memory/doctor/ci/env/version/usage. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
+                how: "fozzy full --scenario-root tests --seed 1337 --doctor-runs 5 --fuzz-time 2s --explore-steps 200 --explore-nodes 3 --allow-expected-failures --scenario-filter memory --skip-steps fuzz --required-steps usage,version,test_det,run_record_trace,replay,ci,shrink. This command exercises init/test/run/fuzz/explore/replay/trace verify/shrink/corpus/artifacts/report/memory/doctor/ci/env/version/usage with policy controls for mixed scenario sets. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy init".to_string(),
@@ -85,12 +85,12 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy artifacts".to_string(),
                 when: "List/export run files or diff two runs/traces to quickly see artifact/report/trace drift.".to_string(),
-                how: "fozzy artifacts ls <runId>; fozzy artifacts diff <left> <right>; fozzy artifacts export <runId> --out out.zip; fozzy artifacts pack <runId|trace> --out repro.zip.".to_string(),
+                how: "fozzy artifacts ls <runId>; fozzy artifacts diff <left> <right>; fozzy artifacts export <runId> --out out.zip; fozzy artifacts pack <runId|trace> --out repro.zip. Aliases (`latest`, `last-pass`, `last-fail`) are supported, but CI should prefer explicit run ids or trace paths when race-sensitive.".to_string(),
             },
             UsageItem {
                 command: "fozzy report".to_string(),
                 when: "Render a run summary in a specific format for CI (JUnit) or humans (HTML/pretty).".to_string(),
-                how: "fozzy report show <runId|trace> --format junit; fozzy report query <runId> --jq '.findings[].title'; fozzy report flaky <run1> <run2> --flake-budget 5.".to_string(),
+                how: "fozzy report show <runId|trace> --format junit; fozzy report query <runId> --jq '.findings[].title'; fozzy report flaky <run1> <run2> --flake-budget 5. Aliases (`latest`, `last-pass`, `last-fail`) are supported, but CI should prefer explicit run ids or trace paths when race-sensitive.".to_string(),
             },
             UsageItem {
                 command: "fozzy memory".to_string(),
@@ -122,7 +122,12 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy schema".to_string(),
                 when: "Inspect supported scenario-file variants and step types for authoring and automation.".to_string(),
-                how: "fozzy schema --json.".to_string(),
+                how: "fozzy schema --json (alias: `fozzy steps --json`).".to_string(),
+            },
+            UsageItem {
+                command: "fozzy validate".to_string(),
+                when: "Validate a scenario file and return deterministic parser/shape diagnostics before running tests.".to_string(),
+                how: "fozzy validate tests/example.fozzy.json --json; non-zero exit indicates parse or validation issues.".to_string(),
             },
         ],
     }
