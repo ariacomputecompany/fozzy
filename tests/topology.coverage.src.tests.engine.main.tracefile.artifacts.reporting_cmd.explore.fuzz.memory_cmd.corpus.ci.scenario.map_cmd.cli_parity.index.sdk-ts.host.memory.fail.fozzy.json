@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "name": "topology-coverage-src-tests-engine-main-tracefile-artifacts-reporting_cmd-explore-fuzz-memory_cmd-corpus-ci-scenario-map_cmd-cli_parity-index-sdk-ts-host-memory-fail",
+  "steps": [
+    {
+      "type": "trace_event",
+      "name": "coverage_hints: src tests engine main tracefile artifacts reporting_cmd explore fuzz memory_cmd corpus ci scenario map_cmd cli_parity index sdk-ts config",
+      "fields": {
+        "target": "topology_policy_coverage",
+        "notes": "intentional signal fixture for map suites profile coverage"
+      }
+    },
+    {
+      "type": "fs_write",
+      "path": "topology-coverage.txt",
+      "data": "ok"
+    },
+    {
+      "type": "fs_read_assert",
+      "path": "topology-coverage.txt",
+      "equals": "ok"
+    },
+    {
+      "type": "memory_alloc",
+      "bytes": 16,
+      "key": "buf"
+    },
+    {
+      "type": "memory_free",
+      "key": "buf"
+    }
+  ]
+}
