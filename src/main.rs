@@ -511,6 +511,11 @@ struct FullReport {
     #[serde(rename = "scenarioRoot")]
     scenario_root: String,
     guidance: Vec<String>,
+    #[serde(
+        rename = "shrinkClassification",
+        skip_serializing_if = "Option::is_none"
+    )]
+    shrink_classification: Option<String>,
     steps: Vec<FullStepResult>,
 }
 
@@ -1147,6 +1152,7 @@ fn run_full_command(
             detail,
         });
     };
+    let mut shrink_classification: Option<String> = None;
 
     let mut guidance = vec![
         "Use the entire command surface by default; skip only when required inputs for a command are genuinely missing."
@@ -1509,27 +1515,38 @@ fn run_full_command(
         ) {
             Ok(shrink) => {
                 shrunk_trace = Some(PathBuf::from(shrink.out_trace_path.clone()));
+                let status = if allow_expected_failures {
+                    if let Some(primary) = primary_status {
+                        if shrink_status_matches(primary, shrink.result.summary.status) {
+                            shrink_classification =
+                                Some("expected_fail_class_preserved".to_string());
+                            FullStepStatus::Passed
+                        } else {
+                            shrink_classification =
+                                Some("expected_fail_class_mismatch".to_string());
+                            FullStepStatus::Failed
+                        }
+                    } else {
+                        shrink_classification = Some("primary_status_missing".to_string());
+                        FullStepStatus::Passed
+                    }
+                } else if shrink.result.summary.status == ExitStatus::Pass {
+                    shrink_classification = Some("pass_required_policy".to_string());
+                    FullStepStatus::Passed
+                } else {
+                    shrink_classification = Some("policy_rejected_non_pass".to_string());
+                    FullStepStatus::Failed
+                };
                 push(
                     "shrink",
-                    if allow_expected_failures {
-                        if let Some(primary) = primary_status {
-                            if shrink_status_matches(primary, shrink.result.summary.status) {
-                                FullStepStatus::Passed
-                            } else {
-                                FullStepStatus::Failed
-                            }
-                        } else {
-                            FullStepStatus::Passed
-                        }
-                    } else if shrink.result.summary.status == ExitStatus::Pass {
-                        FullStepStatus::Passed
-                    } else {
-                        FullStepStatus::Failed
-                    },
+                    status,
                     format!("out_trace={}", shrink.out_trace_path),
                 );
             }
-            Err(err) => push("shrink", FullStepStatus::Failed, err.to_string()),
+            Err(err) => {
+                shrink_classification = Some("tooling_failure".to_string());
+                push("shrink", FullStepStatus::Failed, err.to_string())
+            }
         }
 
         if let Some(min_trace) = shrunk_trace.as_ref() {
@@ -2003,6 +2020,7 @@ fn run_full_command(
         unsafe_mode,
         scenario_root: scenario_root.display().to_string(),
         guidance,
+        shrink_classification,
         steps,
     })
 }

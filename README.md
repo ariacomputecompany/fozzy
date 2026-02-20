@@ -99,10 +99,7 @@ fozzy version --json
 
 ## Repository Docs
 
-- [PLAN.md](PLAN.md): production milestone checklist
-- [RUST-STYLE-GUIDE.md](RUST-STYLE-GUIDE.md): Rust coding conventions
-- [SDK-TS.md](SDK-TS.md): TypeScript SDK contract
-- [sdk-ts/](sdk-ts/): TypeScript SDK package (`fozzy-sdk`)
+- [CLI.md](CLI.md): complete command contract
 
 ## License
 

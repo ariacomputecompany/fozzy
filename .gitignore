@@ -1,3 +1,6 @@
 /target
 .fozzy/
 .DS_Store
+PLAN.md
+RUST-STYLE-GUIDE.md
+SDK-TS.md

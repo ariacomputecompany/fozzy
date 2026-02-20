@@ -107,6 +107,22 @@ fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
     serde_json::from_str(s.trim()).expect("stdout json")
 }
 
+fn full_step_status(doc: &serde_json::Value, name: &str) -> Option<String> {
+    doc.get("steps")
+        .and_then(|v| v.as_array())
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                if step.get("name").and_then(|v| v.as_str()) == Some(name) {
+                    step.get("status")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+}
+
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &b in bytes {
@@ -1152,5 +1168,166 @@ fn scripted_http_when_supports_response_headers_assertions() {
         Some(0),
         "scripted response headers should assert: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn full_allow_expected_failures_controls_shrink_status_for_fail_class_runs() {
+    let ws = temp_workspace("full-allow-expected-failures");
+    let scenario_root = ws.join("tests");
+    std::fs::create_dir_all(&scenario_root).expect("create tests dir");
+    std::fs::write(
+        scenario_root.join("intentional-fail.fozzy.json"),
+        r#"{
+          "version":1,
+          "name":"intentional-fail",
+          "steps":[
+            {"type":"trace_event","name":"start"},
+            {"type":"fail","message":"expected failure"}
+          ]
+        }"#,
+    )
+    .expect("write fail scenario");
+
+    let mut common = vec![
+        "full".to_string(),
+        "--scenario-root".to_string(),
+        scenario_root.to_string_lossy().to_string(),
+        "--seed".to_string(),
+        "7".to_string(),
+        "--doctor-runs".to_string(),
+        "2".to_string(),
+        "--fuzz-time".to_string(),
+        "10ms".to_string(),
+        "--required-steps".to_string(),
+        "run_record_trace,replay,ci,shrink".to_string(),
+        "--json".to_string(),
+    ];
+
+    let no_allow = run_cli(&common);
+    assert_eq!(
+        no_allow.status.code(),
+        Some(1),
+        "full should fail without --allow-expected-failures: {}",
+        String::from_utf8_lossy(&no_allow.stderr)
+    );
+    let no_allow_doc = parse_json_stdout(&no_allow);
+    assert_eq!(
+        full_step_status(&no_allow_doc, "run_record_trace"),
+        Some("passed".to_string())
+    );
+    assert_eq!(
+        full_step_status(&no_allow_doc, "replay"),
+        Some("passed".to_string())
+    );
+    assert_eq!(
+        full_step_status(&no_allow_doc, "ci"),
+        Some("passed".to_string())
+    );
+    assert_eq!(
+        full_step_status(&no_allow_doc, "shrink"),
+        Some("failed".to_string())
+    );
+    assert_eq!(
+        no_allow_doc
+            .get("shrinkClassification")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        Some("policy_rejected_non_pass".to_string())
+    );
+
+    common.insert(1, "--allow-expected-failures".to_string());
+    let allow = run_cli(&common);
+    assert_eq!(
+        allow.status.code(),
+        Some(0),
+        "full should pass with --allow-expected-failures: {}",
+        String::from_utf8_lossy(&allow.stderr)
+    );
+    let allow_doc = parse_json_stdout(&allow);
+    assert_eq!(
+        full_step_status(&allow_doc, "run_record_trace"),
+        Some("passed".to_string())
+    );
+    assert_eq!(
+        full_step_status(&allow_doc, "replay"),
+        Some("passed".to_string())
+    );
+    assert_eq!(
+        full_step_status(&allow_doc, "ci"),
+        Some("passed".to_string())
+    );
+    assert_eq!(
+        full_step_status(&allow_doc, "shrink"),
+        Some("passed".to_string())
+    );
+    assert_eq!(
+        allow_doc
+            .get("shrinkClassification")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        Some("expected_fail_class_preserved".to_string())
+    );
+}
+
+#[test]
+fn steps_alias_matches_schema_output() {
+    let schema = run_cli(&["schema".into(), "--json".into()]);
+    assert_eq!(
+        schema.status.code(),
+        Some(0),
+        "schema stderr={}",
+        String::from_utf8_lossy(&schema.stderr)
+    );
+    let steps = run_cli(&["steps".into(), "--json".into()]);
+    assert_eq!(
+        steps.status.code(),
+        Some(0),
+        "steps alias stderr={}",
+        String::from_utf8_lossy(&steps.stderr)
+    );
+    assert_eq!(parse_json_stdout(&schema), parse_json_stdout(&steps));
+}
+
+#[test]
+fn validate_returns_non_zero_with_actionable_parse_diagnostics() {
+    let ws = temp_workspace("validate-parse-error");
+    let scenario = ws.join("broken.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"{
+          "version":1,
+          "name":"broken",
+          "steps":[
+            {"type":"memory_alloc","bytes":"not-a-number"}
+          ]
+        }"#,
+    )
+    .expect("write broken scenario");
+
+    let out = run_cli(&[
+        "validate".into(),
+        scenario.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "validate should fail for malformed step payload: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = parse_json_stdout(&out);
+    assert_eq!(doc.get("ok").and_then(|v| v.as_bool()), Some(false));
+    let msg = doc
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("failed to parse scenario"),
+        "expected parse context in validate error, got: {msg}"
+    );
+    assert!(
+        msg.contains("fozzy schema --json"),
+        "expected schema guidance in validate error, got: {msg}"
     );
 }
