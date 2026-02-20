@@ -30,17 +30,18 @@ impl UsageDoc {
 
 pub fn usage_doc() -> UsageDoc {
     UsageDoc {
-        title: "Fozzy CLI usage (use the full surface by default)".to_string(),
+        title: "Fozzy CLI usage (start with `fozzy map hotspots`, then use the full surface)"
+            .to_string(),
         items: vec![
+            UsageItem {
+                command: "fozzy map".to_string(),
+                when: "Start here: generate a language-agnostic code-topology map (hotspots, service boundaries, granular suite recommendations) before running broad gates.".to_string(),
+                how: "fozzy map hotspots --root . --min-risk 60 --limit 50 --json; fozzy map services --root . --json; fozzy map suites --root . --scenario-root tests --min-risk 60 --profile pedantic --json. `pedantic` is the default profile and biases toward over-specifying granular suite coverage; optionally use `balanced` or `overkill`.".to_string(),
+            },
             UsageItem {
                 command: "fozzy full".to_string(),
                 when: "Run the complete Fozzy surface-area gate with setup guidance and graceful skip behavior for missing inputs.".to_string(),
                 how: "fozzy full --scenario-root tests --seed 1337 --doctor-runs 5 --fuzz-time 2s --explore-steps 200 --explore-nodes 3 --allow-expected-failures --scenario-filter memory --skip-steps fuzz --required-steps usage,version,test_det,run_record_trace,replay,ci,shrink --require-topology-coverage . --topology-min-risk 60 --topology-profile pedantic. This command exercises init/test/run/fuzz/explore/replay/trace verify/shrink/corpus/artifacts/report/memory/map/doctor/ci/env/version/usage with policy controls for mixed scenario sets and can enforce high-risk topology hotspot coverage. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
-            },
-            UsageItem {
-                command: "fozzy map".to_string(),
-                when: "Generate a language-agnostic code-topology map (hotspots, service boundaries, and granular suite recommendations).".to_string(),
-                how: "fozzy map hotspots --root . --min-risk 60 --limit 50 --json; fozzy map services --root . --json; fozzy map suites --root . --scenario-root tests --min-risk 60 --profile pedantic --json. `pedantic` is the default profile and biases toward over-specifying granular suite coverage; optionally use `balanced` or `overkill`.".to_string(),
             },
             UsageItem {
                 command: "fozzy init".to_string(),
