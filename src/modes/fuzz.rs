@@ -1129,7 +1129,6 @@ mod tests {
         let out = with_numeric_suffix(Path::new("artifacts/trace"), 4);
         assert_eq!(out, Path::new("artifacts/trace.4"));
     }
-
     #[test]
     fn fuzz_target_parses_scenario_prefix_and_path_form() {
         let a: FuzzTarget = "scenario:tests/example.fozzy.json".parse().expect("prefix");
