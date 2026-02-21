@@ -342,7 +342,9 @@ pub fn init_project(
   "distributed": {
     "node_count": 3,
     "steps": [
+      { "type": "client_put", "node": "n0", "key": "k", "value": "v1" },
       { "type": "client_put", "node": "n1", "key": "k", "value": "v1" },
+      { "type": "client_put", "node": "n2", "key": "k", "value": "v1" },
       { "type": "tick", "duration": "20ms" }
     ],
     "invariants": [

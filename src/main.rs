@@ -244,7 +244,7 @@ enum Command {
         minimize: bool,
 
         /// Behavior when --record target exists: error, overwrite, or append with numeric suffix.
-        #[arg(long, default_value = "error")]
+        #[arg(long, default_value = "append")]
         record_collision: RecordCollisionPolicy,
 
         #[arg(long)]

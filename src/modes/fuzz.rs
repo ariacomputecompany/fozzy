@@ -258,10 +258,11 @@ pub fn fuzz(
                 )?;
             }
 
-            let trace_out = opt
-                .record_trace_to
-                .clone()
-                .unwrap_or_else(|| artifacts_dir.join("trace.fozzy"));
+            let trace_out = crash_trace_output_path(
+                opt.record_trace_to.as_deref(),
+                &artifacts_dir,
+                crash_count,
+            );
             let trace =
                 TraceFile::new_fuzz(target_string(target), &input, exec.events, summary.clone());
             let mut trace = trace;
@@ -855,6 +856,29 @@ fn persist_crash_min_input(dir: &Path, bytes: &[u8]) -> FozzyResult<PathBuf> {
     Ok(out)
 }
 
+fn crash_trace_output_path(
+    record_path: Option<&Path>,
+    artifacts_dir: &Path,
+    crash_count: u64,
+) -> PathBuf {
+    let base = record_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| artifacts_dir.join("trace.fozzy"));
+    if crash_count <= 1 {
+        return base;
+    }
+    with_numeric_suffix(&base, crash_count - 1)
+}
+
+fn with_numeric_suffix(path: &Path, suffix: u64) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
+    match path.extension().and_then(|s| s.to_str()) {
+        Some(ext) => parent.join(format!("{stem}.{suffix}.{ext}")),
+        None => parent.join(format!("{stem}.{suffix}")),
+    }
+}
+
 fn minimize_input(
     target: &FuzzTarget,
     input: &[u8],
@@ -938,5 +962,28 @@ fn hex_val(b: u8) -> FozzyResult<u8> {
         b'a'..=b'f' => Ok(b - b'a' + 10),
         b'A'..=b'F' => Ok(b - b'A' + 10),
         _ => Err(FozzyError::Trace("invalid hex character".to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{crash_trace_output_path, with_numeric_suffix};
+    use std::path::Path;
+
+    #[test]
+    fn crash_trace_output_path_uses_base_then_numbered_suffixes() {
+        let artifacts_dir = Path::new("/tmp/fozzy-run");
+        let first = crash_trace_output_path(None, artifacts_dir, 1);
+        let second = crash_trace_output_path(None, artifacts_dir, 2);
+        let third = crash_trace_output_path(None, artifacts_dir, 3);
+        assert_eq!(first, artifacts_dir.join("trace.fozzy"));
+        assert_eq!(second, artifacts_dir.join("trace.1.fozzy"));
+        assert_eq!(third, artifacts_dir.join("trace.2.fozzy"));
+    }
+
+    #[test]
+    fn with_numeric_suffix_handles_paths_without_extension() {
+        let out = with_numeric_suffix(Path::new("artifacts/trace"), 4);
+        assert_eq!(out, Path::new("artifacts/trace.4"));
     }
 }
