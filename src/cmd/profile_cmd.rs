@@ -11,11 +11,19 @@ use crate::{
     TraceFile, TracePath, resolve_artifacts_dir, shrink_trace,
 };
 
+const RUN_OR_TRACE_HELP: &str =
+    "Run selector: run id, trace path (*.fozzy), or alias (latest|last-pass|last-fail).";
+const RUN_OR_TRACE_LONG_HELP: &str = "Accepted forms:\n- run id directory under .fozzy/runs/<run-id>\n- direct trace path (*.fozzy)\n- aliases: latest, last-pass, last-fail\nResolution order:\n1) existing *.fozzy path\n2) .fozzy/runs/<selector>/trace.fozzy\n3) tracePath from report.json\n4) tracePath from manifest.json\n5) existing profile artifacts in the run directory";
+
 #[derive(Debug, Subcommand)]
 pub enum ProfileCommand {
     /// Show top profiler hotspots and metrics.
     Top {
-        #[arg(value_name = "RUN_OR_TRACE")]
+        #[arg(
+            value_name = "RUN_OR_TRACE",
+            help = RUN_OR_TRACE_HELP,
+            long_help = RUN_OR_TRACE_LONG_HELP
+        )]
         run: String,
         #[arg(long)]
         cpu: bool,
@@ -32,7 +40,11 @@ pub enum ProfileCommand {
     },
     /// Export flamegraph-compatible data.
     Flame {
-        #[arg(value_name = "RUN_OR_TRACE")]
+        #[arg(
+            value_name = "RUN_OR_TRACE",
+            help = RUN_OR_TRACE_HELP,
+            long_help = RUN_OR_TRACE_LONG_HELP
+        )]
         run: String,
         #[arg(long)]
         cpu: bool,
@@ -45,7 +57,11 @@ pub enum ProfileCommand {
     },
     /// Export canonical profiler timeline.
     Timeline {
-        #[arg(value_name = "RUN_OR_TRACE")]
+        #[arg(
+            value_name = "RUN_OR_TRACE",
+            help = RUN_OR_TRACE_HELP,
+            long_help = RUN_OR_TRACE_LONG_HELP
+        )]
         run: String,
         #[arg(long)]
         out: Option<PathBuf>,
@@ -54,9 +70,17 @@ pub enum ProfileCommand {
     },
     /// Compare two profiler runs/traces.
     Diff {
-        #[arg(value_name = "LEFT_RUN_OR_TRACE")]
+        #[arg(
+            value_name = "LEFT_RUN_OR_TRACE",
+            help = RUN_OR_TRACE_HELP,
+            long_help = RUN_OR_TRACE_LONG_HELP
+        )]
         left: String,
-        #[arg(value_name = "RIGHT_RUN_OR_TRACE")]
+        #[arg(
+            value_name = "RIGHT_RUN_OR_TRACE",
+            help = RUN_OR_TRACE_HELP,
+            long_help = RUN_OR_TRACE_LONG_HELP
+        )]
         right: String,
         #[arg(long)]
         cpu: bool,
@@ -71,14 +95,22 @@ pub enum ProfileCommand {
     },
     /// Explain likely root causes for runtime behavior or regression.
     Explain {
-        #[arg(value_name = "RUN_OR_TRACE")]
+        #[arg(
+            value_name = "RUN_OR_TRACE",
+            help = RUN_OR_TRACE_HELP,
+            long_help = RUN_OR_TRACE_LONG_HELP
+        )]
         run: String,
         #[arg(long = "diff-with")]
         diff_with: Option<String>,
     },
     /// Export profiler data into external formats.
     Export {
-        #[arg(value_name = "RUN_OR_TRACE")]
+        #[arg(
+            value_name = "RUN_OR_TRACE",
+            help = RUN_OR_TRACE_HELP,
+            long_help = RUN_OR_TRACE_LONG_HELP
+        )]
         run: String,
         #[arg(long)]
         format: ProfileExportFormat,
@@ -87,7 +119,11 @@ pub enum ProfileCommand {
     },
     /// Shrink a trace while preserving a profiler metric direction.
     Shrink {
-        #[arg(value_name = "RUN_OR_TRACE")]
+        #[arg(
+            value_name = "RUN_OR_TRACE",
+            help = RUN_OR_TRACE_HELP,
+            long_help = RUN_OR_TRACE_LONG_HELP
+        )]
         run: String,
         #[arg(long)]
         metric: ProfileMetric,
@@ -95,6 +131,17 @@ pub enum ProfileCommand {
         direction: ProfileDirection,
         #[arg(long)]
         budget: Option<crate::FozzyDuration>,
+    },
+    /// Show profiler capability visibility for this host/backend setup.
+    Env,
+    /// Run one-shot profile sanity checks for a run/trace.
+    Doctor {
+        #[arg(
+            value_name = "RUN_OR_TRACE",
+            help = RUN_OR_TRACE_HELP,
+            long_help = RUN_OR_TRACE_LONG_HELP
+        )]
+        run: String,
     },
 }
 
@@ -512,6 +559,11 @@ pub fn profile_command(
             let bundle = load_profile_bundle(config, run)?;
             enforce_cpu_contract(strict, domains.contains(&"cpu".to_string()))?;
             let mut out = serde_json::Map::new();
+            let mut empty_domains = Vec::<serde_json::Value>::new();
+            out.insert(
+                "schemaVersion".to_string(),
+                serde_json::json!("fozzy.profile_top.v1"),
+            );
             out.insert("run".to_string(), serde_json::json!(run));
             out.insert("limit".to_string(), serde_json::json!(limit));
             if domains.iter().any(|d| d == "cpu") {
@@ -527,36 +579,58 @@ pub fn profile_command(
                         })
                     })
                     .collect::<Vec<_>>();
+                if top.is_empty() {
+                    empty_domains.push(empty_domain("cpu", "no cpu samples in trace"));
+                }
                 out.insert("cpu".to_string(), serde_json::json!(top));
             }
             if domains.iter().any(|d| d == "heap") {
+                let heap_rows = bundle
+                    .heap
+                    .hotspots
+                    .iter()
+                    .take(*limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if heap_rows.is_empty() {
+                    empty_domains.push(empty_domain("heap", "no heap samples in trace"));
+                }
                 out.insert(
                     "heap".to_string(),
-                    serde_json::to_value(bundle.heap.hotspots.iter().take(*limit).cloned().collect::<Vec<_>>())?,
+                    serde_json::to_value(heap_rows)?,
                 );
             }
             if domains.iter().any(|d| d == "latency") {
+                let latency_rows = bundle
+                    .latency
+                    .critical_path
+                    .iter()
+                    .take(*limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if latency_rows.is_empty() {
+                    empty_domains.push(empty_domain("latency", "no latency edges in trace"));
+                }
                 out.insert(
                     "latency".to_string(),
-                    serde_json::to_value(
-                        bundle
-                            .latency
-                            .critical_path
-                            .iter()
-                            .take(*limit)
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                    )?,
+                    serde_json::to_value(latency_rows)?,
                 );
             }
             if domains.iter().any(|d| d == "io") {
                 let io_top = top_by_tag(&bundle.timeline, ProfileEventKind::Io, *limit);
+                if io_top.is_empty() {
+                    empty_domains.push(empty_domain("io", "no io events in trace"));
+                }
                 out.insert("io".to_string(), serde_json::to_value(io_top)?);
             }
             if domains.iter().any(|d| d == "sched") {
                 let sched_top = top_by_tag(&bundle.timeline, ProfileEventKind::Sched, *limit);
+                if sched_top.is_empty() {
+                    empty_domains.push(empty_domain("sched", "no scheduler events in trace"));
+                }
                 out.insert("sched".to_string(), serde_json::to_value(sched_top)?);
             }
+            out.insert("emptyDomains".to_string(), serde_json::to_value(empty_domains)?);
             out.insert("metrics".to_string(), serde_json::to_value(bundle.metrics)?);
             Ok(serde_json::Value::Object(out))
         }
@@ -577,6 +651,11 @@ pub fn profile_command(
             } else {
                 bundle.cpu.folded_stacks.clone()
             };
+            let domain = if use_heap { "heap" } else { "cpu" };
+            let empty_reason = match domain {
+                "heap" => "no heap samples in trace",
+                _ => "no cpu samples in trace",
+            };
             let payload = match format {
                 ProfileFlameFormat::Folded => folded_to_text(&folded),
                 ProfileFlameFormat::Svg => folded_to_svg(&folded),
@@ -588,7 +667,11 @@ pub fn profile_command(
                 write_text(path, &payload)?;
             }
             Ok(serde_json::json!({
+                "schemaVersion": "fozzy.profile_flame.v1",
                 "run": run,
+                "domain": domain,
+                "empty": folded.is_empty(),
+                "reason": if folded.is_empty() { Some(empty_reason) } else { None::<&str> },
                 "format": format,
                 "content": payload
             }))
@@ -598,6 +681,7 @@ pub fn profile_command(
             match format {
                 ProfileTimelineFormat::Json => {
                     let payload = serde_json::json!({
+                        "schemaVersion": "fozzy.profile_timeline.v1",
                         "run": run,
                         "format": "json",
                         "events": bundle.timeline
@@ -613,6 +697,7 @@ pub fn profile_command(
                         write_text(path, &html)?;
                     }
                     Ok(serde_json::json!({
+                        "schemaVersion": "fozzy.profile_timeline.v1",
                         "run": run,
                         "format": "html",
                         "content": html
@@ -675,6 +760,7 @@ pub fn profile_command(
             };
             write_json(out, &value)?;
             Ok(serde_json::json!({
+                "schemaVersion": "fozzy.profile_export_result.v1",
                 "run": run,
                 "format": format,
                 "out": out,
@@ -705,38 +791,50 @@ pub fn profile_command(
                 ProfileDirection::Increase => after >= baseline,
                 ProfileDirection::Decrease => after <= baseline,
             };
-            if !preserved {
-                let direction_name = match direction {
-                    ProfileDirection::Increase => "increase",
-                    ProfileDirection::Decrease => "decrease",
-                };
-                let comparator = match direction {
-                    ProfileDirection::Increase => ">=",
-                    ProfileDirection::Decrease => "<=",
-                };
-                return Err(FozzyError::InvalidArgument(format!(
-                    "profile shrink failed metric contract: expected after {comparator} baseline for direction={direction_name} (baseline={}, after={})",
-                    format_metric_value(baseline),
-                    format_metric_value(after),
-                )));
-            }
             let out_parent = Path::new(&shrunk.out_trace_path)
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or(artifacts_dir);
             write_profile_artifacts_from_trace(&shrunk_trace, &out_parent)?;
+            let direction_name = match direction {
+                ProfileDirection::Increase => "increase",
+                ProfileDirection::Decrease => "decrease",
+            };
+            let comparator = match direction {
+                ProfileDirection::Increase => ">=",
+                ProfileDirection::Decrease => "<=",
+            };
+            let status = if preserved { "ok" } else { "no_feasible_shrink_found" };
+            let baseline_out = normalize_metric_value(baseline);
+            let after_out = normalize_metric_value(after);
             Ok(serde_json::json!({
                 "schemaVersion": "fozzy.profile_shrink.v1",
+                "status": status,
                 "run": run,
                 "trace": trace_path,
                 "outTrace": shrunk.out_trace_path,
                 "metric": metric,
                 "direction": direction,
-                "baseline": baseline,
-                "after": after,
+                "baseline": baseline_out,
+                "after": after_out,
                 "preserved": preserved,
+                "contract": {
+                    "expected": format!("after {comparator} baseline"),
+                    "direction": direction_name,
+                },
+                "reason": if preserved {
+                    None::<String>
+                } else {
+                    Some(format!(
+                        "no feasible shrink found that preserves metric direction: expected after {comparator} baseline for direction={direction_name} (baseline={}, after={})",
+                        format_metric_value(baseline),
+                        format_metric_value(after)
+                    ))
+                },
             }))
         }
+        ProfileCommand::Env => Ok(profile_env_report(config, strict)),
+        ProfileCommand::Doctor { run } => profile_doctor(config, strict, run),
     }
 }
 
@@ -1237,6 +1335,9 @@ fn heap_folded(heap: &HeapProfile) -> Vec<FoldedStack> {
 }
 
 fn folded_to_text(folded: &[FoldedStack]) -> String {
+    if folded.is_empty() {
+        return "# empty profile: no samples in trace".to_string();
+    }
     let mut out = String::new();
     for row in folded {
         out.push_str(&format!("{} {}\n", row.stack, row.weight));
@@ -1255,6 +1356,11 @@ fn folded_to_svg(folded: &[FoldedStack]) -> String {
         r#"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\">"#
     ));
     out.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#111827\"/>");
+    if folded.is_empty() {
+        out.push_str(
+            "<text x=\"24\" y=\"36\" fill=\"#e5e7eb\" font-size=\"13\">empty profile: no samples in trace</text>",
+        );
+    }
     for (i, row) in folded.iter().enumerate() {
         let y = 20 + (i as i32) * (bar_h + gap);
         let w = ((row.weight as f64 / max) * 820.0).round() as i32;
@@ -1516,6 +1622,235 @@ fn format_metric_value(value: f64) -> String {
     out
 }
 
+fn normalize_metric_value(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value }
+}
+
+fn empty_domain(domain: &str, reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "domain": domain,
+        "empty": true,
+        "reason": reason,
+    })
+}
+
+fn profile_env_report(config: &Config, strict: bool) -> serde_json::Value {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let cpu_quality = if cfg!(target_os = "linux") {
+        "high"
+    } else {
+        "degraded"
+    };
+    serde_json::json!({
+        "schemaVersion": "fozzy.profile_env.v1",
+        "strict": strict,
+        "host": {
+            "os": os,
+            "arch": arch,
+        },
+        "backends": {
+            "proc": format!("{:?}", config.proc_backend).to_lowercase(),
+            "fs": format!("{:?}", config.fs_backend).to_lowercase(),
+            "http": format!("{:?}", config.http_backend).to_lowercase(),
+        },
+        "domains": {
+            "cpu": {
+                "available": true,
+                "quality": cpu_quality,
+                "notes": if cfg!(target_os = "linux") {
+                    "linux perf_event_open available in collector metadata"
+                } else {
+                    "non-Linux uses fallback synthetic/in-process sampling semantics"
+                }
+            },
+            "heap": {
+                "available": true,
+                "quality": "high",
+                "notes": "derived from memory_alloc/memory_free events in trace"
+            },
+            "latency": {
+                "available": true,
+                "quality": "high",
+                "notes": "derived from deterministic trace timeline deltas"
+            },
+            "io": {
+                "available": true,
+                "quality": "high",
+                "notes": "derived from io/net event counts in trace"
+            },
+            "sched": {
+                "available": true,
+                "quality": "high",
+                "notes": "derived from distributed scheduler events in trace"
+            }
+        }
+    })
+}
+
+fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde_json::Value> {
+    let mut checks = Vec::<serde_json::Value>::new();
+    let mut issues = Vec::<String>::new();
+    checks.push(serde_json::json!({
+        "name": "env",
+        "ok": true,
+        "status": "pass",
+        "detail": profile_env_report(config, strict),
+    }));
+
+    let bundle = match load_profile_bundle(config, run) {
+        Ok(bundle) => {
+            checks.push(serde_json::json!({
+                "name": "load_bundle",
+                "ok": true,
+                "status": "pass",
+                "detail": "resolved run/trace and loaded profile artifacts",
+            }));
+            bundle
+        }
+        Err(err) => {
+            let detail = err.to_string();
+            issues.push(detail.clone());
+            checks.push(serde_json::json!({
+                "name": "load_bundle",
+                "ok": false,
+                "status": "fail",
+                "detail": detail,
+            }));
+            return Ok(serde_json::json!({
+                "schemaVersion": "fozzy.profile_doctor.v1",
+                "run": run,
+                "ok": false,
+                "checks": checks,
+                "issues": issues,
+            }));
+        }
+    };
+
+    let top_domains = normalize_domains(false, false, false, false, false);
+    let top_has_any = !top_by_tag(&bundle.timeline, ProfileEventKind::Io, 10).is_empty()
+        || !top_by_tag(&bundle.timeline, ProfileEventKind::Sched, 10).is_empty()
+        || !bundle.heap.hotspots.is_empty()
+        || !bundle.latency.critical_path.is_empty();
+    checks.push(serde_json::json!({
+        "name": "top",
+        "ok": true,
+        "status": if top_has_any { "pass" } else { "warn" },
+        "detail": format!("default domains={top_domains:?}"),
+    }));
+
+    let heap_folded = heap_folded(&bundle.heap);
+    checks.push(serde_json::json!({
+        "name": "flame_heap",
+        "ok": true,
+        "status": if heap_folded.is_empty() { "warn" } else { "pass" },
+        "detail": if heap_folded.is_empty() { "no heap samples in trace" } else { "heap flame data present" },
+    }));
+    checks.push(serde_json::json!({
+        "name": "flame_cpu",
+        "ok": true,
+        "status": if bundle.cpu.folded_stacks.is_empty() { "warn" } else { "pass" },
+        "detail": if bundle.cpu.folded_stacks.is_empty() { "no cpu samples in trace" } else { "cpu flame data present" },
+    }));
+
+    checks.push(serde_json::json!({
+        "name": "timeline",
+        "ok": true,
+        "status": "pass",
+        "detail": format!("events={}", bundle.timeline.len()),
+    }));
+    let diff = compute_diff(run, run, &["cpu".to_string(), "heap".to_string(), "latency".to_string()], &bundle.metrics, &bundle.metrics);
+    checks.push(serde_json::json!({
+        "name": "diff",
+        "ok": true,
+        "status": "pass",
+        "detail": format!("regressions={}", diff.regressions.len()),
+    }));
+    let explain = explain_single(run, &bundle);
+    checks.push(serde_json::json!({
+        "name": "explain",
+        "ok": true,
+        "status": "pass",
+        "detail": explain.likely_cause_domain,
+    }));
+    let speedscope = folded_to_speedscope(run, &bundle.cpu.folded_stacks);
+    checks.push(serde_json::json!({
+        "name": "export",
+        "ok": true,
+        "status": "pass",
+        "detail": format!("speedscope_frames={}", speedscope.get("shared").and_then(|v| v.get("frames")).and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0)),
+    }));
+
+    let shrink_check = match resolve_profile_trace(config, run) {
+        Ok((_, trace_path)) => {
+            let out = std::env::temp_dir().join(format!(
+                "fozzy-profile-doctor-{}.trace.fozzy",
+                uuid::Uuid::new_v4()
+            ));
+            match shrink_trace(
+                config,
+                TracePath::new(trace_path.clone()),
+                &ShrinkOptions {
+                    out_trace_path: Some(out.clone()),
+                    budget: Some(std::time::Duration::from_secs(2)),
+                    aggressive: false,
+                    minimize: ShrinkMinimize::All,
+                },
+            ) {
+                Ok(s) => {
+                    let shrunk_trace = TraceFile::read_json(Path::new(&s.out_trace_path))?;
+                    let baseline = metric_value(ProfileMetric::CpuTime, &TraceFile::read_json(&trace_path)?)?;
+                    let after = metric_value(ProfileMetric::CpuTime, &shrunk_trace)?;
+                    let preserved = after >= baseline;
+                    serde_json::json!({
+                        "name": "shrink_cpu_increase",
+                        "ok": true,
+                        "status": if preserved { "pass" } else { "warn" },
+                        "detail": if preserved {
+                            format!("preserved contract baseline={} after={}", format_metric_value(baseline), format_metric_value(after))
+                        } else {
+                            format!("no feasible shrink found that preserves increase contract baseline={} after={}", format_metric_value(baseline), format_metric_value(after))
+                        }
+                    })
+                }
+                Err(err) => serde_json::json!({
+                    "name": "shrink_cpu_increase",
+                    "ok": false,
+                    "status": "fail",
+                    "detail": err.to_string(),
+                }),
+            }
+        }
+        Err(err) => serde_json::json!({
+            "name": "shrink_cpu_increase",
+            "ok": false,
+            "status": "fail",
+            "detail": err.to_string(),
+        }),
+    };
+    if shrink_check
+        .get("ok")
+        .and_then(|v| v.as_bool())
+        .is_some_and(|v| !v)
+    {
+        if let Some(detail) = shrink_check.get("detail").and_then(|v| v.as_str()) {
+            issues.push(detail.to_string());
+        }
+    }
+    checks.push(shrink_check);
+
+    let ok = checks
+        .iter()
+        .all(|c| c.get("ok").and_then(|v| v.as_bool()).unwrap_or(false));
+    Ok(serde_json::json!({
+        "schemaVersion": "fozzy.profile_doctor.v1",
+        "run": run,
+        "ok": ok,
+        "checks": checks,
+        "issues": issues,
+    }))
+}
+
 fn resolve_profile_trace(config: &Config, selector: &str) -> FozzyResult<(PathBuf, PathBuf)> {
     let (artifacts_dir, trace_path) = resolve_profile_artifacts(config, selector)?;
     if let Some(trace_path) = trace_path {
@@ -1645,7 +1980,7 @@ fn write_text(path: &Path, value: &str) -> FozzyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ExitStatus, RunIdentity, RunMode, RunSummary, TraceEvent};
+    use crate::{ExitStatus, RunIdentity, RunMode, RunSummary, ScenarioV1Steps, Step, TraceEvent};
     use std::path::PathBuf;
 
     fn sample_trace() -> TraceFile {
@@ -1655,7 +1990,20 @@ mod tests {
             engine: crate::version_info(),
             mode: RunMode::Run,
             scenario_path: None,
-            scenario: None,
+            scenario: Some(ScenarioV1Steps {
+                version: 1,
+                name: "no-heap".to_string(),
+                steps: vec![
+                    Step::TraceEvent {
+                        name: "setup".to_string(),
+                        fields: serde_json::Map::new(),
+                    },
+                    Step::TraceEvent {
+                        name: "teardown".to_string(),
+                        fields: serde_json::Map::new(),
+                    },
+                ],
+            }),
             fuzz: None,
             explore: None,
             memory: None,
@@ -1701,6 +2049,70 @@ mod tests {
                 finished_at: "2026-01-01T00:00:00Z".to_string(),
                 duration_ms: 10,
                 duration_ns: 10_000_000,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        }
+    }
+
+    fn sample_trace_without_heap() -> TraceFile {
+        TraceFile {
+            format: "fozzy-trace".to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(ScenarioV1Steps {
+                version: 1,
+                name: "no-heap".to_string(),
+                steps: vec![
+                    Step::TraceEvent {
+                        name: "setup".to_string(),
+                        fields: serde_json::Map::new(),
+                    },
+                    Step::TraceEvent {
+                        name: "teardown".to_string(),
+                        fields: serde_json::Map::new(),
+                    },
+                ],
+            }),
+            fuzz: None,
+            explore: None,
+            memory: None,
+            decisions: Vec::new(),
+            events: vec![
+                TraceEvent {
+                    time_ms: 1,
+                    name: "setup".to_string(),
+                    fields: serde_json::Map::new(),
+                },
+                TraceEvent {
+                    time_ms: 5,
+                    name: "work".to_string(),
+                    fields: serde_json::Map::new(),
+                },
+                TraceEvent {
+                    time_ms: 9,
+                    name: "teardown".to_string(),
+                    fields: serde_json::Map::new(),
+                },
+            ],
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r-no-heap".to_string(),
+                    seed: 9,
+                    trace_path: None,
+                    report_path: None,
+                    artifacts_dir: None,
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 1,
+                duration_ns: 1_000_000,
                 tests: None,
                 memory: None,
                 findings: Vec::new(),
@@ -1884,5 +2296,91 @@ mod tests {
         assert_eq!(format_metric_value(-0.0), "0");
         assert_eq!(format_metric_value(8.0), "8");
         assert_eq!(format_metric_value(8.125), "8.125");
+    }
+
+    #[test]
+    fn shrink_contract_miss_returns_no_feasible_status() {
+        let ws = temp_workspace("shrink-contract-miss");
+        let trace = ws.join("c.trace.fozzy");
+        std::fs::write(
+            &trace,
+            serde_json::to_vec_pretty(&sample_trace_without_heap()).expect("trace bytes"),
+        )
+        .expect("trace");
+
+        let cfg = Config::default();
+        let cmd = ProfileCommand::Shrink {
+            run: trace.to_string_lossy().to_string(),
+            metric: ProfileMetric::CpuTime,
+            direction: ProfileDirection::Increase,
+            budget: Some(crate::FozzyDuration(std::time::Duration::from_secs(1))),
+        };
+        let out = profile_command(&cfg, &cmd, true).expect("shrink output");
+        assert_eq!(
+            out.get("status").and_then(|v| v.as_str()),
+            Some("no_feasible_shrink_found")
+        );
+        assert_eq!(out.get("preserved").and_then(|v| v.as_bool()), Some(false));
+    }
+
+    #[test]
+    fn flame_reports_empty_domain_reason() {
+        let ws = temp_workspace("flame-empty");
+        let trace = ws.join("noheap.trace.fozzy");
+        std::fs::write(
+            &trace,
+            serde_json::to_vec_pretty(&sample_trace_without_heap()).expect("trace bytes"),
+        )
+        .expect("trace");
+        let out_file = ws.join("heap.folded.txt");
+
+        let cfg = Config::default();
+        let cmd = ProfileCommand::Flame {
+            run: trace.to_string_lossy().to_string(),
+            cpu: false,
+            heap: true,
+            out: Some(out_file.clone()),
+            format: ProfileFlameFormat::Folded,
+        };
+        let out = profile_command(&cfg, &cmd, true).expect("flame");
+        assert_eq!(out.get("empty").and_then(|v| v.as_bool()), Some(true));
+        assert!(
+            out.get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("no heap samples")
+        );
+        let written = std::fs::read_to_string(out_file).expect("read output");
+        assert!(!written.trim().is_empty());
+    }
+
+    #[test]
+    fn profile_env_reports_schema_and_domains() {
+        let cfg = Config::default();
+        let out = profile_command(&cfg, &ProfileCommand::Env, true).expect("env");
+        assert_eq!(
+            out.get("schemaVersion").and_then(|v| v.as_str()),
+            Some("fozzy.profile_env.v1")
+        );
+        assert!(out.get("domains").is_some());
+    }
+
+    #[test]
+    fn profile_doctor_reports_schema() {
+        let ws = temp_workspace("profile-doctor");
+        let trace = ws.join("trace.fozzy");
+        std::fs::write(&trace, serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"))
+            .expect("trace");
+
+        let cfg = Config::default();
+        let cmd = ProfileCommand::Doctor {
+            run: trace.to_string_lossy().to_string(),
+        };
+        let out = profile_command(&cfg, &cmd, true).expect("doctor");
+        assert_eq!(
+            out.get("schemaVersion").and_then(|v| v.as_str()),
+            Some("fozzy.profile_doctor.v1")
+        );
+        assert!(out.get("checks").and_then(|v| v.as_array()).is_some());
     }
 }

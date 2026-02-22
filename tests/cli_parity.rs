@@ -581,13 +581,18 @@ fn artifacts_help_uses_run_or_trace_value_name() {
 
 #[test]
 fn profile_help_uses_run_or_trace_value_name() {
-    for sub in ["top", "flame", "timeline", "export", "shrink"] {
+    for sub in ["top", "flame", "timeline", "export", "shrink", "doctor"] {
         let out = run_cli(&["profile".into(), sub.to_string(), "--help".into()]);
         assert_eq!(out.status.code(), Some(0), "help should exit 0");
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains("RUN_OR_TRACE"),
             "help should show RUN_OR_TRACE for profile {sub}; got: {stdout}"
+        );
+        assert!(
+            stdout.contains("latest|last-pass|last-fail")
+                || stdout.contains("latest, last-pass, last-fail"),
+            "help should describe aliases for profile {sub}; got: {stdout}"
         );
     }
 }

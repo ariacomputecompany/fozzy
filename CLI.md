@@ -252,10 +252,16 @@ fozzy profile diff <left-run-id|trace> <right-run-id|trace> [--cpu] [--heap] [--
 fozzy profile explain <run-id|trace> [--diff-with <run-id|trace>]
 fozzy profile export <run-id|trace> --format speedscope|pprof|otlp --out <path>
 fozzy profile shrink <run-id|trace> --metric p99_latency|cpu_time|alloc_bytes --direction increase|decrease [--budget <dur>]
+fozzy profile env
+fozzy profile doctor <run-id|trace>
 ```
 
 Profiler artifacts are schema-versioned as `profile.cpu.json`, `profile.heap.json`, `profile.latency.json`, `profile.metrics.json`, `profile.timeline.json`, and `symbols.json`.
 Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
+Resolution order for `<run-id|trace>`: direct `*.fozzy` path, then `.fozzy/runs/<selector>/trace.fozzy`, then `tracePath` from `report.json`, then `tracePath` from `manifest.json`, then existing profile artifacts in run dir.
+`fozzy profile shrink` returns `status=no_feasible_shrink_found` (non-error) when a contract-preserving shrink is impossible.
+`fozzy profile top` and `fozzy profile flame` include explicit empty-domain markers/reasons.
+`fozzy schema --json` includes `profileOutputSchemas` for stable profile command output contracts.
 For race-sensitive CI automation, prefer explicit `runId` or trace paths over aliases.
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 

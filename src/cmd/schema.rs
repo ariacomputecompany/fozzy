@@ -21,6 +21,8 @@ pub struct SchemaDoc {
     pub distributed_step_schemas: BTreeMap<&'static str, StepSchema>,
     #[serde(rename = "distributedInvariantSchemas")]
     pub distributed_invariant_schemas: BTreeMap<&'static str, StepSchema>,
+    #[serde(rename = "profileOutputSchemas")]
+    pub profile_output_schemas: BTreeMap<&'static str, ProfileOutputSchema>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,6 +36,18 @@ pub struct FileVariant {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StepSchema {
+    #[serde(rename = "requiredFields")]
+    pub required_fields: Vec<&'static str>,
+    #[serde(rename = "optionalFields")]
+    pub optional_fields: Vec<&'static str>,
+    pub example: serde_json::Value,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileOutputSchema {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: &'static str,
     #[serde(rename = "requiredFields")]
     pub required_fields: Vec<&'static str>,
     #[serde(rename = "optionalFields")]
@@ -278,8 +292,164 @@ pub fn schema_doc() -> SchemaDoc {
             });
     }
 
+    let mut profile_output_schemas = BTreeMap::<&'static str, ProfileOutputSchema>::new();
+    profile_output_schemas.insert(
+        "top",
+        ProfileOutputSchema {
+            schema_version: "fozzy.profile_top.v1",
+            required_fields: vec!["schemaVersion", "run", "limit", "metrics", "emptyDomains"],
+            optional_fields: vec!["cpu", "heap", "latency", "io", "sched"],
+            example: serde_json::json!({
+                "schemaVersion": "fozzy.profile_top.v1",
+                "run": "run-id-or-trace",
+                "limit": 10,
+                "heap": [],
+                "metrics": {"schemaVersion": "fozzy.profile_metrics.v1"},
+                "emptyDomains": [{"domain":"heap","empty":true,"reason":"no heap samples in trace"}]
+            }),
+            notes: "Domain arrays may be empty; inspect emptyDomains for explicit reasons.".to_string(),
+        },
+    );
+    profile_output_schemas.insert(
+        "diff",
+        ProfileOutputSchema {
+            schema_version: "fozzy.profile_diff.v1",
+            required_fields: vec!["schemaVersion", "left", "right", "domains", "regressions"],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_diff.v1",
+                "left":"left-run",
+                "right":"right-run",
+                "domains":["heap"],
+                "regressions":[]
+            }),
+            notes: "Regressions are sorted by absolute delta descending.".to_string(),
+        },
+    );
+    profile_output_schemas.insert(
+        "explain",
+        ProfileOutputSchema {
+            schema_version: "fozzy.profile_explain.v1",
+            required_fields: vec![
+                "schemaVersion",
+                "run",
+                "regressionStatement",
+                "topShiftedPath",
+                "likelyCauseDomain",
+                "evidencePointers",
+            ],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_explain.v1",
+                "run":"run-id-or-trace",
+                "regressionStatement":"...",
+                "topShiftedPath":"metric::io_ops",
+                "likelyCauseDomain":"io",
+                "evidencePointers":["profile.metrics.json"]
+            }),
+            notes: "run always points to the primary run argument.".to_string(),
+        },
+    );
+    profile_output_schemas.insert(
+        "timeline",
+        ProfileOutputSchema {
+            schema_version: "fozzy.profile_timeline.v1",
+            required_fields: vec!["schemaVersion", "run", "format"],
+            optional_fields: vec!["events", "content"],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_timeline.v1",
+                "run":"run-id-or-trace",
+                "format":"json",
+                "events":[]
+            }),
+            notes: "stdout and --out JSON share the same object schema.".to_string(),
+        },
+    );
+    profile_output_schemas.insert(
+        "export",
+        ProfileOutputSchema {
+            schema_version: "fozzy.profile_export_result.v1",
+            required_fields: vec!["schemaVersion", "run", "format", "out"],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_export_result.v1",
+                "run":"run-id-or-trace",
+                "format":"speedscope",
+                "out":"/tmp/profile.speedscope.json"
+            }),
+            notes: "This is export command status, not exported payload schema.".to_string(),
+        },
+    );
+    profile_output_schemas.insert(
+        "shrink",
+        ProfileOutputSchema {
+            schema_version: "fozzy.profile_shrink.v1",
+            required_fields: vec![
+                "schemaVersion",
+                "status",
+                "run",
+                "trace",
+                "outTrace",
+                "metric",
+                "direction",
+                "baseline",
+                "after",
+                "preserved",
+                "contract",
+            ],
+            optional_fields: vec!["reason"],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_shrink.v1",
+                "status":"no_feasible_shrink_found",
+                "run":"run-id-or-trace",
+                "trace":"/tmp/in.trace.fozzy",
+                "outTrace":"/tmp/in.min.fozzy",
+                "metric":"cpu_time",
+                "direction":"increase",
+                "baseline":8.0,
+                "after":0.0,
+                "preserved":false,
+                "contract":{"expected":"after >= baseline","direction":"increase"},
+                "reason":"no feasible shrink found..."
+            }),
+            notes: "Contract misses are non-error with status=no_feasible_shrink_found.".to_string(),
+        },
+    );
+    profile_output_schemas.insert(
+        "env",
+        ProfileOutputSchema {
+            schema_version: "fozzy.profile_env.v1",
+            required_fields: vec!["schemaVersion", "strict", "host", "backends", "domains"],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_env.v1",
+                "strict":true,
+                "host":{"os":"macos","arch":"aarch64"},
+                "backends":{"proc":"scripted","fs":"virtual","http":"scripted"},
+                "domains":{"cpu":{"available":true,"quality":"degraded"}}
+            }),
+            notes: "Describes profiler domain capability/quality by host + backend setup.".to_string(),
+        },
+    );
+    profile_output_schemas.insert(
+        "doctor",
+        ProfileOutputSchema {
+            schema_version: "fozzy.profile_doctor.v1",
+            required_fields: vec!["schemaVersion", "run", "ok", "checks", "issues"],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_doctor.v1",
+                "run":"run-id-or-trace",
+                "ok":true,
+                "checks":[{"name":"load_bundle","ok":true,"status":"pass","detail":"..."}],
+                "issues":[]
+            }),
+            notes: "One-shot sanity gate across top/flame/timeline/diff/explain/export/shrink readiness.".to_string(),
+        },
+    );
+
     SchemaDoc {
-        schema_version: "fozzy.schema_doc.v2".to_string(),
+        schema_version: "fozzy.schema_doc.v3".to_string(),
         file_variants: vec![
             FileVariant {
                 name: "steps",
@@ -327,5 +497,6 @@ pub fn schema_doc() -> SchemaDoc {
         step_schemas,
         distributed_step_schemas,
         distributed_invariant_schemas,
+        profile_output_schemas,
     }
 }
