@@ -60,6 +60,7 @@ fozzy env --json
 - `fozzy ci`: local gate bundle (verify + replay + artifact integrity + optional flake budget).
 - `fozzy gate`: lightweight strict targeted gate for change-scoped validation.
 - `fozzy report`: render/query reports.
+- `fozzy profile`: deterministic performance forensics (`top/flame/timeline/diff/explain/export/shrink`).
 - `fozzy memory`: inspect memory graphs, leak tops, and memory diffs.
 - `fozzy artifacts`: list/export/pack/bundle run artifacts.
 - `fozzy map`: language-agnostic code topology mapping for hotspot-driven suite planning.

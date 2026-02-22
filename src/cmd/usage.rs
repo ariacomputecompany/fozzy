@@ -41,7 +41,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy full".to_string(),
                 when: "Run the complete Fozzy surface-area gate with setup guidance and graceful skip behavior for missing inputs.".to_string(),
-                how: "fozzy full --scenario-root tests --seed 1337 --doctor-runs 5 --fuzz-time 2s --explore-steps 200 --explore-nodes 3 --allow-expected-failures --scenario-filter memory --skip-steps fuzz --required-steps usage,version,test_det,run_record_trace,replay,ci,shrink --require-topology-coverage . --topology-min-risk 60 --topology-profile pedantic. This command exercises init/test/run/fuzz/explore/replay/trace verify/shrink/corpus/artifacts/report/memory/map/doctor/ci/env/version/usage with policy controls for mixed scenario sets and can enforce high-risk topology hotspot coverage. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
+                how: "fozzy full --scenario-root tests --seed 1337 --doctor-runs 5 --fuzz-time 2s --explore-steps 200 --explore-nodes 3 --allow-expected-failures --scenario-filter memory --skip-steps fuzz --required-steps usage,version,test_det,run_record_trace,replay,ci,shrink --require-topology-coverage . --topology-min-risk 60 --topology-profile pedantic. This command exercises init/test/run/fuzz/explore/replay/trace verify/shrink/corpus/artifacts/report/profile/memory/map/doctor/ci/env/version/usage with policy controls for mixed scenario sets and can enforce high-risk topology hotspot coverage. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy gate".to_string(),
@@ -109,6 +109,11 @@ pub fn usage_doc() -> UsageDoc {
                     .to_string(),
                 how: "fozzy memory top <runId|trace> --limit 20; fozzy memory diff <left> <right>; fozzy memory graph <runId|trace> --out memory.graph.export.json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out."
                     .to_string(),
+            },
+            UsageItem {
+                command: "fozzy profile".to_string(),
+                when: "Diagnose regressions with deterministic timeline/heap/latency plus Linux-first CPU sampling exports.".to_string(),
+                how: "fozzy profile top <runId|trace> --heap --latency --io --sched --limit 20; fozzy profile flame <runId|trace> --cpu --format speedscope --out cpu.speedscope.json; fozzy profile diff <left> <right> --cpu --heap --latency --json; fozzy profile explain <runId|trace> --diff-with <baseline>; fozzy profile export <runId|trace> --format otlp --out profile.otlp.json; fozzy profile shrink trace.fozzy --metric p99_latency --direction increase. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy ci".to_string(),

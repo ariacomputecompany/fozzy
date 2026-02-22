@@ -46,6 +46,7 @@ pub enum ArtifactCommand {
 pub enum ArtifactKind {
     Trace,
     Timeline,
+    Profile,
     Memory,
     Events,
     Report,
@@ -190,6 +191,32 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
             )?;
             push_if_exists(
                 &mut out,
+                ArtifactKind::Profile,
+                parent.join("profile.timeline.json"),
+            )?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Profile,
+                parent.join("profile.cpu.json"),
+            )?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Profile,
+                parent.join("profile.heap.json"),
+            )?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Profile,
+                parent.join("profile.latency.json"),
+            )?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Profile,
+                parent.join("profile.metrics.json"),
+            )?;
+            push_if_exists(&mut out, ArtifactKind::Profile, parent.join("symbols.json"))?;
+            push_if_exists(
+                &mut out,
                 ArtifactKind::Memory,
                 parent.join("memory.timeline.json"),
             )?;
@@ -257,6 +284,32 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
         ArtifactKind::Timeline,
         artifacts_dir.join("timeline.json"),
     )?;
+    push_if_exists(
+        &mut out,
+        ArtifactKind::Profile,
+        artifacts_dir.join("profile.timeline.json"),
+    )?;
+    push_if_exists(
+        &mut out,
+        ArtifactKind::Profile,
+        artifacts_dir.join("profile.cpu.json"),
+    )?;
+    push_if_exists(
+        &mut out,
+        ArtifactKind::Profile,
+        artifacts_dir.join("profile.heap.json"),
+    )?;
+    push_if_exists(
+        &mut out,
+        ArtifactKind::Profile,
+        artifacts_dir.join("profile.latency.json"),
+    )?;
+    push_if_exists(
+        &mut out,
+        ArtifactKind::Profile,
+        artifacts_dir.join("profile.metrics.json"),
+    )?;
+    push_if_exists(&mut out, ArtifactKind::Profile, artifacts_dir.join("symbols.json"))?;
     push_if_exists(
         &mut out,
         ArtifactKind::Memory,

@@ -278,6 +278,14 @@ pub struct RunManifest {
     pub memory_leaked_allocs: Option<u64>,
     #[serde(rename = "memoryPeakBytes", skip_serializing_if = "Option::is_none")]
     pub memory_peak_bytes: Option<u64>,
+    #[serde(rename = "profileCapabilities", skip_serializing_if = "Vec::is_empty", default)]
+    pub profile_capabilities: Vec<String>,
+    #[serde(
+        rename = "profileArtifacts",
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        default
+    )]
+    pub profile_artifacts: std::collections::BTreeMap<String, String>,
 }
 
 pub fn write_run_manifest(
@@ -285,6 +293,22 @@ pub fn write_run_manifest(
     artifacts_dir: &Path,
 ) -> crate::FozzyResult<PathBuf> {
     std::fs::create_dir_all(artifacts_dir)?;
+    let mut profile_capabilities = Vec::new();
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    for (capability, file_name) in [
+        ("timeline", "profile.timeline.json"),
+        ("cpu", "profile.cpu.json"),
+        ("heap", "profile.heap.json"),
+        ("latency", "profile.latency.json"),
+        ("metrics", "profile.metrics.json"),
+        ("symbols", "symbols.json"),
+    ] {
+        let path = artifacts_dir.join(file_name);
+        if path.exists() {
+            profile_capabilities.push(capability.to_string());
+            profile_artifacts.insert(capability.to_string(), path.to_string_lossy().to_string());
+        }
+    }
     let manifest = RunManifest {
         schema_version: "fozzy.run_manifest.v1".to_string(),
         run_id: summary.identity.run_id.clone(),
@@ -305,6 +329,8 @@ pub fn write_run_manifest(
         memory_leaked_bytes: summary.memory.as_ref().map(|m| m.leaked_bytes),
         memory_leaked_allocs: summary.memory.as_ref().map(|m| m.leaked_allocs),
         memory_peak_bytes: summary.memory.as_ref().map(|m| m.peak_bytes),
+        profile_capabilities,
+        profile_artifacts,
     };
     let out = artifacts_dir.join("manifest.json");
     std::fs::write(&out, serde_json::to_vec_pretty(&manifest)?)?;

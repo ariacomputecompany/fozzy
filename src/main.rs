@@ -14,7 +14,7 @@ use fozzy::{
     ArtifactCommand, CiOptions, Config, CorpusCommand, ExitStatus, ExploreOptions, FlakeBudget,
     FozzyDuration, FsBackend, FuzzMode, FuzzOptions, FuzzTarget, HttpBackend, InitTemplate,
     InitTestType, MapCommand, MapSuitesOptions, MemoryCommand, MemoryOptions, ProcBackend,
-    RecordCollisionPolicy, ReportCommand, Reporter, RunOptions, RunSummary, ScenarioPath,
+    ProfileCommand, RecordCollisionPolicy, ReportCommand, Reporter, RunOptions, RunSummary, ScenarioPath,
     ScheduleStrategy, ShrinkCoveragePolicy, ShrinkMinimize, TopologyProfile, TracePath,
 };
 
@@ -22,7 +22,7 @@ use fozzy::{
 #[command(name = "fozzy")]
 #[command(about = "deterministic full-stack testing + fuzzing + distributed exploration")]
 #[command(
-    after_help = "Start with `fozzy map suites --root . --scenario-root tests --profile pedantic --json` and follow suite gaps in full. Execution policy: use the full command surface by default (map/run/test/fuzz/explore/replay/shrink/trace verify/ci/report/artifacts/memory/doctor/corpus/env/version/usage). Use `fozzy full` to run the end-to-end gate automatically; use `--unsafe` only when intentionally relaxing checks."
+    after_help = "Start with `fozzy map suites --root . --scenario-root tests --profile pedantic --json` and follow suite gaps in full. Execution policy: use the full command surface by default (map/run/test/fuzz/explore/replay/shrink/trace verify/ci/report/artifacts/profile/memory/doctor/corpus/env/version/usage). Use `fozzy full` to run the end-to-end gate automatically; use `--unsafe` only when intentionally relaxing checks."
 )]
 struct Cli {
     /// Path to config file. Missing configs are treated as "defaults".
@@ -390,6 +390,12 @@ enum Command {
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
+    },
+
+    /// Performance forensics profiler commands
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
     },
 
     /// Analyze repository topology and hotspot candidates for granular Fozzy suites
@@ -1047,6 +1053,12 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
 
         Command::Memory { command } => {
             let out = fozzy::memory_command(config, command)?;
+            logger.print_serialized(&out)?;
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Profile { command } => {
+            let out = fozzy::profile_command(config, command, strict_enabled(cli))?;
             logger.print_serialized(&out)?;
             Ok(ExitCode::SUCCESS)
         }
@@ -2308,6 +2320,74 @@ fn run_full_command(
                 "requires second trace input".to_string(),
             );
         }
+
+        match fozzy::profile_command(
+            config,
+            &ProfileCommand::Top {
+                run: trace.display().to_string(),
+                cpu: false,
+                heap: true,
+                latency: true,
+                io: true,
+                sched: true,
+                limit: 10,
+            },
+            strict,
+        ) {
+            Ok(_) => push(
+                "profile_top",
+                FullStepStatus::Passed,
+                "profile top diagnostics checked".to_string(),
+            ),
+            Err(err) => push("profile_top", FullStepStatus::Failed, err.to_string()),
+        }
+
+        if let Some(min_trace) = shrunk_trace.as_ref() {
+            match fozzy::profile_command(
+                config,
+                &ProfileCommand::Diff {
+                    left: trace.display().to_string(),
+                    right: min_trace.display().to_string(),
+                    cpu: false,
+                    heap: true,
+                    latency: true,
+                    io: true,
+                    sched: true,
+                },
+                strict,
+            ) {
+                Ok(_) => push(
+                    "profile_diff",
+                    FullStepStatus::Passed,
+                    "profile regression diff computed".to_string(),
+                ),
+                Err(err) => push("profile_diff", FullStepStatus::Failed, err.to_string()),
+            }
+        } else {
+            push(
+                "profile_diff",
+                FullStepStatus::Skipped,
+                "requires second trace input".to_string(),
+            );
+        }
+
+        match fozzy::profile_command(
+            config,
+            &ProfileCommand::Explain {
+                run: trace.display().to_string(),
+                diff_with: shrunk_trace
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
+            },
+            strict,
+        ) {
+            Ok(_) => push(
+                "profile_explain",
+                FullStepStatus::Passed,
+                "profile explanation generated".to_string(),
+            ),
+            Err(err) => push("profile_explain", FullStepStatus::Failed, err.to_string()),
+        }
     } else {
         for name in [
             "trace_verify",
@@ -2326,6 +2406,9 @@ fn run_full_command(
             "memory_top",
             "memory_graph",
             "memory_diff",
+            "profile_top",
+            "profile_diff",
+            "profile_explain",
         ] {
             push(
                 name,

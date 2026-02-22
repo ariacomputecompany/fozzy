@@ -32,6 +32,8 @@ mod map_cmd;
 mod memory;
 #[path = "cmd/memory_cmd.rs"]
 mod memory_cmd;
+#[path = "cmd/profile_cmd.rs"]
+mod profile_cmd;
 #[path = "runtime/memorycap.rs"]
 mod memorycap;
 #[path = "model/reporting.rs"]
@@ -67,6 +69,7 @@ pub use fuzz::*;
 pub use map_cmd::*;
 pub use memory::*;
 pub use memory_cmd::*;
+pub use profile_cmd::*;
 pub use memorycap::*;
 pub use reporting::*;
 pub use reporting_cmd::*;

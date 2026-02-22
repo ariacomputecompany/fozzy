@@ -14,7 +14,8 @@ use crate::{
     Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, MemoryOptions,
     MemoryRunReport, MemoryState, Reporter, RunIdentity, RunMode, RunSummary, Scenario,
     ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc,
-    write_memory_artifacts, write_memory_delta_artifact, write_trace_with_policy,
+    write_memory_artifacts, write_memory_delta_artifact, write_profile_artifacts_from_trace,
+    write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -765,6 +766,17 @@ pub fn run_scenario(
     {
         write_memory_artifacts(mem, &artifacts_dir)?;
     }
+    let mut profile_trace = TraceFile::new(
+        RunMode::Run,
+        Some(run.scenario_path.to_string_lossy().to_string()),
+        Some(run.scenario_embedded.clone()),
+        run.decisions.decisions.clone(),
+        run.events.clone(),
+        report_summary.clone(),
+    );
+    profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
+    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    crate::write_run_manifest(&report_summary, &artifacts_dir)?;
 
     if matches!(opt.reporter, Reporter::Junit) {
         std::fs::write(
@@ -921,6 +933,17 @@ pub fn replay_trace(
     {
         write_memory_artifacts(mem, &artifacts_dir)?;
     }
+    let mut profile_trace = TraceFile::new(
+        RunMode::Replay,
+        Some(scenario_path),
+        Some(scenario),
+        run.decisions.decisions.clone(),
+        run.events.clone(),
+        summary.clone(),
+    );
+    profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
+    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(RunResult { summary })
 }

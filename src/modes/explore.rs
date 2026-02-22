@@ -13,7 +13,7 @@ use crate::{
     Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind,
     MemoryRunReport, MemoryState, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
     RunSummary, ScenarioFile, ScenarioPath, TraceEvent, TraceFile, wall_time_iso_utc,
-    write_memory_artifacts, write_trace_with_policy,
+    write_memory_artifacts, write_profile_artifacts_from_trace, write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -195,6 +195,19 @@ pub fn explore(
     {
         write_memory_artifacts(mem, &artifacts_dir)?;
     }
+    let mut profile_trace = TraceFile::new_explore(
+        ExploreTrace {
+            scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
+            scenario: scenario.clone(),
+            schedule: opt.schedule,
+        },
+        decisions.clone(),
+        events.clone(),
+        summary.clone(),
+    );
+    profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     if matches!(opt.reporter, Reporter::Junit) {
         std::fs::write(
@@ -299,6 +312,15 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
     {
         write_memory_artifacts(mem, &artifacts_dir)?;
     }
+    let mut profile_trace = TraceFile::new_explore(
+        explore.clone(),
+        trace.decisions.clone(),
+        events.clone(),
+        summary.clone(),
+    );
+    profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
 }

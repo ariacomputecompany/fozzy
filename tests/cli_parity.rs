@@ -580,6 +580,19 @@ fn artifacts_help_uses_run_or_trace_value_name() {
 }
 
 #[test]
+fn profile_help_uses_run_or_trace_value_name() {
+    for sub in ["top", "flame", "timeline", "export"] {
+        let out = run_cli(&["profile".into(), sub.to_string(), "--help".into()]);
+        assert_eq!(out.status.code(), Some(0), "help should exit 0");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("RUN_OR_TRACE"),
+            "help should show RUN_OR_TRACE for profile {sub}; got: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn corpus_import_rejects_raw_duplicate_entries_in_strict_and_non_strict() {
     let ws = temp_workspace("corpus-dup-raw");
     let zip = ws.join("dup.zip");

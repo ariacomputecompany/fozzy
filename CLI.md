@@ -53,6 +53,7 @@ Execution policy: use the full command surface by default. Skip commands only wh
 | `corpus` | Manage fuzz corpus files | `fozzy corpus export .fozzy/corpus --out corpus.zip` |
 | `artifacts` | List/diff/export run artifacts | `fozzy artifacts pack <runId> --out pack.zip` |
 | `report` | Render/query reports | `fozzy report show <runId> --format json` |
+| `profile` | Deterministic performance forensics and regression analysis | `fozzy profile diff <left> <right> --heap --latency` |
 | `memory` | Inspect memory graph/diff/top leaks | `fozzy memory top <runId|trace>` |
 | `map` | Build language-agnostic topology/hotspot/suite maps | `fozzy map suites --root . --scenario-root tests --json` |
 | `doctor` | Diagnose determinism/env issues | `fozzy doctor --deep --scenario tests/example.fozzy.json` |
@@ -87,7 +88,7 @@ fozzy full [--scenario-root <dir>] [--seed <n>] [--doctor-runs <n>] \
 ```
 
 `fozzy full` is the hand-holding end-to-end gate. It targets the full CLI surface:
-`init`, `test`, `run`, `fuzz`, `explore`, `replay`, `trace verify`, `shrink`, `corpus`, `artifacts`, `report`, `memory`, `doctor`, `ci`, `gate`, `env`, `version`, `usage`.
+`init`, `test`, `run`, `fuzz`, `explore`, `replay`, `trace verify`, `shrink`, `corpus`, `artifacts`, `report`, `profile`, `memory`, `doctor`, `ci`, `gate`, `env`, `version`, `usage`.
 If a required input is missing (for example no distributed scenario), it records a graceful skip instead of crashing.
 Use `--allow-expected-failures` for mixed pass/fail scenario roots where fail-class replay parity is expected, and use `--scenario-filter`/step policies to scope CI contracts.
 Use `--require-topology-coverage` to enforce that high-risk hotspot areas from `fozzy map suites` have matching scenario coverage. Topology profile defaults to `pedantic`.
@@ -240,6 +241,23 @@ fozzy memory top <run-id|trace> [--limit <n>]
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
 For race-sensitive CI automation, prefer explicit `runId` or trace paths over aliases.
+
+### `profile`
+
+```bash
+fozzy profile top <run-id|trace> [--cpu|--heap|--latency|--io|--sched] [--limit <n>]
+fozzy profile flame <run-id|trace> [--cpu|--heap] [--out <path>] [--format folded|svg|speedscope]
+fozzy profile timeline <run-id|trace> [--out <path>] [--format json|html]
+fozzy profile diff <left-run-id|trace> <right-run-id|trace> [--cpu] [--heap] [--latency] [--io] [--sched]
+fozzy profile explain <run-id|trace> [--diff-with <run-id|trace>]
+fozzy profile export <run-id|trace> --format speedscope|pprof|otlp --out <path>
+fozzy profile shrink <trace.fozzy> --metric p99_latency|cpu_time|alloc_bytes --direction increase|decrease [--budget <dur>]
+```
+
+Profiler artifacts are schema-versioned as `profile.cpu.json`, `profile.heap.json`, `profile.latency.json`, `profile.metrics.json`, `profile.timeline.json`, and `symbols.json`.
+Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
+For race-sensitive CI automation, prefer explicit `runId` or trace paths over aliases.
+Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
 ### `map`
 

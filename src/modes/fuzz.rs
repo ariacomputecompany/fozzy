@@ -16,7 +16,8 @@ use crate::{
     Config, ExitStatus, ExploreOptions, Finding, FindingKind, FsBackend, HttpBackend,
     MemoryOptions, MemoryState, ProcBackend, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
     RunOptions, RunSummary, ScenarioFile, ScenarioPath, ScheduleStrategy, TraceEvent, TraceFile,
-    wall_time_iso_utc, write_memory_artifacts, write_trace_with_policy,
+    wall_time_iso_utc, write_memory_artifacts, write_profile_artifacts_from_trace,
+    write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -261,6 +262,15 @@ pub fn fuzz(
                 serde_json::to_vec_pretty(&exec.events)?,
             )?;
             crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
+            let mut profile_trace = TraceFile::new_fuzz(
+                target_string(target),
+                &input,
+                exec.events.clone(),
+                summary.clone(),
+            );
+            profile_trace.memory = memory_state.as_ref().map(|m| m.clone().finalize().to_trace());
+            write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+            crate::write_run_manifest(&summary, &artifacts_dir)?;
 
             if matches!(opt.reporter, Reporter::Junit) {
                 std::fs::write(
@@ -346,6 +356,21 @@ pub fn fuzz(
     {
         write_memory_artifacts(mem, &artifacts_dir)?;
     }
+    let (profile_input, profile_events, profile_status, profile_findings) = last_exec
+        .clone()
+        .unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new()));
+    let mut profile_summary = summary.clone();
+    profile_summary.status = profile_status;
+    profile_summary.findings = profile_findings;
+    let mut profile_trace = TraceFile::new_fuzz(
+        target_string(target),
+        &profile_input,
+        profile_events,
+        profile_summary,
+    );
+    profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
     let coverage_stats = FuzzCoverageStats {
         target: target_string(target),
         executed,
@@ -430,6 +455,15 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         serde_json::to_vec_pretty(&exec.events)?,
     )?;
     crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
+    let mut profile_trace = TraceFile::new_fuzz(
+        fuzz.target.clone(),
+        &input,
+        exec.events.clone(),
+        summary.clone(),
+    );
+    profile_trace.memory = trace.memory.clone();
+    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
     Ok(crate::RunResult { summary })
 }
 
