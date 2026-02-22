@@ -251,7 +251,7 @@ fozzy profile timeline <run-id|trace> [--out <path>] [--format json|html]
 fozzy profile diff <left-run-id|trace> <right-run-id|trace> [--cpu] [--heap] [--latency] [--io] [--sched]
 fozzy profile explain <run-id|trace> [--diff-with <run-id|trace>]
 fozzy profile export <run-id|trace> --format speedscope|pprof|otlp --out <path>
-fozzy profile shrink <trace.fozzy> --metric p99_latency|cpu_time|alloc_bytes --direction increase|decrease [--budget <dur>]
+fozzy profile shrink <run-id|trace> --metric p99_latency|cpu_time|alloc_bytes --direction increase|decrease [--budget <dur>]
 ```
 
 Profiler artifacts are schema-versioned as `profile.cpu.json`, `profile.heap.json`, `profile.latency.json`, `profile.metrics.json`, `profile.timeline.json`, and `symbols.json`.

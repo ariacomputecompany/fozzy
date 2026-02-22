@@ -112,8 +112,8 @@ pub fn usage_doc() -> UsageDoc {
             },
             UsageItem {
                 command: "fozzy profile".to_string(),
-                when: "Diagnose regressions with deterministic timeline/heap/latency plus Linux-first CPU sampling exports.".to_string(),
-                how: "fozzy profile top <runId|trace> --heap --latency --io --sched --limit 20; fozzy profile flame <runId|trace> --cpu --format speedscope --out cpu.speedscope.json; fozzy profile diff <left> <right> --cpu --heap --latency --json; fozzy profile explain <runId|trace> --diff-with <baseline>; fozzy profile export <runId|trace> --format otlp --out profile.otlp.json; fozzy profile shrink trace.fozzy --metric p99_latency --direction increase. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
+                when: "Diagnose regressions with deterministic timeline/heap/latency plus CPU sampling exports.".to_string(),
+                how: "fozzy profile top <runId|trace> --heap --latency --io --sched --limit 20; fozzy profile flame <runId|trace> --cpu --format speedscope --out cpu.speedscope.json; fozzy profile diff <left> <right> --cpu --heap --latency --json; fozzy profile explain <runId|trace> --diff-with <baseline>; fozzy profile export <runId|trace> --format otlp --out profile.otlp.json; fozzy profile shrink <runId|trace> --metric p99_latency --direction increase. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy ci".to_string(),

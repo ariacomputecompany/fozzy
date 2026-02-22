@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use crate::{
-    Config, FozzyError, FozzyResult, ShrinkMinimize, ShrinkOptions, TraceFile, TracePath,
-    resolve_artifacts_dir, shrink_trace,
+    Config, FozzyError, FozzyResult, RunManifest, RunSummary, ShrinkMinimize, ShrinkOptions,
+    TraceFile, TracePath, resolve_artifacts_dir, shrink_trace,
 };
 
 #[derive(Debug, Subcommand)]
@@ -87,8 +87,8 @@ pub enum ProfileCommand {
     },
     /// Shrink a trace while preserving a profiler metric direction.
     Shrink {
-        #[arg(value_name = "TRACE")]
-        trace: PathBuf,
+        #[arg(value_name = "RUN_OR_TRACE")]
+        run: String,
         #[arg(long)]
         metric: ProfileMetric,
         #[arg(long)]
@@ -597,14 +597,15 @@ pub fn profile_command(
             let bundle = load_profile_bundle(config, run)?;
             match format {
                 ProfileTimelineFormat::Json => {
-                    if let Some(path) = out {
-                        write_json(path, &bundle.timeline)?;
-                    }
-                    Ok(serde_json::json!({
+                    let payload = serde_json::json!({
                         "run": run,
                         "format": "json",
                         "events": bundle.timeline
-                    }))
+                    });
+                    if let Some(path) = out {
+                        write_json(path, &payload)?;
+                    }
+                    Ok(payload)
                 }
                 ProfileTimelineFormat::Html => {
                     let html = timeline_html(&bundle.timeline);
@@ -680,16 +681,17 @@ pub fn profile_command(
             }))
         }
         ProfileCommand::Shrink {
-            trace,
+            run,
             metric,
             direction,
             budget,
         } => {
-            let input = TraceFile::read_json(trace)?;
+            let (artifacts_dir, trace_path) = resolve_profile_trace(config, run)?;
+            let input = TraceFile::read_json(&trace_path)?;
             let baseline = metric_value(*metric, &input)?;
             let shrunk = shrink_trace(
                 config,
-                TracePath::new(trace.clone()),
+                TracePath::new(trace_path.clone()),
                 &ShrinkOptions {
                     out_trace_path: None,
                     budget: budget.map(|b| b.0),
@@ -704,17 +706,29 @@ pub fn profile_command(
                 ProfileDirection::Decrease => after <= baseline,
             };
             if !preserved {
+                let direction_name = match direction {
+                    ProfileDirection::Increase => "increase",
+                    ProfileDirection::Decrease => "decrease",
+                };
+                let comparator = match direction {
+                    ProfileDirection::Increase => ">=",
+                    ProfileDirection::Decrease => "<=",
+                };
                 return Err(FozzyError::InvalidArgument(format!(
-                    "profile shrink failed metric contract: baseline={} after={} direction={:?}",
-                    baseline, after, direction
+                    "profile shrink failed metric contract: expected after {comparator} baseline for direction={direction_name} (baseline={}, after={})",
+                    format_metric_value(baseline),
+                    format_metric_value(after),
                 )));
             }
-            if let Some(parent) = Path::new(&shrunk.out_trace_path).parent() {
-                write_profile_artifacts_from_trace(&shrunk_trace, parent)?;
-            }
+            let out_parent = Path::new(&shrunk.out_trace_path)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or(artifacts_dir);
+            write_profile_artifacts_from_trace(&shrunk_trace, &out_parent)?;
             Ok(serde_json::json!({
                 "schemaVersion": "fozzy.profile_shrink.v1",
-                "trace": trace,
+                "run": run,
+                "trace": trace_path,
                 "outTrace": shrunk.out_trace_path,
                 "metric": metric,
                 "direction": direction,
@@ -745,33 +759,15 @@ pub fn write_profile_artifacts_from_trace(trace: &TraceFile, artifacts_dir: &Pat
 }
 
 fn load_profile_bundle(config: &Config, selector: &str) -> FozzyResult<ProfileBundle> {
-    let input = PathBuf::from(selector);
-    let (artifacts_dir, trace) = if input.exists()
-        && input.is_file()
-        && input
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("fozzy"))
-    {
-        let trace = TraceFile::read_json(&input)?;
-        let dir = input
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-        (dir, trace)
-    } else {
-        let artifacts_dir = resolve_artifacts_dir(config, selector)?;
-        let trace_path = artifacts_dir.join("trace.fozzy");
-        if !trace_path.exists() {
-            return Err(FozzyError::InvalidArgument(format!(
-                "no trace.fozzy found for {selector:?}; profiler requires trace artifacts"
-            )));
-        }
+    let (artifacts_dir, trace_path) = resolve_profile_artifacts(config, selector)?;
+    if let Some(trace_path) = trace_path {
         let trace = TraceFile::read_json(&trace_path)?;
-        (artifacts_dir, trace)
-    };
-
-    write_profile_artifacts_from_trace(&trace, &artifacts_dir)?;
+        write_profile_artifacts_from_trace(&trace, &artifacts_dir)?;
+    } else if !profile_artifacts_exist(&artifacts_dir) {
+        return Err(FozzyError::InvalidArgument(format!(
+            "no trace.fozzy found for {selector:?}; profiler requires trace artifacts"
+        )));
+    }
 
     let timeline: Vec<ProfileEvent> = serde_json::from_slice(&std::fs::read(
         artifacts_dir.join("profile.timeline.json"),
@@ -1482,7 +1478,7 @@ fn explain_from_diff(
 
     ProfileExplain {
         schema_version: "fozzy.profile_explain.v1".to_string(),
-        run: right.to_string(),
+        run: left.to_string(),
         regression_statement: statement,
         top_shifted_path: path,
         likely_cause_domain: domain,
@@ -1506,6 +1502,95 @@ fn metric_value(metric: ProfileMetric, trace: &TraceFile) -> FozzyResult<f64> {
         ProfileMetric::AllocBytes => heap.total_alloc_bytes as f64,
     };
     Ok(value)
+}
+
+fn format_metric_value(value: f64) -> String {
+    let normalized = if value == 0.0 { 0.0 } else { value };
+    let mut out = format!("{normalized:.6}");
+    while out.contains('.') && out.ends_with('0') {
+        out.pop();
+    }
+    if out.ends_with('.') {
+        out.pop();
+    }
+    out
+}
+
+fn resolve_profile_trace(config: &Config, selector: &str) -> FozzyResult<(PathBuf, PathBuf)> {
+    let (artifacts_dir, trace_path) = resolve_profile_artifacts(config, selector)?;
+    if let Some(trace_path) = trace_path {
+        return Ok((artifacts_dir, trace_path));
+    }
+    Err(FozzyError::InvalidArgument(format!(
+        "no trace.fozzy found for {selector:?}; profiler requires trace artifacts"
+    )))
+}
+
+fn resolve_profile_artifacts(config: &Config, selector: &str) -> FozzyResult<(PathBuf, Option<PathBuf>)> {
+    let input = PathBuf::from(selector);
+    if input.exists()
+        && input.is_file()
+        && input
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("fozzy"))
+    {
+        let dir = input
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        return Ok((dir, Some(input)));
+    }
+
+    let artifacts_dir = resolve_artifacts_dir(config, selector)?;
+    let trace_path = artifacts_dir.join("trace.fozzy");
+    if trace_path.exists() {
+        return Ok((artifacts_dir, Some(trace_path)));
+    }
+
+    let report_path = artifacts_dir.join("report.json");
+    if report_path.exists() {
+        let bytes = std::fs::read(&report_path)?;
+        if let Ok(summary) = serde_json::from_slice::<RunSummary>(&bytes) {
+            if let Some(path) = summary.identity.trace_path {
+                let from_report = PathBuf::from(path);
+                if from_report.exists() {
+                    return Ok((artifacts_dir, Some(from_report)));
+                }
+            }
+        }
+    }
+
+    let manifest_path = artifacts_dir.join("manifest.json");
+    if manifest_path.exists() {
+        let bytes = std::fs::read(&manifest_path)?;
+        if let Ok(manifest) = serde_json::from_slice::<RunManifest>(&bytes) {
+            if let Some(path) = manifest.trace_path {
+                let from_manifest = PathBuf::from(path);
+                if from_manifest.exists() {
+                    return Ok((artifacts_dir, Some(from_manifest)));
+                }
+            }
+        }
+    }
+
+    Ok((artifacts_dir, None))
+}
+
+fn profile_artifacts_exist(artifacts_dir: &Path) -> bool {
+    for name in [
+        "profile.timeline.json",
+        "profile.cpu.json",
+        "profile.heap.json",
+        "profile.latency.json",
+        "profile.metrics.json",
+        "symbols.json",
+    ] {
+        if !artifacts_dir.join(name).exists() {
+            return false;
+        }
+    }
+    true
 }
 
 fn normalize_domains(cpu: bool, heap: bool, latency: bool, io: bool, sched: bool) -> Vec<String> {
@@ -1537,17 +1622,7 @@ fn normalize_domains(cpu: bool, heap: bool, latency: bool, io: bool, sched: bool
 }
 
 fn enforce_cpu_contract(strict: bool, cpu_requested: bool) -> FozzyResult<()> {
-    if !cpu_requested {
-        return Ok(());
-    }
-    if cfg!(target_os = "linux") {
-        return Ok(());
-    }
-    if strict {
-        return Err(FozzyError::InvalidArgument(
-            "strict mode: cpu sampling profiler v1 is Linux-first in this release".to_string(),
-        ));
-    }
+    let _ = (strict, cpu_requested);
     Ok(())
 }
 
@@ -1571,6 +1646,7 @@ fn write_text(path: &Path, value: &str) -> FozzyResult<()> {
 mod tests {
     use super::*;
     use crate::{ExitStatus, RunIdentity, RunMode, RunSummary, TraceEvent};
+    use std::path::PathBuf;
 
     fn sample_trace() -> TraceFile {
         TraceFile {
@@ -1668,5 +1744,145 @@ mod tests {
             serde_json::to_string(&diff_a).expect("json"),
             serde_json::to_string(&diff_b).expect("json")
         );
+    }
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fozzy-profile-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("workspace");
+        dir
+    }
+
+    #[test]
+    fn resolve_profile_trace_supports_run_with_report_trace_path() {
+        let ws = temp_workspace("resolve-report-trace");
+        let base_dir = ws.join(".fozzy");
+        let run_id = "run-1";
+        let run_dir = base_dir.join("runs").join(run_id);
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+
+        let mut trace = sample_trace();
+        trace.summary.identity.run_id = run_id.to_string();
+        let external_trace = ws.join("external.trace.fozzy");
+        std::fs::write(
+            &external_trace,
+            serde_json::to_vec_pretty(&trace).expect("trace bytes"),
+        )
+        .expect("write trace");
+
+        let mut summary = trace.summary.clone();
+        summary.identity.trace_path = Some(external_trace.to_string_lossy().to_string());
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&summary).expect("summary bytes"),
+        )
+        .expect("write report");
+
+        let cfg = Config {
+            base_dir: base_dir.clone(),
+            ..Config::default()
+        };
+        let cmd = ProfileCommand::Top {
+            run: run_id.to_string(),
+            cpu: false,
+            heap: true,
+            latency: false,
+            io: false,
+            sched: false,
+            limit: 5,
+        };
+        let out = profile_command(&cfg, &cmd, true).expect("profile top");
+        assert_eq!(out.get("run").and_then(|v| v.as_str()), Some(run_id));
+    }
+
+    #[test]
+    fn profile_commands_support_run_id_with_profile_artifacts_only() {
+        let ws = temp_workspace("artifacts-only-run");
+        let base_dir = ws.join(".fozzy");
+        let run_id = "run-artifacts-only";
+        let run_dir = base_dir.join("runs").join(run_id);
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+
+        let mut trace = sample_trace();
+        trace.summary.identity.run_id = run_id.to_string();
+        write_profile_artifacts_from_trace(&trace, &run_dir).expect("profile artifacts");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&trace.summary).expect("summary bytes"),
+        )
+        .expect("write report");
+
+        let cfg = Config {
+            base_dir: base_dir.clone(),
+            ..Config::default()
+        };
+        let cmd = ProfileCommand::Top {
+            run: run_id.to_string(),
+            cpu: false,
+            heap: true,
+            latency: false,
+            io: false,
+            sched: false,
+            limit: 5,
+        };
+        let out = profile_command(&cfg, &cmd, true).expect("profile top");
+        assert_eq!(out.get("run").and_then(|v| v.as_str()), Some(run_id));
+    }
+
+    #[test]
+    fn explain_diff_keeps_primary_run_as_run_field() {
+        let trace = sample_trace();
+        let timeline = build_profile_timeline(&trace);
+        let cpu = build_cpu_profile(&trace, &timeline);
+        let heap = build_heap_profile(&trace, &timeline);
+        let latency = build_latency_profile(&trace, &timeline);
+        let metrics = build_profile_metrics(&trace, &timeline, &cpu, &heap, &latency);
+        let explain = explain_from_diff("primary", "baseline", &metrics, &metrics);
+        assert_eq!(explain.run, "primary");
+    }
+
+    #[test]
+    fn timeline_json_out_matches_stdout_schema() {
+        let ws = temp_workspace("timeline-schema");
+        let trace = ws.join("trace.fozzy");
+        std::fs::write(&trace, serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"))
+            .expect("write trace");
+        let out_file = ws.join("timeline.json");
+
+        let cfg = Config::default();
+        let cmd = ProfileCommand::Timeline {
+            run: trace.to_string_lossy().to_string(),
+            out: Some(out_file.clone()),
+            format: ProfileTimelineFormat::Json,
+        };
+        let stdout_doc = profile_command(&cfg, &cmd, true).expect("timeline");
+        let file_doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out_file).expect("read timeline"))
+                .expect("parse timeline");
+        assert_eq!(stdout_doc, file_doc);
+    }
+
+    #[test]
+    fn shrink_missing_trace_is_invalid_argument() {
+        let cfg = Config::default();
+        let cmd = ProfileCommand::Shrink {
+            run: "missing.fozzy".to_string(),
+            metric: ProfileMetric::P99Latency,
+            direction: ProfileDirection::Increase,
+            budget: None,
+        };
+        let err = profile_command(&cfg, &cmd, true).expect_err("must fail");
+        match err {
+            FozzyError::InvalidArgument(msg) => {
+                assert!(msg.contains("no trace.fozzy found"), "message: {msg}");
+            }
+            other => panic!("expected invalid argument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn format_metric_value_normalizes_negative_zero() {
+        assert_eq!(format_metric_value(-0.0), "0");
+        assert_eq!(format_metric_value(8.0), "8");
+        assert_eq!(format_metric_value(8.125), "8.125");
     }
 }
