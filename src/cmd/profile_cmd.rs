@@ -532,12 +532,21 @@ pub struct RegressionFinding {
 #[derive(Debug, Clone)]
 struct ProfileBundle {
     artifacts_dir: PathBuf,
-    timeline: Vec<ProfileEvent>,
-    cpu: CpuProfile,
-    heap: HeapProfile,
-    latency: LatencyProfile,
+    timeline: Option<Vec<ProfileEvent>>,
+    cpu: Option<CpuProfile>,
+    heap: Option<HeapProfile>,
+    latency: Option<LatencyProfile>,
     metrics: ProfileMetrics,
-    symbols: SymbolsMap,
+    symbols: Option<SymbolsMap>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ProfileLoadSpec {
+    timeline: bool,
+    cpu: bool,
+    heap: bool,
+    latency: bool,
+    symbols: bool,
 }
 
 pub fn profile_command(
@@ -556,7 +565,17 @@ pub fn profile_command(
             limit,
         } => {
             let domains = normalize_domains(*cpu, *heap, *latency, *io, *sched);
-            let bundle = load_profile_bundle(config, run)?;
+            let bundle = load_profile_bundle(
+                config,
+                run,
+                ProfileLoadSpec {
+                    timeline: domains.iter().any(|d| d == "io" || d == "sched"),
+                    cpu: domains.iter().any(|d| d == "cpu"),
+                    heap: domains.iter().any(|d| d == "heap"),
+                    latency: domains.iter().any(|d| d == "latency"),
+                    symbols: false,
+                },
+            )?;
             enforce_cpu_contract(strict, domains.contains(&"cpu".to_string()))?;
             let mut out = serde_json::Map::new();
             let mut empty_domains = Vec::<serde_json::Value>::new();
@@ -569,6 +588,8 @@ pub fn profile_command(
             if domains.iter().any(|d| d == "cpu") {
                 let top = bundle
                     .cpu
+                    .as_ref()
+                    .expect("cpu domain requested")
                     .folded_stacks
                     .iter()
                     .take(*limit)
@@ -587,6 +608,8 @@ pub fn profile_command(
             if domains.iter().any(|d| d == "heap") {
                 let heap_rows = bundle
                     .heap
+                    .as_ref()
+                    .expect("heap domain requested")
                     .hotspots
                     .iter()
                     .take(*limit)
@@ -600,6 +623,8 @@ pub fn profile_command(
             if domains.iter().any(|d| d == "latency") {
                 let latency_rows = bundle
                     .latency
+                    .as_ref()
+                    .expect("latency domain requested")
                     .critical_path
                     .iter()
                     .take(*limit)
@@ -611,14 +636,22 @@ pub fn profile_command(
                 out.insert("latency".to_string(), serde_json::to_value(latency_rows)?);
             }
             if domains.iter().any(|d| d == "io") {
-                let io_top = top_by_tag(&bundle.timeline, ProfileEventKind::Io, *limit);
+                let io_top = top_by_tag(
+                    bundle.timeline.as_ref().expect("io domain requested"),
+                    ProfileEventKind::Io,
+                    *limit,
+                );
                 if io_top.is_empty() {
                     empty_domains.push(empty_domain("io", "no io events in trace"));
                 }
                 out.insert("io".to_string(), serde_json::to_value(io_top)?);
             }
             if domains.iter().any(|d| d == "sched") {
-                let sched_top = top_by_tag(&bundle.timeline, ProfileEventKind::Sched, *limit);
+                let sched_top = top_by_tag(
+                    bundle.timeline.as_ref().expect("sched domain requested"),
+                    ProfileEventKind::Sched,
+                    *limit,
+                );
                 if sched_top.is_empty() {
                     empty_domains.push(empty_domain("sched", "no scheduler events in trace"));
                 }
@@ -639,14 +672,27 @@ pub fn profile_command(
             format,
         } => {
             let use_heap = *heap || !*cpu;
-            let bundle = load_profile_bundle(config, run)?;
+            let bundle = load_profile_bundle(
+                config,
+                run,
+                ProfileLoadSpec {
+                    cpu: !use_heap,
+                    heap: use_heap,
+                    ..ProfileLoadSpec::default()
+                },
+            )?;
             if *cpu {
                 enforce_cpu_contract(strict, true)?;
             }
             let folded = if use_heap {
-                heap_folded(&bundle.heap)
+                heap_folded(bundle.heap.as_ref().expect("heap requested"))
             } else {
-                bundle.cpu.folded_stacks.clone()
+                bundle
+                    .cpu
+                    .as_ref()
+                    .expect("cpu requested")
+                    .folded_stacks
+                    .clone()
             };
             let domain = if use_heap { "heap" } else { "cpu" };
             let empty_reason = match domain {
@@ -674,14 +720,21 @@ pub fn profile_command(
             }))
         }
         ProfileCommand::Timeline { run, out, format } => {
-            let bundle = load_profile_bundle(config, run)?;
+            let bundle = load_profile_bundle(
+                config,
+                run,
+                ProfileLoadSpec {
+                    timeline: true,
+                    ..ProfileLoadSpec::default()
+                },
+            )?;
             match format {
                 ProfileTimelineFormat::Json => {
                     let payload = serde_json::json!({
                         "schemaVersion": "fozzy.profile_timeline.v1",
                         "run": run,
                         "format": "json",
-                        "events": bundle.timeline
+                        "events": bundle.timeline.as_ref().expect("timeline requested")
                     });
                     if let Some(path) = out {
                         write_json(path, &payload)?;
@@ -689,7 +742,7 @@ pub fn profile_command(
                     Ok(payload)
                 }
                 ProfileTimelineFormat::Html => {
-                    let html = timeline_html(&bundle.timeline);
+                    let html = timeline_html(bundle.timeline.as_ref().expect("timeline requested"));
                     if let Some(path) = out {
                         write_text(path, &html)?;
                     }
@@ -715,33 +768,64 @@ pub fn profile_command(
             if domains.iter().any(|d| d == "cpu") {
                 enforce_cpu_contract(strict, true)?;
             }
-            let l = load_profile_bundle(config, left)?;
-            let r = load_profile_bundle(config, right)?;
+            let l = load_profile_bundle(config, left, ProfileLoadSpec::default())?;
+            let r = load_profile_bundle(config, right, ProfileLoadSpec::default())?;
             let diff = compute_diff(left, right, &domains, &l.metrics, &r.metrics);
             Ok(serde_json::to_value(diff)?)
         }
         ProfileCommand::Explain { run, diff_with } => {
-            let base = load_profile_bundle(config, run)?;
+            let base = load_profile_bundle(
+                config,
+                run,
+                ProfileLoadSpec {
+                    latency: diff_with.is_none(),
+                    ..ProfileLoadSpec::default()
+                },
+            )?;
             let explain = if let Some(right) = diff_with {
-                let other = load_profile_bundle(config, right)?;
+                let other = load_profile_bundle(config, right, ProfileLoadSpec::default())?;
                 explain_from_diff(run, right, &base.metrics, &other.metrics)
             } else {
-                explain_single(run, &base)
+                explain_single(
+                    run,
+                    &base.artifacts_dir,
+                    &base.metrics,
+                    base.latency
+                        .as_ref()
+                        .expect("latency profile required for single-run explain"),
+                )
             };
             Ok(serde_json::to_value(explain)?)
         }
         ProfileCommand::Export { run, format, out } => {
-            let bundle = load_profile_bundle(config, run)?;
+            let bundle = load_profile_bundle(
+                config,
+                run,
+                ProfileLoadSpec {
+                    timeline: matches!(format, ProfileExportFormat::Otlp),
+                    cpu: matches!(
+                        format,
+                        ProfileExportFormat::Speedscope | ProfileExportFormat::Pprof
+                    ),
+                    symbols: matches!(format, ProfileExportFormat::Pprof),
+                    ..ProfileLoadSpec::default()
+                },
+            )?;
             let value = match format {
-                ProfileExportFormat::Speedscope => {
-                    serde_json::to_value(folded_to_speedscope(run, &bundle.cpu.folded_stacks))?
-                }
+                ProfileExportFormat::Speedscope => serde_json::to_value(folded_to_speedscope(
+                    run,
+                    &bundle
+                        .cpu
+                        .as_ref()
+                        .expect("cpu profile required")
+                        .folded_stacks,
+                ))?,
                 ProfileExportFormat::Pprof => serde_json::json!({
                     "schemaVersion": "fozzy.profile_pprof.v1",
                     "run": run,
                     "sampleType": "cpu",
-                    "samples": bundle.cpu.samples,
-                    "symbols": bundle.symbols,
+                    "samples": bundle.cpu.as_ref().expect("cpu profile required").samples,
+                    "symbols": bundle.symbols.as_ref().expect("symbols required"),
                 }),
                 ProfileExportFormat::Otlp => serde_json::json!({
                     "schemaVersion": "fozzy.profile_otlp.v1",
@@ -751,7 +835,7 @@ pub fn profile_command(
                         "run.id": bundle.metrics.run_id,
                     },
                     "metrics": bundle.metrics,
-                    "spans": bundle.timeline,
+                    "spans": bundle.timeline.as_ref().expect("timeline required"),
                 }),
             };
             write_json(out, &value)?;
@@ -859,7 +943,11 @@ pub fn write_profile_artifacts_from_trace(
     Ok(())
 }
 
-fn load_profile_bundle(config: &Config, selector: &str) -> FozzyResult<ProfileBundle> {
+fn load_profile_bundle(
+    config: &Config,
+    selector: &str,
+    spec: ProfileLoadSpec,
+) -> FozzyResult<ProfileBundle> {
     let (artifacts_dir, trace_path) = resolve_profile_artifacts(config, selector)?;
     if let Some(trace_path) = trace_path {
         let trace = TraceFile::read_json(&trace_path)?;
@@ -870,18 +958,43 @@ fn load_profile_bundle(config: &Config, selector: &str) -> FozzyResult<ProfileBu
         )));
     }
 
-    let timeline: Vec<ProfileEvent> =
-        serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.timeline.json"))?)?;
-    let cpu: CpuProfile =
-        serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.cpu.json"))?)?;
-    let heap: HeapProfile =
-        serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.heap.json"))?)?;
-    let latency: LatencyProfile =
-        serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.latency.json"))?)?;
     let metrics: ProfileMetrics =
         serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.metrics.json"))?)?;
-    let symbols: SymbolsMap =
-        serde_json::from_slice(&std::fs::read(artifacts_dir.join("symbols.json"))?)?;
+    let timeline = if spec.timeline {
+        Some(serde_json::from_slice(&std::fs::read(
+            artifacts_dir.join("profile.timeline.json"),
+        )?)?)
+    } else {
+        None
+    };
+    let cpu = if spec.cpu {
+        Some(serde_json::from_slice(&std::fs::read(
+            artifacts_dir.join("profile.cpu.json"),
+        )?)?)
+    } else {
+        None
+    };
+    let heap = if spec.heap {
+        Some(serde_json::from_slice(&std::fs::read(
+            artifacts_dir.join("profile.heap.json"),
+        )?)?)
+    } else {
+        None
+    };
+    let latency = if spec.latency {
+        Some(serde_json::from_slice(&std::fs::read(
+            artifacts_dir.join("profile.latency.json"),
+        )?)?)
+    } else {
+        None
+    };
+    let symbols = if spec.symbols {
+        Some(serde_json::from_slice(&std::fs::read(
+            artifacts_dir.join("symbols.json"),
+        )?)?)
+    } else {
+        None
+    };
 
     Ok(ProfileBundle {
         artifacts_dir,
@@ -1528,17 +1641,21 @@ fn compute_diff(
     }
 }
 
-fn explain_single(run: &str, bundle: &ProfileBundle) -> ProfileExplain {
-    let top_path = bundle
-        .latency
+fn explain_single(
+    run: &str,
+    artifacts_dir: &Path,
+    metrics: &ProfileMetrics,
+    latency: &LatencyProfile,
+) -> ProfileExplain {
+    let top_path = latency
         .critical_path
         .first()
         .map(|p| format!("{} -> {} ({}ms)", p.from_span, p.to_span, p.duration_ms))
         .unwrap_or_else(|| "no critical path edges".to_string());
 
-    let domain = if bundle.metrics.p99_latency_ms > 0 {
+    let domain = if metrics.p99_latency_ms > 0 {
         "latency"
-    } else if bundle.metrics.alloc_bytes > 0 {
+    } else if metrics.alloc_bytes > 0 {
         "heap"
     } else {
         "io"
@@ -1549,18 +1666,18 @@ fn explain_single(run: &str, bundle: &ProfileBundle) -> ProfileExplain {
         run: run.to_string(),
         regression_statement: format!(
             "run {} shows p99={}ms, alloc_bytes={}, io_ops={}, sched_ops={}",
-            bundle.metrics.run_id,
-            bundle.metrics.p99_latency_ms,
-            bundle.metrics.alloc_bytes,
-            bundle.metrics.io_ops,
-            bundle.metrics.sched_ops
+            metrics.run_id,
+            metrics.p99_latency_ms,
+            metrics.alloc_bytes,
+            metrics.io_ops,
+            metrics.sched_ops
         ),
         top_shifted_path: top_path,
         likely_cause_domain: domain.to_string(),
         evidence_pointers: vec![
-            format!("{}/profile.metrics.json", bundle.artifacts_dir.display()),
-            format!("{}/profile.latency.json", bundle.artifacts_dir.display()),
-            format!("{}/profile.heap.json", bundle.artifacts_dir.display()),
+            format!("{}/profile.metrics.json", artifacts_dir.display()),
+            format!("{}/profile.latency.json", artifacts_dir.display()),
+            format!("{}/profile.heap.json", artifacts_dir.display()),
         ],
     }
 }
@@ -1718,7 +1835,17 @@ fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde
         "detail": profile_env_report(config, strict),
     }));
 
-    let bundle = match load_profile_bundle(config, run) {
+    let bundle = match load_profile_bundle(
+        config,
+        run,
+        ProfileLoadSpec {
+            timeline: true,
+            cpu: true,
+            heap: true,
+            latency: true,
+            symbols: false,
+        },
+    ) {
         Ok(bundle) => {
             checks.push(serde_json::json!({
                 "name": "load_bundle",
@@ -1748,10 +1875,30 @@ fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde
     };
 
     let top_domains = normalize_domains(false, false, false, false, false);
-    let top_has_any = !top_by_tag(&bundle.timeline, ProfileEventKind::Io, 10).is_empty()
-        || !top_by_tag(&bundle.timeline, ProfileEventKind::Sched, 10).is_empty()
-        || !bundle.heap.hotspots.is_empty()
-        || !bundle.latency.critical_path.is_empty();
+    let top_has_any = !top_by_tag(
+        bundle.timeline.as_ref().expect("timeline loaded"),
+        ProfileEventKind::Io,
+        10,
+    )
+    .is_empty()
+        || !top_by_tag(
+            bundle.timeline.as_ref().expect("timeline loaded"),
+            ProfileEventKind::Sched,
+            10,
+        )
+        .is_empty()
+        || !bundle
+            .heap
+            .as_ref()
+            .expect("heap loaded")
+            .hotspots
+            .is_empty()
+        || !bundle
+            .latency
+            .as_ref()
+            .expect("latency loaded")
+            .critical_path
+            .is_empty();
     checks.push(serde_json::json!({
         "name": "top",
         "ok": true,
@@ -1759,7 +1906,7 @@ fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde
         "detail": format!("default domains={top_domains:?}"),
     }));
 
-    let heap_folded = heap_folded(&bundle.heap);
+    let heap_folded = heap_folded(bundle.heap.as_ref().expect("heap loaded"));
     checks.push(serde_json::json!({
         "name": "flame_heap",
         "ok": true,
@@ -1769,15 +1916,15 @@ fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde
     checks.push(serde_json::json!({
         "name": "flame_cpu",
         "ok": true,
-        "status": if bundle.cpu.folded_stacks.is_empty() { "warn" } else { "pass" },
-        "detail": if bundle.cpu.folded_stacks.is_empty() { "no cpu samples in trace" } else { "cpu flame data present" },
+        "status": if bundle.cpu.as_ref().expect("cpu loaded").folded_stacks.is_empty() { "warn" } else { "pass" },
+        "detail": if bundle.cpu.as_ref().expect("cpu loaded").folded_stacks.is_empty() { "no cpu samples in trace" } else { "cpu flame data present" },
     }));
 
     checks.push(serde_json::json!({
         "name": "timeline",
         "ok": true,
         "status": "pass",
-        "detail": format!("events={}", bundle.timeline.len()),
+        "detail": format!("events={}", bundle.timeline.as_ref().expect("timeline loaded").len()),
     }));
     let diff = compute_diff(
         run,
@@ -1792,14 +1939,20 @@ fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde
         "status": "pass",
         "detail": format!("regressions={}", diff.regressions.len()),
     }));
-    let explain = explain_single(run, &bundle);
+    let explain = explain_single(
+        run,
+        &bundle.artifacts_dir,
+        &bundle.metrics,
+        bundle.latency.as_ref().expect("latency loaded"),
+    );
     checks.push(serde_json::json!({
         "name": "explain",
         "ok": true,
         "status": "pass",
         "detail": explain.likely_cause_domain,
     }));
-    let speedscope = folded_to_speedscope(run, &bundle.cpu.folded_stacks);
+    let speedscope =
+        folded_to_speedscope(run, &bundle.cpu.as_ref().expect("cpu loaded").folded_stacks);
     checks.push(serde_json::json!({
         "name": "export",
         "ok": true,

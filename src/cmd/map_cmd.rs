@@ -64,6 +64,10 @@ pub enum MapCommand {
         shrink_policy: ShrinkCoveragePolicy,
         #[arg(long, default_value_t = 100)]
         limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long, default_value_t = 25)]
+        max_matched_scenarios: usize,
     },
 }
 
@@ -113,6 +117,13 @@ pub struct MapSuitesReport {
     pub covered_hotspot_count: usize,
     #[serde(rename = "uncoveredHotspotCount")]
     pub uncovered_hotspot_count: usize,
+    #[serde(rename = "totalSuites")]
+    pub total_suites: usize,
+    #[serde(rename = "returnedSuites")]
+    pub returned_suites: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub truncated: bool,
     pub suites: Vec<SuiteRecommendation>,
 }
 
@@ -206,6 +217,8 @@ pub struct MapSuitesOptions {
     pub profile: TopologyProfile,
     pub shrink_policy: ShrinkCoveragePolicy,
     pub limit: usize,
+    pub offset: usize,
+    pub max_matched_scenarios: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -280,6 +293,8 @@ pub fn map_command(_config: &Config, command: &MapCommand) -> FozzyResult<serde_
             profile,
             shrink_policy,
             limit,
+            offset,
+            max_matched_scenarios,
         } => {
             let report = map_suites(&MapSuitesOptions {
                 root: root.clone(),
@@ -288,6 +303,8 @@ pub fn map_command(_config: &Config, command: &MapCommand) -> FozzyResult<serde_
                 profile: *profile,
                 shrink_policy: *shrink_policy,
                 limit: *limit,
+                offset: *offset,
+                max_matched_scenarios: *max_matched_scenarios,
             })?;
             Ok(serde_json::to_value(report)?)
         }
@@ -318,8 +335,12 @@ pub fn map_suites(opt: &MapSuitesOptions) -> FozzyResult<MapSuitesReport> {
             &hotspot.signals,
             has_known_shrink_failure,
         );
-        let coverage_evidence =
-            covered_suites_for_hotspot(&required_suites, &hints, &scenario_facts);
+        let coverage_evidence = covered_suites_for_hotspot(
+            &required_suites,
+            &hints,
+            &scenario_facts,
+            opt.max_matched_scenarios.max(1),
+        );
         let covered_suites = coverage_evidence
             .iter()
             .map(|e| e.suite.clone())
@@ -365,12 +386,19 @@ pub fn map_suites(opt: &MapSuitesOptions) -> FozzyResult<MapSuitesReport> {
             .cmp(&a.risk_score)
             .then_with(|| a.path.cmp(&b.path))
     });
-    suites.truncate(opt.limit);
+    let total_suites = suites.len();
+    let suites = suites
+        .into_iter()
+        .skip(opt.offset)
+        .take(opt.limit)
+        .collect::<Vec<_>>();
+    let returned_suites = suites.len();
+    let truncated = opt.offset.saturating_add(returned_suites) < total_suites;
 
     let uncovered_hotspot_count = required_hotspot_count.saturating_sub(covered_hotspot_count);
 
     Ok(MapSuitesReport {
-        schema_version: "fozzy.map_suites.v4".to_string(),
+        schema_version: "fozzy.map_suites.v5".to_string(),
         root: facts.root.display().to_string(),
         scenario_root: opt.scenario_root.display().to_string(),
         scanned_files: facts.scanned_files,
@@ -382,6 +410,11 @@ pub fn map_suites(opt: &MapSuitesOptions) -> FozzyResult<MapSuitesReport> {
         required_hotspot_count,
         covered_hotspot_count,
         uncovered_hotspot_count,
+        total_suites,
+        returned_suites,
+        offset: opt.offset,
+        limit: opt.limit,
+        truncated,
         suites,
     })
 }
@@ -526,6 +559,7 @@ fn covered_suites_for_hotspot(
     required: &[String],
     hints: &[String],
     scenarios: &[ScenarioFact],
+    max_matched_scenarios: usize,
 ) -> Vec<SuiteCoverageEvidence> {
     let hint_tokens = hints
         .iter()
@@ -546,7 +580,18 @@ fn covered_suites_for_hotspot(
         if matches.is_empty() {
             continue;
         }
-        let matched_scenarios = matches.iter().map(|s| s.path.clone()).collect::<Vec<_>>();
+        let total_matches = matches.len();
+        let mut matched_scenarios = matches
+            .iter()
+            .take(max_matched_scenarios)
+            .map(|s| s.path.clone())
+            .collect::<Vec<_>>();
+        if total_matches > matched_scenarios.len() {
+            matched_scenarios.push(format!(
+                "... {} more scenario(s) omitted",
+                total_matches - matched_scenarios.len()
+            ));
+        }
         let shared = matches
             .iter()
             .flat_map(|s| hint_tokens.intersection(&s.tokens).cloned())
@@ -1058,6 +1103,8 @@ mod tests {
             profile: TopologyProfile::Pedantic,
             shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
             limit: 50,
+            offset: 0,
+            max_matched_scenarios: 25,
         })
         .expect("map suites");
         assert!(report.required_hotspot_count > 0);

@@ -1468,7 +1468,7 @@ fn run_embedded_scenario_inner(
 }
 
 fn timeout_reached(
-    ctx: &ExecCtx,
+    ctx: &ExecCtx<'_>,
     det: bool,
     timeout: Option<Duration>,
     deadline: Option<Instant>,
@@ -1486,13 +1486,13 @@ fn timeout_reached(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_scenario_replay_inner(
+fn run_scenario_replay_inner<'a>(
     _config: &Config,
     _mode: RunMode,
     scenario: &ScenarioV1Steps,
     scenario_path: &str,
     seed: u64,
-    decisions: Option<&[Decision]>,
+    decisions: Option<&'a [Decision]>,
     until: Option<Duration>,
     step: bool,
     proc_backend: ProcBackend,
@@ -1620,7 +1620,7 @@ fn run_scenario_replay_inner(
 }
 
 #[derive(Debug, Clone)]
-struct ExecCtx {
+struct ExecCtx<'a> {
     det: bool,
     proc_backend: ProcBackend,
     fs_backend: FsBackend,
@@ -1645,10 +1645,10 @@ struct ExecCtx {
     decisions: DecisionLog,
     events: Vec<TraceEvent>,
     findings: Vec<Finding>,
-    replay: Option<ReplayCursor>,
+    replay: Option<ReplayCursor<'a>>,
 }
 
-impl ExecCtx {
+impl<'a> ExecCtx<'a> {
     fn new(
         seed: u64,
         det: bool,
@@ -3500,16 +3500,16 @@ fn sorted_pair(a: &str, b: &str) -> (String, String) {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ReplayCursor {
-    decisions: Vec<Decision>,
+#[derive(Debug, Clone, Copy)]
+struct ReplayCursor<'a> {
+    decisions: &'a [Decision],
     index: usize,
 }
 
-impl ReplayCursor {
-    fn new(decisions: &[Decision]) -> Self {
+impl<'a> ReplayCursor<'a> {
+    fn new(decisions: &'a [Decision]) -> Self {
         Self {
-            decisions: decisions.to_vec(),
+            decisions,
             index: 0,
         }
     }

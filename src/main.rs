@@ -1648,6 +1648,11 @@ fn run_full_command(
     topology_profile: TopologyProfile,
     topology_shrink_policy: ShrinkCoveragePolicy,
 ) -> anyhow::Result<FullReport> {
+    let mut temp_paths = Vec::<PathBuf>::new();
+    let mut register_temp = |path: PathBuf| -> PathBuf {
+        temp_paths.push(path.clone());
+        path
+    };
     let mut steps = Vec::<FullStepResult>::new();
     let mut push = |name: &str, status: FullStepStatus, detail: String| {
         steps.push(FullStepResult {
@@ -1704,7 +1709,9 @@ fn run_full_command(
         format!("version={}", version.version),
     );
 
-    let init_tmp = std::env::temp_dir().join(format!("fozzy-full-init-{}", uuid::Uuid::new_v4()));
+    let init_tmp = register_temp(
+        std::env::temp_dir().join(format!("fozzy-full-init-{}", uuid::Uuid::new_v4())),
+    );
     let init_status = (|| -> anyhow::Result<String> {
         std::fs::create_dir_all(&init_tmp)?;
         let prev = std::env::current_dir()?;
@@ -1780,6 +1787,8 @@ fn run_full_command(
             profile: topology_profile,
             shrink_policy: topology_shrink_policy,
             limit: 200,
+            offset: 0,
+            max_matched_scenarios: 25,
         }) {
             Ok(report) => {
                 let ok = report.uncovered_hotspot_count == 0;
@@ -1941,8 +1950,9 @@ fn run_full_command(
             Err(err) => push("test_det", FullStepStatus::Failed, err.to_string()),
         }
 
-        let trace_path =
-            std::env::temp_dir().join(format!("fozzy-full-{}.trace.fozzy", uuid::Uuid::new_v4()));
+        let trace_path = register_temp(
+            std::env::temp_dir().join(format!("fozzy-full-{}.trace.fozzy", uuid::Uuid::new_v4())),
+        );
         match fozzy::run_scenario(
             config,
             ScenarioPath::new(primary.clone()),
@@ -2066,8 +2076,9 @@ fn run_full_command(
             Err(err) => push("ci", FullStepStatus::Failed, err.to_string()),
         }
 
-        let shrink_out =
-            std::env::temp_dir().join(format!("fozzy-full-{}.min.fozzy", uuid::Uuid::new_v4()));
+        let shrink_out = register_temp(
+            std::env::temp_dir().join(format!("fozzy-full-{}.min.fozzy", uuid::Uuid::new_v4())),
+        );
         match fozzy::shrink_trace(
             config,
             TracePath::new(trace.clone()),
@@ -2155,8 +2166,9 @@ fn run_full_command(
         })
         .map_err(|err| push("artifacts_ls", FullStepStatus::Failed, err.to_string()));
 
-        let artifacts_export =
-            std::env::temp_dir().join(format!("fozzy-full-artifacts-{}.zip", uuid::Uuid::new_v4()));
+        let artifacts_export = register_temp(
+            std::env::temp_dir().join(format!("fozzy-full-artifacts-{}.zip", uuid::Uuid::new_v4())),
+        );
         match fozzy::artifacts_command(
             config,
             &ArtifactCommand::Export {
@@ -2172,8 +2184,9 @@ fn run_full_command(
             Err(err) => push("artifacts_export", FullStepStatus::Failed, err.to_string()),
         }
 
-        let artifacts_pack =
-            std::env::temp_dir().join(format!("fozzy-full-pack-{}.zip", uuid::Uuid::new_v4()));
+        let artifacts_pack = register_temp(
+            std::env::temp_dir().join(format!("fozzy-full-pack-{}.zip", uuid::Uuid::new_v4())),
+        );
         match fozzy::artifacts_command(
             config,
             &ArtifactCommand::Pack {
@@ -2435,10 +2448,10 @@ fn run_full_command(
     }
 
     let full_fuzz_target: FuzzTarget = "fn:kv".parse().map_err(|e| anyhow::anyhow!("{e}"))?;
-    let fuzz_trace = std::env::temp_dir().join(format!(
+    let fuzz_trace = register_temp(std::env::temp_dir().join(format!(
         "fozzy-full-fuzz-{}.trace.fozzy",
         uuid::Uuid::new_v4()
-    ));
+    )));
     match fozzy::fuzz(
         config,
         &full_fuzz_target,
@@ -2511,13 +2524,16 @@ fn run_full_command(
         );
     }
 
-    let corpus_dir =
-        std::env::temp_dir().join(format!("fozzy-full-corpus-{}", uuid::Uuid::new_v4()));
+    let corpus_dir = register_temp(
+        std::env::temp_dir().join(format!("fozzy-full-corpus-{}", uuid::Uuid::new_v4())),
+    );
     let seed_file = corpus_dir.join("seed.bin");
-    let corpus_zip =
-        std::env::temp_dir().join(format!("fozzy-full-corpus-{}.zip", uuid::Uuid::new_v4()));
-    let corpus_import_dir =
-        std::env::temp_dir().join(format!("fozzy-full-corpus-import-{}", uuid::Uuid::new_v4()));
+    let corpus_zip = register_temp(
+        std::env::temp_dir().join(format!("fozzy-full-corpus-{}.zip", uuid::Uuid::new_v4())),
+    );
+    let corpus_import_dir = register_temp(
+        std::env::temp_dir().join(format!("fozzy-full-corpus-import-{}", uuid::Uuid::new_v4())),
+    );
     let corpus_setup = (|| -> anyhow::Result<()> {
         std::fs::create_dir_all(&corpus_dir)?;
         std::fs::write(&seed_file, b"fozzy-corpus-seed")?;
@@ -2649,7 +2665,7 @@ fn run_full_command(
 
     apply_full_policy_filters(&mut steps, skip_steps, required_steps);
 
-    Ok(FullReport {
+    let report = FullReport {
         schema_version: "fozzy.full_report.v1".to_string(),
         strict,
         unsafe_mode,
@@ -2657,7 +2673,15 @@ fn run_full_command(
         guidance,
         shrink_classification,
         steps,
-    })
+    };
+    for p in temp_paths {
+        let _ = if p.is_dir() {
+            std::fs::remove_dir_all(&p)
+        } else {
+            std::fs::remove_file(&p)
+        };
+    }
+    Ok(report)
 }
 
 fn discover_scenarios(root: &Path) -> FullScenarioDiscovery {

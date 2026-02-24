@@ -1660,7 +1660,7 @@ fn map_hotspots_services_and_suites_emit_expected_schema() {
             .get("schemaVersion")
             .and_then(|v| v.as_str())
             .unwrap_or_default(),
-        "fozzy.map_suites.v4"
+        "fozzy.map_suites.v5"
     );
     assert!(
         suites_doc
