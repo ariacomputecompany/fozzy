@@ -1505,6 +1505,51 @@ fn run_record_collision_defaults_to_append_for_iterative_runs() {
 }
 
 #[test]
+fn recorded_proc_spawn_events_include_stdout_and_stderr() {
+    let ws = temp_workspace("proc-spawn-event-io");
+    let scenario = ws.join("proc.fozzy.json");
+    std::fs::write(&scenario, fixture("proc.fozzy.json")).expect("write scenario");
+    let trace = ws.join("trace.fozzy");
+
+    let out = run_cli(&[
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--record-collision".into(),
+        "overwrite".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "proc scenario should pass, stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let trace_doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&trace).expect("read trace")).expect("trace json");
+    let proc_event = trace_doc
+        .get("events")
+        .and_then(|v| v.as_array())
+        .and_then(|events| {
+            events
+                .iter()
+                .find(|e| e.get("name").and_then(|n| n.as_str()) == Some("proc_spawn"))
+        })
+        .expect("proc_spawn event");
+    let fields = proc_event
+        .get("fields")
+        .and_then(|v| v.as_object())
+        .expect("proc_spawn fields");
+    assert_eq!(
+        fields.get("stdout").and_then(|v| v.as_str()),
+        Some("abc123")
+    );
+    assert_eq!(fields.get("stderr").and_then(|v| v.as_str()), Some(""));
+}
+
+#[test]
 fn fuzz_supports_scenario_target() {
     let ws = temp_workspace("fuzz-scenario-target");
     let scenario = ws.join("app.pass.fozzy.json");

@@ -2664,23 +2664,31 @@ impl<'a> ExecCtx<'a> {
                     stderr: rule.stderr.clone(),
                 });
 
+                let mut proc_fields = serde_json::Map::new();
+                proc_fields.insert("cmd".to_string(), serde_json::Value::String(cmd.clone()));
+                proc_fields.insert(
+                    "backend".to_string(),
+                    serde_json::Value::String(match self.proc_backend {
+                        ProcBackend::Scripted => "scripted".to_string(),
+                        ProcBackend::Host => "host".to_string(),
+                    }),
+                );
+                proc_fields.insert(
+                    "exit_code".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(rule.exit_code)),
+                );
+                proc_fields.insert(
+                    "stdout".to_string(),
+                    serde_json::Value::String(rule.stdout.clone()),
+                );
+                proc_fields.insert(
+                    "stderr".to_string(),
+                    serde_json::Value::String(rule.stderr.clone()),
+                );
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "proc_spawn".to_string(),
-                    fields: serde_json::Map::from_iter([
-                        ("cmd".to_string(), serde_json::Value::String(cmd.clone())),
-                        (
-                            "backend".to_string(),
-                            serde_json::Value::String(match self.proc_backend {
-                                ProcBackend::Scripted => "scripted".to_string(),
-                                ProcBackend::Host => "host".to_string(),
-                            }),
-                        ),
-                        (
-                            "exit_code".to_string(),
-                            serde_json::Value::Number(serde_json::Number::from(rule.exit_code)),
-                        ),
-                    ]),
+                    fields: proc_fields,
                 });
 
                 if let Some(expected) = expect_exit
