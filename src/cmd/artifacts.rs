@@ -309,7 +309,11 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
         ArtifactKind::Profile,
         artifacts_dir.join("profile.metrics.json"),
     )?;
-    push_if_exists(&mut out, ArtifactKind::Profile, artifacts_dir.join("symbols.json"))?;
+    push_if_exists(
+        &mut out,
+        ArtifactKind::Profile,
+        artifacts_dir.join("symbols.json"),
+    )?;
     push_if_exists(
         &mut out,
         ArtifactKind::Memory,
@@ -839,7 +843,7 @@ fn push_if_exists(
 
 fn export_artifacts_zip(files: &[PathBuf], out_zip: &Path) -> FozzyResult<()> {
     use std::fs::File;
-    use std::io::Write as _;
+    use std::io::{Read as _, Write as _};
 
     validate_output_file_path_secure(out_zip)?;
     if let Some(parent) = out_zip.parent() {
@@ -872,8 +876,15 @@ fn export_artifacts_zip(files: &[PathBuf], out_zip: &Path) -> FozzyResult<()> {
         for src in files {
             let name = zip_entry_name_for_path(src, &mut used_names);
             zip.start_file(name, options)?;
-            let bytes = std::fs::read(src)?;
-            zip.write_all(&bytes)?;
+            let mut in_file = File::open(src)?;
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = in_file.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                zip.write_all(&buf[..n])?;
+            }
         }
 
         zip.finish()?;

@@ -278,7 +278,11 @@ pub struct RunManifest {
     pub memory_leaked_allocs: Option<u64>,
     #[serde(rename = "memoryPeakBytes", skip_serializing_if = "Option::is_none")]
     pub memory_peak_bytes: Option<u64>,
-    #[serde(rename = "profileCapabilities", skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(
+        rename = "profileCapabilities",
+        skip_serializing_if = "Vec::is_empty",
+        default
+    )]
     pub profile_capabilities: Vec<String>,
     #[serde(
         rename = "profileArtifacts",

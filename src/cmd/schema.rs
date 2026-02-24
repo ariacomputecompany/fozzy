@@ -307,7 +307,8 @@ pub fn schema_doc() -> SchemaDoc {
                 "metrics": {"schemaVersion": "fozzy.profile_metrics.v1"},
                 "emptyDomains": [{"domain":"heap","empty":true,"reason":"no heap samples in trace"}]
             }),
-            notes: "Domain arrays may be empty; inspect emptyDomains for explicit reasons.".to_string(),
+            notes: "Domain arrays may be empty; inspect emptyDomains for explicit reasons."
+                .to_string(),
         },
     );
     profile_output_schemas.insert(
@@ -412,7 +413,8 @@ pub fn schema_doc() -> SchemaDoc {
                 "contract":{"expected":"after >= baseline","direction":"increase"},
                 "reason":"no feasible shrink found..."
             }),
-            notes: "Contract misses are non-error with status=no_feasible_shrink_found.".to_string(),
+            notes: "Contract misses are non-error with status=no_feasible_shrink_found."
+                .to_string(),
         },
     );
     profile_output_schemas.insert(
@@ -428,7 +430,8 @@ pub fn schema_doc() -> SchemaDoc {
                 "backends":{"proc":"scripted","fs":"virtual","http":"scripted"},
                 "domains":{"cpu":{"available":true,"quality":"degraded"}}
             }),
-            notes: "Describes profiler domain capability/quality by host + backend setup.".to_string(),
+            notes: "Describes profiler domain capability/quality by host + backend setup."
+                .to_string(),
         },
     );
     profile_output_schemas.insert(

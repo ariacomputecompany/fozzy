@@ -147,6 +147,7 @@ fn golden_fuzz_record_replay_shrink_replay_min() {
         &cfg,
         &target,
         &FuzzOptions {
+            det: false,
             mode: FuzzMode::Coverage,
             seed: Some(7),
             time: None,

@@ -3,7 +3,7 @@
 use clap::Subcommand;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Read as _, Write as _};
+use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
@@ -253,9 +253,8 @@ fn import_zip(zip_path: &Path, out_dir: &Path) -> FozzyResult<()> {
             continue;
         }
         validate_zip_entry_name_raw(f.name_raw(), f.name())?;
-        let mut bytes = Vec::new();
-        f.read_to_end(&mut bytes)?;
-        write_zip_entry_secure(out_dir, f.name(), &bytes)?;
+        let name = f.name().to_string();
+        write_zip_entry_secure(out_dir, &name, &mut f)?;
     }
     Ok(())
 }
@@ -391,7 +390,11 @@ fn read_u32_le(bytes: &[u8], off: usize) -> FozzyResult<u32> {
     ]))
 }
 
-fn write_zip_entry_secure(out_dir: &Path, entry_name: &str, bytes: &[u8]) -> FozzyResult<()> {
+fn write_zip_entry_secure(
+    out_dir: &Path,
+    entry_name: &str,
+    reader: &mut dyn Read,
+) -> FozzyResult<()> {
     let rel = normalize_zip_entry_rel_path(entry_name)?;
     let out_path = out_dir.join(&rel);
 
@@ -449,7 +452,11 @@ fn write_zip_entry_secure(out_dir: &Path, entry_name: &str, bytes: &[u8]) -> Foz
         uuid::Uuid::new_v4()
     );
     let tmp = parent.join(tmp_name);
-    std::fs::write(&tmp, bytes)?;
+    let mut out = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&tmp)?;
+    std::io::copy(reader, &mut out)?;
     std::fs::rename(&tmp, &out_path)?;
     Ok(())
 }

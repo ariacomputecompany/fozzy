@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use crate::{
     Decision, ExploreTrace, FozzyError, FozzyResult, FuzzTrace, MemoryTrace, RecordCollisionPolicy,
@@ -284,16 +285,31 @@ fn resolve_record_target(path: &Path, policy: RecordCollisionPolicy) -> FozzyRes
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
             let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("fozzy");
-            for i in 1..=100_000 {
-                let candidate = parent.join(format!("{stem}.{i}.{ext}"));
-                if !candidate.exists() {
-                    return Ok(candidate);
+            let prefix = format!("{stem}.");
+            let suffix = format!(".{ext}");
+            let mut max_seen = 0u32;
+            for entry in std::fs::read_dir(parent)? {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else {
+                    continue;
+                };
+                if !name.starts_with(&prefix) || !name.ends_with(&suffix) {
+                    continue;
+                }
+                let Some(mid) = name
+                    .strip_prefix(&prefix)
+                    .and_then(|n| n.strip_suffix(&suffix))
+                else {
+                    continue;
+                };
+                if let Ok(i) = mid.parse::<u32>() {
+                    max_seen = max_seen.max(i);
                 }
             }
-            Err(FozzyError::Trace(format!(
-                "unable to find append target for {}",
-                path.display()
-            )))
+            Ok(parent.join(format!("{stem}.{}.{ext}", max_seen.saturating_add(1))))
         }
     }
 }
@@ -310,19 +326,68 @@ impl Drop for RecordLockGuard {
 
 fn acquire_record_lock(target: &Path) -> FozzyResult<RecordLockGuard> {
     let lock_path = PathBuf::from(format!("{}.lock", target.to_string_lossy()));
-    match std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&lock_path)
-    {
-        Ok(_) => Ok(RecordLockGuard { lock_path }),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(FozzyError::Trace(format!(
-            "record collision: active writer holds lock for {}",
-            target.display()
-        ))),
+    let try_open = || {
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&lock_path)
+    };
+
+    match try_open() {
+        Ok(mut f) => {
+            use std::io::Write as _;
+            let _ = writeln!(
+                &mut f,
+                "pid={} created_unix_ms={}",
+                std::process::id(),
+                unix_time_ms(SystemTime::now())
+            );
+            Ok(RecordLockGuard { lock_path })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            if is_stale_lock(&lock_path, RECORD_LOCK_STALE_AFTER) {
+                let _ = std::fs::remove_file(&lock_path);
+                match try_open() {
+                    Ok(_) => Ok(RecordLockGuard { lock_path }),
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        Err(FozzyError::Trace(format!(
+                            "record collision: active writer holds lock for {}",
+                            target.display()
+                        )))
+                    }
+                    Err(err) => Err(err.into()),
+                }
+            } else {
+                Err(FozzyError::Trace(format!(
+                    "record collision: active writer holds lock for {}",
+                    target.display()
+                )))
+            }
+        }
         Err(e) => Err(e.into()),
     }
 }
+
+fn is_stale_lock(path: &Path, ttl: Duration) -> bool {
+    let Ok(md) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = md.modified() else {
+        return false;
+    };
+    let Ok(age) = SystemTime::now().duration_since(modified) else {
+        return false;
+    };
+    age > ttl
+}
+
+fn unix_time_ms(now: SystemTime) -> u128 {
+    now.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+const RECORD_LOCK_STALE_AFTER: Duration = Duration::from_secs(300);
 
 fn verify_checksum(trace: &TraceFile, path: &Path) -> FozzyResult<()> {
     let Some(expected) = trace.checksum.as_ref() else {

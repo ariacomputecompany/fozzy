@@ -14,8 +14,9 @@ use fozzy::{
     ArtifactCommand, CiOptions, Config, CorpusCommand, ExitStatus, ExploreOptions, FlakeBudget,
     FozzyDuration, FsBackend, FuzzMode, FuzzOptions, FuzzTarget, HttpBackend, InitTemplate,
     InitTestType, MapCommand, MapSuitesOptions, MemoryCommand, MemoryOptions, ProcBackend,
-    ProfileCommand, RecordCollisionPolicy, ReportCommand, Reporter, RunOptions, RunSummary, ScenarioPath,
-    ScheduleStrategy, ShrinkCoveragePolicy, ShrinkMinimize, TopologyProfile, TracePath,
+    ProfileCommand, RecordCollisionPolicy, ReportCommand, Reporter, RunOptions, RunSummary,
+    ScenarioPath, ScheduleStrategy, ShrinkCoveragePolicy, ShrinkMinimize, TopologyProfile,
+    TracePath,
 };
 
 #[derive(Debug, Parser)]
@@ -206,6 +207,9 @@ enum Command {
     /// Coverage-guided or property-based fuzzing
     Fuzz {
         target: String,
+
+        #[arg(long)]
+        det: bool,
 
         #[arg(long, default_value = "coverage")]
         mode: FuzzMode,
@@ -629,7 +633,10 @@ fn main() -> ExitCode {
         );
     }
 
-    let config = Config::load_optional(&cli.config);
+    let config = match Config::load_optional_checked(&cli.config) {
+        Ok(cfg) => cfg,
+        Err(err) => return print_error_and_exit(&logger, anyhow::anyhow!("{err}")),
+    };
 
     match run_command(&cli, &config, &logger) {
         Ok(code) => code,
@@ -744,19 +751,17 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             leak_budget,
             mem_artifacts,
         } => {
-            let _ = (*mem_track, *mem_artifacts);
-            let memory = MemoryOptions {
-                track: true,
-                limit_mb: mem_limit_mb.or(config.mem_limit_mb),
-                fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
-                fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
-                pressure_wave: mem_pressure_wave
-                    .clone()
-                    .or_else(|| config.mem_pressure_wave.clone()),
-                fail_on_leak: *fail_on_leak || config.fail_on_leak,
-                leak_budget_bytes: leak_budget.or(config.leak_budget),
-                artifacts: true,
-            };
+            let memory = resolve_memory_options(
+                config,
+                *mem_track,
+                *mem_artifacts,
+                *mem_limit_mb,
+                *mem_fail_after,
+                *mem_fragmentation_seed,
+                mem_pressure_wave.clone(),
+                *fail_on_leak,
+                *leak_budget,
+            );
             let run = fozzy::run_tests(
                 config,
                 globs,
@@ -798,19 +803,17 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             leak_budget,
             mem_artifacts,
         } => {
-            let _ = (*mem_track, *mem_artifacts);
-            let memory = MemoryOptions {
-                track: true,
-                limit_mb: mem_limit_mb.or(config.mem_limit_mb),
-                fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
-                fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
-                pressure_wave: mem_pressure_wave
-                    .clone()
-                    .or_else(|| config.mem_pressure_wave.clone()),
-                fail_on_leak: *fail_on_leak || config.fail_on_leak,
-                leak_budget_bytes: leak_budget.or(config.leak_budget),
-                artifacts: true,
-            };
+            let memory = resolve_memory_options(
+                config,
+                *mem_track,
+                *mem_artifacts,
+                *mem_limit_mb,
+                *mem_fail_after,
+                *mem_fragmentation_seed,
+                mem_pressure_wave.clone(),
+                *fail_on_leak,
+                *leak_budget,
+            );
             let run = fozzy::run_scenario(
                 config,
                 ScenarioPath::new(scenario.clone()),
@@ -837,6 +840,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
 
         Command::Fuzz {
             target,
+            det,
             mode,
             seed,
             time,
@@ -859,24 +863,23 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             leak_budget,
             mem_artifacts,
         } => {
-            let _ = (*mem_track, *mem_artifacts);
-            let memory = MemoryOptions {
-                track: true,
-                limit_mb: mem_limit_mb.or(config.mem_limit_mb),
-                fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
-                fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
-                pressure_wave: mem_pressure_wave
-                    .clone()
-                    .or_else(|| config.mem_pressure_wave.clone()),
-                fail_on_leak: *fail_on_leak || config.fail_on_leak,
-                leak_budget_bytes: leak_budget.or(config.leak_budget),
-                artifacts: true,
-            };
+            let memory = resolve_memory_options(
+                config,
+                *mem_track,
+                *mem_artifacts,
+                *mem_limit_mb,
+                *mem_fail_after,
+                *mem_fragmentation_seed,
+                mem_pressure_wave.clone(),
+                *fail_on_leak,
+                *leak_budget,
+            );
             let target: FuzzTarget = target.parse()?;
             let run = fozzy::fuzz(
                 config,
                 &target,
                 &FuzzOptions {
+                    det: *det,
                     mode: *mode,
                     seed: *seed,
                     time: time.map(|d| d.0),
@@ -921,19 +924,17 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             leak_budget,
             mem_artifacts,
         } => {
-            let _ = (*mem_track, *mem_artifacts);
-            let memory = MemoryOptions {
-                track: true,
-                limit_mb: mem_limit_mb.or(config.mem_limit_mb),
-                fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
-                fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
-                pressure_wave: mem_pressure_wave
-                    .clone()
-                    .or_else(|| config.mem_pressure_wave.clone()),
-                fail_on_leak: *fail_on_leak || config.fail_on_leak,
-                leak_budget_bytes: leak_budget.or(config.leak_budget),
-                artifacts: true,
-            };
+            let memory = resolve_memory_options(
+                config,
+                *mem_track,
+                *mem_artifacts,
+                *mem_limit_mb,
+                *mem_fail_after,
+                *mem_fragmentation_seed,
+                mem_pressure_wave.clone(),
+                *fail_on_leak,
+                *leak_budget,
+            );
             let run = fozzy::explore(
                 config,
                 ScenarioPath::new(scenario.clone()),
@@ -1307,9 +1308,17 @@ fn run_gate_command(
         });
     };
 
-    match git_clean_tree_check() {
-        Ok(detail) => push("clean_tree", FullStepStatus::Passed, detail),
-        Err(err) => push("clean_tree", FullStepStatus::Failed, err.to_string()),
+    if strict {
+        match git_clean_tree_check() {
+            Ok(detail) => push("clean_tree", FullStepStatus::Passed, detail),
+            Err(err) => push("clean_tree", FullStepStatus::Failed, err.to_string()),
+        }
+    } else {
+        push(
+            "clean_tree",
+            FullStepStatus::Skipped,
+            "strict disabled; git worktree check skipped".to_string(),
+        );
     }
 
     let discovered = discover_scenarios(scenario_root);
@@ -1649,9 +1658,17 @@ fn run_full_command(
     };
     let mut shrink_classification: Option<String> = None;
 
-    match git_clean_tree_check() {
-        Ok(detail) => push("clean_tree", FullStepStatus::Passed, detail),
-        Err(err) => push("clean_tree", FullStepStatus::Failed, err.to_string()),
+    if strict {
+        match git_clean_tree_check() {
+            Ok(detail) => push("clean_tree", FullStepStatus::Passed, detail),
+            Err(err) => push("clean_tree", FullStepStatus::Failed, err.to_string()),
+        }
+    } else {
+        push(
+            "clean_tree",
+            FullStepStatus::Skipped,
+            "strict disabled; git worktree check skipped".to_string(),
+        );
     }
 
     let mut guidance = vec![
@@ -1692,7 +1709,8 @@ fn run_full_command(
         std::fs::create_dir_all(&init_tmp)?;
         let prev = std::env::current_dir()?;
         std::env::set_current_dir(&init_tmp)?;
-        let cfg = Config::load_optional(Path::new("fozzy.toml"));
+        let cfg = Config::load_optional_checked(Path::new("fozzy.toml"))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         let init_res = fozzy::init_project(
             &cfg,
             &InitTemplate::Rust,
@@ -2375,9 +2393,7 @@ fn run_full_command(
             config,
             &ProfileCommand::Explain {
                 run: trace.display().to_string(),
-                diff_with: shrunk_trace
-                    .as_ref()
-                    .map(|p| p.display().to_string()),
+                diff_with: shrunk_trace.as_ref().map(|p| p.display().to_string()),
             },
             strict,
         ) {
@@ -2427,6 +2443,7 @@ fn run_full_command(
         config,
         &full_fuzz_target,
         &FuzzOptions {
+            det: false,
             mode: FuzzMode::Coverage,
             seed,
             time: Some(fuzz_time),
@@ -2854,7 +2871,9 @@ fn enforce_strict_summary(strict: bool, summary: &RunSummary) -> anyhow::Result<
     let warnings: Vec<&str> = summary
         .findings
         .iter()
-        .filter(|f| f.title == "stale_trace_schema")
+        .filter(|f| {
+            f.kind == fozzy::FindingKind::Checker && summary.status == fozzy::ExitStatus::Pass
+        })
         .map(|f| f.message.as_str())
         .collect();
     if warnings.is_empty() {
@@ -2865,6 +2884,30 @@ fn enforce_strict_summary(strict: bool, summary: &RunSummary) -> anyhow::Result<
         "strict mode: run contains warning findings: {}",
         warnings.join("; ")
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_memory_options(
+    config: &Config,
+    mem_track: bool,
+    mem_artifacts: bool,
+    mem_limit_mb: Option<u64>,
+    mem_fail_after: Option<u64>,
+    mem_fragmentation_seed: Option<u64>,
+    mem_pressure_wave: Option<String>,
+    fail_on_leak: bool,
+    leak_budget: Option<u64>,
+) -> MemoryOptions {
+    MemoryOptions {
+        track: mem_track || config.mem_track,
+        limit_mb: mem_limit_mb.or(config.mem_limit_mb),
+        fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
+        fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
+        pressure_wave: mem_pressure_wave.or_else(|| config.mem_pressure_wave.clone()),
+        fail_on_leak: fail_on_leak || config.fail_on_leak,
+        leak_budget_bytes: leak_budget.or(config.leak_budget),
+        artifacts: mem_artifacts || config.mem_artifacts,
+    }
 }
 
 fn strict_enabled(cli: &Cli) -> bool {

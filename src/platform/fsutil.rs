@@ -3,7 +3,7 @@
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
@@ -25,25 +25,89 @@ pub fn find_matching_files(patterns: &[String]) -> FozzyResult<Vec<PathBuf>> {
         }
     }
 
-    for entry in WalkDir::new(".").follow_links(false) {
-        let entry = entry.map_err(|e| {
-            let msg = e.to_string();
-            FozzyError::Io(
-                e.into_io_error()
-                    .unwrap_or_else(|| std::io::Error::other(msg)),
-            )
-        })?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let p = entry.path();
-        let rel = p.strip_prefix(".").unwrap_or(p);
-        let abs = cwd.join(rel);
-        if set.is_match(rel) || set.is_match(&abs) {
-            out.insert(rel.to_path_buf());
+    for root in walk_roots(patterns) {
+        for entry in WalkDir::new(&root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| !should_skip_dir(e.path()))
+        {
+            let entry = entry.map_err(|e| {
+                let msg = e.to_string();
+                FozzyError::Io(
+                    e.into_io_error()
+                        .unwrap_or_else(|| std::io::Error::other(msg)),
+                )
+            })?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let p = entry.path();
+            let rel = p.strip_prefix(".").unwrap_or(p);
+            let abs = cwd.join(rel);
+            if set.is_match(rel) || set.is_match(&abs) {
+                out.insert(rel.to_path_buf());
+            }
         }
     }
     Ok(out.into_iter().collect())
+}
+
+fn walk_roots(patterns: &[String]) -> BTreeSet<PathBuf> {
+    let mut roots = BTreeSet::new();
+    for pattern in patterns {
+        if has_glob_meta(pattern) {
+            let prefix = pattern
+                .split(['*', '?', '[', ']', '{', '}'])
+                .next()
+                .unwrap_or_default();
+            let trimmed = prefix.trim_end_matches('/');
+            if trimmed.is_empty() {
+                roots.insert(PathBuf::from("."));
+                continue;
+            }
+            let p = PathBuf::from(trimmed);
+            if p.is_dir() {
+                roots.insert(p);
+            } else if let Some(parent) = p.parent() {
+                if parent.as_os_str().is_empty() {
+                    roots.insert(PathBuf::from("."));
+                } else {
+                    roots.insert(parent.to_path_buf());
+                }
+            } else {
+                roots.insert(PathBuf::from("."));
+            }
+            continue;
+        }
+
+        let p = PathBuf::from(pattern);
+        if p.is_dir() {
+            roots.insert(p);
+        } else if let Some(parent) = p.parent() {
+            if parent.as_os_str().is_empty() {
+                roots.insert(PathBuf::from("."));
+            } else {
+                roots.insert(parent.to_path_buf());
+            }
+        } else {
+            roots.insert(PathBuf::from("."));
+        }
+    }
+    if roots.is_empty() {
+        roots.insert(PathBuf::from("."));
+    }
+    roots
+}
+
+fn should_skip_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                ".git" | "target" | "node_modules" | ".fozzy" | "dist" | "build" | "coverage"
+            )
+        })
 }
 
 fn compile_globset(patterns: &[String]) -> FozzyResult<GlobSet> {

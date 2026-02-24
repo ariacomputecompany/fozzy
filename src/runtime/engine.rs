@@ -8,6 +8,7 @@ use uuid::Uuid;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -510,6 +511,7 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
     let seed = opt.seed.unwrap_or_else(gen_seed);
     let run_id = Uuid::new_v4().to_string();
 
+    let mut filtered_paths = Vec::new();
     for p in scenario_paths {
         if let Some(filter) = &opt.filter
             && !p.to_string_lossy().contains(filter)
@@ -517,39 +519,118 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             skipped += 1;
             continue;
         }
+        filtered_paths.push(p);
+    }
 
-        let run = match run_scenario_inner(
-            config,
-            RunMode::Test,
-            ScenarioPath::new(p.clone()),
-            seed,
-            opt.det,
-            opt.timeout,
-            opt.proc_backend,
-            opt.fs_backend,
-            opt.http_backend,
-            opt.memory.clone(),
-        ) {
-            Ok(run) => run,
-            Err(FozzyError::Scenario(msg)) if msg.contains("use `fozzy explore`") => {
-                skipped += 1;
-                continue;
-            }
-            Err(err) => return Err(err),
-        };
-        match run.status {
-            ExitStatus::Pass => passed += 1,
-            _ => {
-                failed += 1;
-                findings.extend(run.findings.clone());
-                test_runs.push(run);
-                if opt.fail_fast {
-                    break;
+    let jobs = if opt.fail_fast {
+        1
+    } else {
+        opt.jobs.unwrap_or(1).max(1)
+    };
+    if jobs == 1 || filtered_paths.len() <= 1 {
+        for p in filtered_paths {
+            let run = match run_scenario_inner(
+                config,
+                RunMode::Test,
+                ScenarioPath::new(p.clone()),
+                seed,
+                opt.det,
+                opt.timeout,
+                opt.proc_backend,
+                opt.fs_backend,
+                opt.http_backend,
+                opt.memory.clone(),
+            ) {
+                Ok(run) => run,
+                Err(FozzyError::Scenario(msg)) if msg.contains("use `fozzy explore`") => {
+                    skipped += 1;
+                    continue;
                 }
-                continue;
+                Err(err) => return Err(err),
+            };
+            match run.status {
+                ExitStatus::Pass => passed += 1,
+                _ => {
+                    failed += 1;
+                    findings.extend(run.findings.clone());
+                    test_runs.push(run);
+                    if opt.fail_fast {
+                        break;
+                    }
+                    continue;
+                }
             }
+            test_runs.push(run);
         }
-        test_runs.push(run);
+    } else {
+        let (tx, rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let mut in_flight = 0usize;
+            let mut next = 0usize;
+            while next < filtered_paths.len() || in_flight > 0 {
+                while next < filtered_paths.len() && in_flight < jobs {
+                    let path = filtered_paths[next].clone();
+                    let tx = tx.clone();
+                    let memory = opt.memory.clone();
+                    let timeout = opt.timeout;
+                    let proc_backend = opt.proc_backend;
+                    let fs_backend = opt.fs_backend;
+                    let http_backend = opt.http_backend;
+                    let det = opt.det;
+                    scope.spawn(move || {
+                        let result = run_scenario_inner(
+                            config,
+                            RunMode::Test,
+                            ScenarioPath::new(path),
+                            seed,
+                            det,
+                            timeout,
+                            proc_backend,
+                            fs_backend,
+                            http_backend,
+                            memory,
+                        );
+                        let _ = tx.send(result);
+                    });
+                    next += 1;
+                    in_flight += 1;
+                }
+
+                if in_flight > 0 {
+                    if let Ok(result) = rx.recv() {
+                        in_flight = in_flight.saturating_sub(1);
+                        match result {
+                            Ok(run) => {
+                                if run.status == ExitStatus::Pass {
+                                    passed += 1;
+                                } else {
+                                    failed += 1;
+                                    findings.extend(run.findings.clone());
+                                }
+                                test_runs.push(run);
+                            }
+                            Err(FozzyError::Scenario(msg))
+                                if msg.contains("use `fozzy explore`") =>
+                            {
+                                skipped += 1;
+                            }
+                            Err(err) => {
+                                // Bubble up after joining all workers.
+                                findings.push(Finding {
+                                    kind: FindingKind::Checker,
+                                    title: "test_worker_error".to_string(),
+                                    message: err.to_string(),
+                                    location: None,
+                                });
+                                failed += 1;
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     let finished_at = wall_time_iso_utc();
@@ -2530,6 +2611,32 @@ impl ExecCtx {
                             ),
                             location: None,
                         })?;
+                    if output.stdout.len() > HOST_PROC_MAX_STDOUT_BYTES {
+                        return Err(Finding {
+                            kind: FindingKind::Assertion,
+                            title: "proc_spawn_host".to_string(),
+                            message: format!(
+                                "host proc stdout exceeded limit for {cmd:?} {:?}: {} bytes > {} bytes",
+                                call_args,
+                                output.stdout.len(),
+                                HOST_PROC_MAX_STDOUT_BYTES
+                            ),
+                            location: None,
+                        });
+                    }
+                    if output.stderr.len() > HOST_PROC_MAX_STDERR_BYTES {
+                        return Err(Finding {
+                            kind: FindingKind::Assertion,
+                            title: "proc_spawn_host".to_string(),
+                            message: format!(
+                                "host proc stderr exceeded limit for {cmd:?} {:?}: {} bytes > {} bytes",
+                                call_args,
+                                output.stderr.len(),
+                                HOST_PROC_MAX_STDERR_BYTES
+                            ),
+                            location: None,
+                        });
+                    }
                     ProcRule {
                         cmd: cmd.clone(),
                         args: call_args.clone(),
@@ -3059,12 +3166,13 @@ impl ExecCtx {
                     location: None,
                 })?;
 
-                let deadline = Instant::now() + within_d;
+                let start_virtual_ms = self.clock.now_ms();
+                let deadline = start_virtual_ms.saturating_add(duration_to_ms(within_d));
                 loop {
                     if self.kv.get(key).is_some_and(|v| v == equals) {
                         return Ok(());
                     }
-                    if Instant::now() >= deadline {
+                    if self.clock.now_ms() >= deadline {
                         return Err(Finding {
                             kind: FindingKind::Assertion,
                             title: "assert_eventually_kv".to_string(),
@@ -3098,7 +3206,8 @@ impl ExecCtx {
                     location: None,
                 })?;
 
-                let deadline = Instant::now() + within_d;
+                let start_virtual_ms = self.clock.now_ms();
+                let deadline = start_virtual_ms.saturating_add(duration_to_ms(within_d));
                 loop {
                     if self.kv.get(key).is_some_and(|v| v == equals) {
                         return Err(Finding {
@@ -3110,7 +3219,7 @@ impl ExecCtx {
                             location: None,
                         });
                     }
-                    if Instant::now() >= deadline {
+                    if self.clock.now_ms() >= deadline {
                         return Ok(());
                     }
                     self.sleep_poll(poll_d);
@@ -3249,6 +3358,13 @@ fn dispatch_host_http(
     let body = response
         .into_string()
         .map_err(|e| format!("host http body read failed for {method} {url}: {e}"))?;
+    if body.len() > HOST_HTTP_MAX_BODY_BYTES {
+        return Err(format!(
+            "host http body exceeded limit for {method} {url}: {} bytes > {} bytes",
+            body.len(),
+            HOST_HTTP_MAX_BODY_BYTES
+        ));
+    }
     Ok(HttpResponseData {
         status: status_code,
         headers: out_headers,
@@ -3412,3 +3528,11 @@ impl ReplayCursor {
         self.decisions.len().saturating_sub(self.index)
     }
 }
+
+fn duration_to_ms(d: Duration) -> u64 {
+    d.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+const HOST_PROC_MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
+const HOST_PROC_MAX_STDERR_BYTES: usize = 8 * 1024 * 1024;
+const HOST_HTTP_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;

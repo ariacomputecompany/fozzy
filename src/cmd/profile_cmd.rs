@@ -595,10 +595,7 @@ pub fn profile_command(
                 if heap_rows.is_empty() {
                     empty_domains.push(empty_domain("heap", "no heap samples in trace"));
                 }
-                out.insert(
-                    "heap".to_string(),
-                    serde_json::to_value(heap_rows)?,
-                );
+                out.insert("heap".to_string(), serde_json::to_value(heap_rows)?);
             }
             if domains.iter().any(|d| d == "latency") {
                 let latency_rows = bundle
@@ -611,10 +608,7 @@ pub fn profile_command(
                 if latency_rows.is_empty() {
                     empty_domains.push(empty_domain("latency", "no latency edges in trace"));
                 }
-                out.insert(
-                    "latency".to_string(),
-                    serde_json::to_value(latency_rows)?,
-                );
+                out.insert("latency".to_string(), serde_json::to_value(latency_rows)?);
             }
             if domains.iter().any(|d| d == "io") {
                 let io_top = top_by_tag(&bundle.timeline, ProfileEventKind::Io, *limit);
@@ -630,7 +624,10 @@ pub fn profile_command(
                 }
                 out.insert("sched".to_string(), serde_json::to_value(sched_top)?);
             }
-            out.insert("emptyDomains".to_string(), serde_json::to_value(empty_domains)?);
+            out.insert(
+                "emptyDomains".to_string(),
+                serde_json::to_value(empty_domains)?,
+            );
             out.insert("metrics".to_string(), serde_json::to_value(bundle.metrics)?);
             Ok(serde_json::Value::Object(out))
         }
@@ -736,10 +733,9 @@ pub fn profile_command(
         ProfileCommand::Export { run, format, out } => {
             let bundle = load_profile_bundle(config, run)?;
             let value = match format {
-                ProfileExportFormat::Speedscope => serde_json::to_value(folded_to_speedscope(
-                    run,
-                    &bundle.cpu.folded_stacks,
-                ))?,
+                ProfileExportFormat::Speedscope => {
+                    serde_json::to_value(folded_to_speedscope(run, &bundle.cpu.folded_stacks))?
+                }
                 ProfileExportFormat::Pprof => serde_json::json!({
                     "schemaVersion": "fozzy.profile_pprof.v1",
                     "run": run,
@@ -804,7 +800,11 @@ pub fn profile_command(
                 ProfileDirection::Increase => ">=",
                 ProfileDirection::Decrease => "<=",
             };
-            let status = if preserved { "ok" } else { "no_feasible_shrink_found" };
+            let status = if preserved {
+                "ok"
+            } else {
+                "no_feasible_shrink_found"
+            };
             let baseline_out = normalize_metric_value(baseline);
             let after_out = normalize_metric_value(after);
             Ok(serde_json::json!({
@@ -838,7 +838,10 @@ pub fn profile_command(
     }
 }
 
-pub fn write_profile_artifacts_from_trace(trace: &TraceFile, artifacts_dir: &Path) -> FozzyResult<()> {
+pub fn write_profile_artifacts_from_trace(
+    trace: &TraceFile,
+    artifacts_dir: &Path,
+) -> FozzyResult<()> {
     std::fs::create_dir_all(artifacts_dir)?;
     let timeline = build_profile_timeline(trace);
     let cpu = build_cpu_profile(trace, &timeline);
@@ -867,18 +870,16 @@ fn load_profile_bundle(config: &Config, selector: &str) -> FozzyResult<ProfileBu
         )));
     }
 
-    let timeline: Vec<ProfileEvent> = serde_json::from_slice(&std::fs::read(
-        artifacts_dir.join("profile.timeline.json"),
-    )?)?;
+    let timeline: Vec<ProfileEvent> =
+        serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.timeline.json"))?)?;
     let cpu: CpuProfile =
         serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.cpu.json"))?)?;
     let heap: HeapProfile =
         serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.heap.json"))?)?;
     let latency: LatencyProfile =
         serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.latency.json"))?)?;
-    let metrics: ProfileMetrics = serde_json::from_slice(&std::fs::read(
-        artifacts_dir.join("profile.metrics.json"),
-    )?)?;
+    let metrics: ProfileMetrics =
+        serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.metrics.json"))?)?;
     let symbols: SymbolsMap =
         serde_json::from_slice(&std::fs::read(artifacts_dir.join("symbols.json"))?)?;
 
@@ -921,12 +922,7 @@ fn build_profile_timeline(trace: &TraceFile) -> Vec<ProfileEvent> {
             .fields
             .get("bytes")
             .and_then(|v| v.as_u64())
-            .or_else(|| {
-                event
-                    .fields
-                    .get("payload_size")
-                    .and_then(|v| v.as_u64())
-            });
+            .or_else(|| event.fields.get("payload_size").and_then(|v| v.as_u64()));
         let task = event
             .fields
             .get("task")
@@ -979,7 +975,10 @@ fn build_cpu_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> CpuProfile
     for event in timeline {
         let stack_parts = vec![
             "fozzy::runtime".to_string(),
-            format!("event::{}", event.tags.get("name").cloned().unwrap_or_default()),
+            format!(
+                "event::{}",
+                event.tags.get("name").cloned().unwrap_or_default()
+            ),
         ];
         let stack = stack_parts.join(";");
         let weight = event.cost.duration_ms.unwrap_or(1).max(1);
@@ -1034,7 +1033,10 @@ fn build_heap_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> HeapProfi
                 .get("alloc_id")
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(0);
-            let failed = event.tags.get("failed_reason").is_some_and(|r| !r.is_empty() && r != "null");
+            let failed = event
+                .tags
+                .get("failed_reason")
+                .is_some_and(|r| !r.is_empty() && r != "null");
             if failed || alloc_id == 0 {
                 continue;
             }
@@ -1127,11 +1129,17 @@ fn build_heap_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> HeapProfi
         .map(|(bucket, count)| HistogramBin { bucket, count })
         .collect::<Vec<_>>();
 
-    let in_use_bytes = live.values().fold(0u64, |acc, a| acc.saturating_add(a.bytes));
+    let in_use_bytes = live
+        .values()
+        .fold(0u64, |acc, a| acc.saturating_add(a.bytes));
     let span_s = (end_t.max(1) as f64) / 1000.0;
     let alloc_rate_per_sec = (total_alloc_bytes as f64) / span_s;
 
-    let trace_memory_in_use = trace.memory.as_ref().map(|m| m.summary.in_use_bytes).unwrap_or(0);
+    let trace_memory_in_use = trace
+        .memory
+        .as_ref()
+        .map(|m| m.summary.in_use_bytes)
+        .unwrap_or(0);
 
     HeapProfile {
         schema_version: "fozzy.profile_heap.v1".to_string(),
@@ -1284,7 +1292,11 @@ fn build_profile_metrics(
         max_latency_ms: latency.distribution.max_ms,
         io_ops,
         sched_ops,
-        confidence: if host_time_ms == 0 { Some(0.0) } else { Some(0.8) },
+        confidence: if host_time_ms == 0 {
+            Some(0.0)
+        } else {
+            Some(0.8)
+        },
     }
 }
 
@@ -1460,9 +1472,21 @@ fn compute_diff(
                 ("in_use_bytes", l.in_use_bytes as f64, r.in_use_bytes as f64),
             ],
             "latency" => vec![
-                ("p95_latency_ms", l.p95_latency_ms as f64, r.p95_latency_ms as f64),
-                ("p99_latency_ms", l.p99_latency_ms as f64, r.p99_latency_ms as f64),
-                ("max_latency_ms", l.max_latency_ms as f64, r.max_latency_ms as f64),
+                (
+                    "p95_latency_ms",
+                    l.p95_latency_ms as f64,
+                    r.p95_latency_ms as f64,
+                ),
+                (
+                    "p99_latency_ms",
+                    l.p99_latency_ms as f64,
+                    r.p99_latency_ms as f64,
+                ),
+                (
+                    "max_latency_ms",
+                    l.max_latency_ms as f64,
+                    r.max_latency_ms as f64,
+                ),
             ],
             "io" => vec![("io_ops", l.io_ops as f64, r.io_ops as f64)],
             "sched" => vec![("sched_ops", l.sched_ops as f64, r.sched_ops as f64)],
@@ -1471,11 +1495,7 @@ fn compute_diff(
         for (metric, lv, rv) in pairs {
             let delta = rv - lv;
             let delta_pct = if lv.abs() < f64::EPSILON {
-                if rv.abs() < f64::EPSILON {
-                    0.0
-                } else {
-                    100.0
-                }
+                if rv.abs() < f64::EPSILON { 0.0 } else { 100.0 }
             } else {
                 (delta / lv) * 100.0
             };
@@ -1759,7 +1779,13 @@ fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde
         "status": "pass",
         "detail": format!("events={}", bundle.timeline.len()),
     }));
-    let diff = compute_diff(run, run, &["cpu".to_string(), "heap".to_string(), "latency".to_string()], &bundle.metrics, &bundle.metrics);
+    let diff = compute_diff(
+        run,
+        run,
+        &["cpu".to_string(), "heap".to_string(), "latency".to_string()],
+        &bundle.metrics,
+        &bundle.metrics,
+    );
     checks.push(serde_json::json!({
         "name": "diff",
         "ok": true,
@@ -1799,7 +1825,8 @@ fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde
             ) {
                 Ok(s) => {
                     let shrunk_trace = TraceFile::read_json(Path::new(&s.out_trace_path))?;
-                    let baseline = metric_value(ProfileMetric::CpuTime, &TraceFile::read_json(&trace_path)?)?;
+                    let baseline =
+                        metric_value(ProfileMetric::CpuTime, &TraceFile::read_json(&trace_path)?)?;
                     let after = metric_value(ProfileMetric::CpuTime, &shrunk_trace)?;
                     let preserved = after >= baseline;
                     serde_json::json!({
@@ -1861,7 +1888,10 @@ fn resolve_profile_trace(config: &Config, selector: &str) -> FozzyResult<(PathBu
     )))
 }
 
-fn resolve_profile_artifacts(config: &Config, selector: &str) -> FozzyResult<(PathBuf, Option<PathBuf>)> {
+fn resolve_profile_artifacts(
+    config: &Config,
+    selector: &str,
+) -> FozzyResult<(PathBuf, Option<PathBuf>)> {
     let input = PathBuf::from(selector);
     if input.exists()
         && input.is_file()
@@ -1931,6 +1961,7 @@ fn profile_artifacts_exist(artifacts_dir: &Path) -> bool {
 fn normalize_domains(cpu: bool, heap: bool, latency: bool, io: bool, sched: bool) -> Vec<String> {
     if !cpu && !heap && !latency && !io && !sched {
         return vec![
+            "cpu".to_string(),
             "io".to_string(),
             "sched".to_string(),
             "heap".to_string(),
@@ -1957,7 +1988,12 @@ fn normalize_domains(cpu: bool, heap: bool, latency: bool, io: bool, sched: bool
 }
 
 fn enforce_cpu_contract(strict: bool, cpu_requested: bool) -> FozzyResult<()> {
-    let _ = (strict, cpu_requested);
+    if strict && cpu_requested {
+        return Err(FozzyError::InvalidArgument(
+            "strict profile contract forbids CPU domain because host-time CPU samples are not replay-deterministic; rerun with --unsafe to opt out"
+                .to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -2159,7 +2195,8 @@ mod tests {
     }
 
     fn temp_workspace(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fozzy-profile-{name}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("fozzy-profile-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("workspace");
         dir
     }
@@ -2256,8 +2293,11 @@ mod tests {
     fn timeline_json_out_matches_stdout_schema() {
         let ws = temp_workspace("timeline-schema");
         let trace = ws.join("trace.fozzy");
-        std::fs::write(&trace, serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"))
-            .expect("write trace");
+        std::fs::write(
+            &trace,
+            serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"),
+        )
+        .expect("write trace");
         let out_file = ws.join("timeline.json");
 
         let cfg = Config::default();
@@ -2369,8 +2409,11 @@ mod tests {
     fn profile_doctor_reports_schema() {
         let ws = temp_workspace("profile-doctor");
         let trace = ws.join("trace.fozzy");
-        std::fs::write(&trace, serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"))
-            .expect("trace");
+        std::fs::write(
+            &trace,
+            serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"),
+        )
+        .expect("trace");
 
         let cfg = Config::default();
         let cmd = ProfileCommand::Doctor {

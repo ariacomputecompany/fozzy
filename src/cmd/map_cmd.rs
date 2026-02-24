@@ -3,6 +3,7 @@
 use clap::{Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -128,7 +129,7 @@ pub struct MapHotspot {
     pub recommended_suites: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HotspotSignals {
     #[serde(rename = "lineCount")]
     pub line_count: usize,
@@ -539,7 +540,7 @@ fn covered_suites_for_hotspot(
             .filter(|s| {
                 suite == SUITE_TEST_DET
                     || suite == SUITE_RUN_REPLAY_CI
-                    || !hint_tokens.is_disjoint(&s.tokens)
+                    || hint_tokens.intersection(&s.tokens).take(2).count() >= 2
             })
             .collect::<Vec<_>>();
         if matches.is_empty() {
@@ -646,15 +647,19 @@ fn scan_repo(root: &Path) -> FozzyResult<RepoFacts> {
         if should_skip_path(p) || !is_candidate_file(p) {
             continue;
         }
-        let Ok(bytes) = std::fs::read(p) else {
+        let Ok(file) = std::fs::File::open(p) else {
             continue;
         };
-        let content = String::from_utf8_lossy(&bytes);
-        let line_count = content.lines().count();
+        let mut signal = HotspotSignals::default();
+        let mut line_count = 0usize;
+        let reader = BufReader::new(file);
+        for line in reader.lines().map_while(Result::ok) {
+            line_count = line_count.saturating_add(1);
+            accumulate_signals_line(&mut signal, &line);
+        }
+        signal.line_count = line_count;
         let rel = p.strip_prefix(root).unwrap_or(p).to_path_buf();
         scanned_files += 1;
-
-        let signal = build_signals(&content, line_count);
         let (risk_score, reasons) = score_signals(&signal);
         if risk_score == 0 {
             continue;
@@ -861,15 +866,15 @@ fn is_candidate_file(p: &Path) -> bool {
     )
 }
 
-fn build_signals(content: &str, line_count: usize) -> HotspotSignals {
-    let lower = content.to_ascii_lowercase();
-    let count =
-        |needles: &[&str]| -> usize { needles.iter().map(|n| lower.matches(n).count()).sum() };
-
-    HotspotSignals {
-        line_count,
-        branch_signals: count(&[" if ", " else ", " match ", " switch ", " case ", " catch "]),
-        concurrency_signals: count(&[
+fn accumulate_signals_line(s: &mut HotspotSignals, line: &str) {
+    let lower = line.to_ascii_lowercase();
+    s.branch_signals = s.branch_signals.saturating_add(count_hits(
+        &lower,
+        &[" if ", " else ", " match ", " switch ", " case ", " catch "],
+    ));
+    s.concurrency_signals = s.concurrency_signals.saturating_add(count_hits(
+        &lower,
+        &[
             " async ",
             ".await",
             "thread",
@@ -881,8 +886,11 @@ fn build_signals(content: &str, line_count: usize) -> HotspotSignals {
             "select!",
             "goroutine",
             "go func",
-        ]),
-        external_signals: count(&[
+        ],
+    ));
+    s.external_signals = s.external_signals.saturating_add(count_hits(
+        &lower,
+        &[
             "http://",
             "https://",
             "grpc",
@@ -900,8 +908,11 @@ fn build_signals(content: &str, line_count: usize) -> HotspotSignals {
             "postgres",
             "mysql",
             "mongodb",
-        ]),
-        failure_signals: count(&[
+        ],
+    ));
+    s.failure_signals = s.failure_signals.saturating_add(count_hits(
+        &lower,
+        &[
             "timeout",
             "retry",
             "backoff",
@@ -913,9 +924,15 @@ fn build_signals(content: &str, line_count: usize) -> HotspotSignals {
             "compensat",
             "fail",
             "error",
-        ]),
-        memory_signals: count(&["alloc", "free", "leak", "memory", "heap"]),
-        entrypoint_signals: count(&[
+        ],
+    ));
+    s.memory_signals = s.memory_signals.saturating_add(count_hits(
+        &lower,
+        &["alloc", "free", "leak", "memory", "heap"],
+    ));
+    s.entrypoint_signals = s.entrypoint_signals.saturating_add(count_hits(
+        &lower,
+        &[
             "fn main",
             "main(",
             "applisten",
@@ -927,8 +944,12 @@ fn build_signals(content: &str, line_count: usize) -> HotspotSignals {
             "grpcserver",
             "deployment",
             "kind: service",
-        ]),
-    }
+        ],
+    ));
+}
+
+fn count_hits(haystack: &str, needles: &[&str]) -> usize {
+    needles.iter().map(|n| haystack.matches(n).count()).sum()
 }
 
 fn score_signals(s: &HotspotSignals) -> (u8, Vec<String>) {

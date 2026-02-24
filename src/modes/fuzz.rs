@@ -87,6 +87,7 @@ impl std::str::FromStr for FuzzTarget {
 
 #[derive(Debug, Clone)]
 pub struct FuzzOptions {
+    pub det: bool,
     pub mode: FuzzMode,
     pub seed: Option<u64>,
     pub time: Option<Duration>,
@@ -125,7 +126,22 @@ pub fn fuzz(
     target: &FuzzTarget,
     opt: &FuzzOptions,
 ) -> FozzyResult<crate::RunResult> {
-    let seed = opt.seed.unwrap_or_else(gen_seed);
+    if opt.det && opt.time.is_some() {
+        return Err(FozzyError::InvalidArgument(
+            "fuzz --det requires --runs and does not support wall-clock --time".to_string(),
+        ));
+    }
+    if opt.det && opt.runs.is_none() {
+        return Err(FozzyError::InvalidArgument(
+            "fuzz --det requires an explicit --runs value".to_string(),
+        ));
+    }
+
+    let seed = if opt.det {
+        opt.seed.unwrap_or(0)
+    } else {
+        opt.seed.unwrap_or_else(gen_seed)
+    };
     let run_id = Uuid::new_v4().to_string();
     let started_at = wall_time_iso_utc();
     let started = Instant::now();
@@ -141,7 +157,11 @@ pub fn fuzz(
     std::fs::create_dir_all(corpus_dir.join("crashes"))?;
 
     let mut rng = rng_from_seed(seed);
-    let deadline = opt.time.map(|t| started + t);
+    let deadline = if opt.det {
+        None
+    } else {
+        opt.time.map(|t| started + t)
+    };
     let max_runs = opt.runs.unwrap_or(u64::MAX);
 
     let mut corpus = load_corpus(&corpus_dir)?;
@@ -194,9 +214,9 @@ pub fn fuzz(
                     ),
                     location: None,
                 });
-            } else if exec.status == ExitStatus::Pass
-                && let Some(id) = outcome.alloc_id
-            {
+            } else if let Some(id) = outcome.alloc_id {
+                // Release synthetic fuzz-loop allocation regardless of target outcome;
+                // findings should not be dominated by harness-only leaks.
                 let _ = mem.free(id, executed);
             }
         }
@@ -268,7 +288,9 @@ pub fn fuzz(
                 exec.events.clone(),
                 summary.clone(),
             );
-            profile_trace.memory = memory_state.as_ref().map(|m| m.clone().finalize().to_trace());
+            profile_trace.memory = memory_state
+                .as_ref()
+                .map(|m| m.clone().finalize().to_trace());
             write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
             crate::write_run_manifest(&summary, &artifacts_dir)?;
 
@@ -322,6 +344,7 @@ pub fn fuzz(
     let report_path = artifacts_dir.join("report.json");
 
     let memory_report = memory_state.map(|m| m.finalize());
+    findings = crate::collapse_findings(findings);
     let mut summary = RunSummary {
         status,
         mode: RunMode::Fuzz,
