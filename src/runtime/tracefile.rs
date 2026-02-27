@@ -136,18 +136,58 @@ impl TraceFile {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut with_checksum = self.clone();
-        with_checksum.checksum = None;
-        let canonical = serde_json::to_vec(&with_checksum)?;
-        with_checksum.checksum = Some(blake3::hash(&canonical).to_hex().to_string());
+        let canonical = serde_json::to_vec(&TraceWriteView {
+            format: &self.format,
+            version: self.version,
+            engine: &self.engine,
+            mode: self.mode,
+            scenario_path: self.scenario_path.as_ref(),
+            scenario: self.scenario.as_ref(),
+            fuzz: self.fuzz.as_ref(),
+            explore: self.explore.as_ref(),
+            memory: self.memory.as_ref(),
+            decisions: &self.decisions,
+            events: &self.events,
+            summary: &self.summary,
+            checksum: None,
+        })?;
+        let checksum = blake3::hash(&canonical).to_hex().to_string();
 
         let pretty = std::env::var("FOZZY_TRACE_PRETTY")
             .ok()
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         let bytes = if pretty {
-            serde_json::to_vec_pretty(&with_checksum)?
+            serde_json::to_vec_pretty(&TraceWriteView {
+                format: &self.format,
+                version: self.version,
+                engine: &self.engine,
+                mode: self.mode,
+                scenario_path: self.scenario_path.as_ref(),
+                scenario: self.scenario.as_ref(),
+                fuzz: self.fuzz.as_ref(),
+                explore: self.explore.as_ref(),
+                memory: self.memory.as_ref(),
+                decisions: &self.decisions,
+                events: &self.events,
+                summary: &self.summary,
+                checksum: Some(checksum.as_str()),
+            })?
         } else {
-            serde_json::to_vec(&with_checksum)?
+            serde_json::to_vec(&TraceWriteView {
+                format: &self.format,
+                version: self.version,
+                engine: &self.engine,
+                mode: self.mode,
+                scenario_path: self.scenario_path.as_ref(),
+                scenario: self.scenario.as_ref(),
+                fuzz: self.fuzz.as_ref(),
+                explore: self.explore.as_ref(),
+                memory: self.memory.as_ref(),
+                decisions: &self.decisions,
+                events: &self.events,
+                summary: &self.summary,
+                checksum: Some(checksum.as_str()),
+            })?
         };
         // Atomic replace to avoid concurrent writer corruption on shared paths.
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -175,6 +215,27 @@ impl TraceFile {
         verify_checksum(&t, path)?;
         Ok(t)
     }
+}
+
+#[derive(Serialize)]
+struct TraceWriteView<'a> {
+    format: &'a str,
+    version: u32,
+    engine: &'a VersionInfo,
+    mode: RunMode,
+    scenario_path: Option<&'a String>,
+    scenario: Option<&'a ScenarioV1Steps>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fuzz: Option<&'a FuzzTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    explore: Option<&'a ExploreTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    memory: Option<&'a MemoryTrace>,
+    decisions: &'a [Decision],
+    events: &'a [TraceEvent],
+    summary: &'a RunSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checksum: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

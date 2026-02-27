@@ -1,6 +1,7 @@
 //! Timeline artifact generation from trace events.
 
 use serde::{Deserialize, Serialize};
+use serde::ser::Serializer as _;
 
 use std::path::Path;
 
@@ -19,16 +20,21 @@ pub fn write_timeline(events: &[TraceEvent], out_path: &Path) -> FozzyResult<()>
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let timeline: Vec<TimelineEntry> = events
-        .iter()
-        .enumerate()
-        .map(|(idx, e)| TimelineEntry {
-            index: idx,
-            time_ms: e.time_ms,
-            name: e.name.clone(),
-            fields: e.fields.clone(),
-        })
-        .collect();
-    std::fs::write(out_path, serde_json::to_vec_pretty(&timeline)?)?;
+    let mut buf = Vec::with_capacity(events.len().saturating_mul(64));
+    {
+        let mut ser = serde_json::Serializer::new(&mut buf);
+        use serde::ser::SerializeSeq as _;
+        let mut seq = ser.serialize_seq(Some(events.len()))?;
+        for (idx, e) in events.iter().enumerate() {
+            seq.serialize_element(&TimelineEntry {
+                index: idx,
+                time_ms: e.time_ms,
+                name: e.name.clone(),
+                fields: e.fields.clone(),
+            })?;
+        }
+        seq.end()?;
+    }
+    std::fs::write(out_path, buf)?;
     Ok(())
 }

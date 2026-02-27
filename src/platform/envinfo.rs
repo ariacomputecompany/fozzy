@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 use std::process::Command;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvInfo {
@@ -29,11 +30,14 @@ pub struct VersionInfo {
 }
 
 pub fn version_info() -> VersionInfo {
-    VersionInfo {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        commit: resolved_commit_hash(),
-        build_date: option_env!("FOZZY_BUILD_DATE").map(|s| s.to_string()),
-    }
+    static VERSION_INFO: OnceLock<VersionInfo> = OnceLock::new();
+    VERSION_INFO
+        .get_or_init(|| VersionInfo {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            commit: resolved_commit_hash(),
+            build_date: option_env!("FOZZY_BUILD_DATE").map(|s| s.to_string()),
+        })
+        .clone()
 }
 
 fn resolved_commit_hash() -> Option<String> {

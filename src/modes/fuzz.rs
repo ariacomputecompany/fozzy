@@ -10,12 +10,12 @@ use uuid::Uuid;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::{
-    Config, ExitStatus, ExploreOptions, Finding, FindingKind, FsBackend, HttpBackend,
-    MemoryOptions, MemoryState, ProcBackend, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
-    RunOptions, RunSummary, ScenarioFile, ScenarioPath, ScheduleStrategy, TraceEvent, TraceFile,
+    Config, ExitStatus, Finding, FindingKind, MemoryOptions, MemoryState, RecordCollisionPolicy,
+    Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath, TraceEvent, TraceFile,
     wall_time_iso_utc, write_memory_artifacts, write_profile_artifacts_from_trace,
     write_trace_with_policy,
 };
@@ -275,24 +275,7 @@ pub fn fuzz(
                 findings: exec.findings.clone(),
             };
 
-            std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
-            crate::write_run_manifest(&summary, &artifacts_dir)?;
-            std::fs::write(
-                artifacts_dir.join("events.json"),
-                serde_json::to_vec_pretty(&exec.events)?,
-            )?;
-            crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
-            let mut profile_trace = TraceFile::new_fuzz(
-                target_string(target),
-                &input,
-                exec.events.clone(),
-                summary.clone(),
-            );
-            profile_trace.memory = memory_state
-                .as_ref()
-                .map(|m| m.clone().finalize().to_trace());
-            write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-            crate::write_run_manifest(&summary, &artifacts_dir)?;
+            std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
 
             if matches!(opt.reporter, Reporter::Junit) {
                 std::fs::write(
@@ -312,14 +295,33 @@ pub fn fuzz(
                 &artifacts_dir,
                 crash_count,
             );
-            let trace =
-                TraceFile::new_fuzz(target_string(target), &input, exec.events, summary.clone());
+            let trace = TraceFile::new_fuzz(
+                target_string(target),
+                &input,
+                exec.events.clone(),
+                summary.clone(),
+            );
             let mut trace = trace;
             trace.memory = memory_state
                 .as_ref()
                 .map(|m| m.clone().finalize().to_trace());
             let written = write_trace_with_policy(&trace, &trace_out, opt.record_collision)?;
             crash_trace_path = Some(written);
+            if should_emit_heavy_artifacts(exec.status, true) {
+                std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&exec.events)?)?;
+                crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
+                let mut profile_trace = TraceFile::new_fuzz(
+                    target_string(target),
+                    &input,
+                    exec.events.clone(),
+                    summary.clone(),
+                );
+                profile_trace.memory = memory_state
+                    .as_ref()
+                    .map(|m| m.clone().finalize().to_trace());
+                write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+            }
+            crate::write_run_manifest(&summary, &artifacts_dir)?;
 
             if opt.minimize || opt.shrink {
                 let minimized =
@@ -372,8 +374,7 @@ pub fn fuzz(
         }
     }
 
-    std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
     if let Some(mem) = memory_report.as_ref()
         && mem.options.artifacts
     {
@@ -392,8 +393,10 @@ pub fn fuzz(
         profile_summary,
     );
     profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
-    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    if should_emit_heavy_artifacts(status, opt.record_trace_to.is_some() || crash_trace_path.is_some())
+    {
+        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    }
     let coverage_stats = FuzzCoverageStats {
         target: target_string(target),
         executed,
@@ -405,7 +408,7 @@ pub fn fuzz(
     };
     std::fs::write(
         artifacts_dir.join("coverage.json"),
-        serde_json::to_vec_pretty(&coverage_stats)?,
+        serde_json::to_vec(&coverage_stats)?,
     )?;
 
     if let Some(record_path) = &opt.record_trace_to
@@ -423,6 +426,7 @@ pub fn fuzz(
         let written = write_trace_with_policy(&trace, record_path, opt.record_collision)?;
         summary.identity.trace_path = Some(written.to_string_lossy().to_string());
     }
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
 }
@@ -471,21 +475,19 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         findings,
     };
 
-    std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
-    std::fs::write(
-        artifacts_dir.join("events.json"),
-        serde_json::to_vec_pretty(&exec.events)?,
-    )?;
-    crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
-    let mut profile_trace = TraceFile::new_fuzz(
-        fuzz.target.clone(),
-        &input,
-        exec.events.clone(),
-        summary.clone(),
-    );
-    profile_trace.memory = trace.memory.clone();
-    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    if should_emit_heavy_artifacts(exec.status, true) {
+        std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&exec.events)?)?;
+        crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
+        let mut profile_trace = TraceFile::new_fuzz(
+            fuzz.target.clone(),
+            &input,
+            exec.events.clone(),
+            summary.clone(),
+        );
+        profile_trace.memory = trace.memory.clone();
+        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    }
     crate::write_run_manifest(&summary, &artifacts_dir)?;
     Ok(crate::RunResult { summary })
 }
@@ -624,56 +626,15 @@ fn supported_fuzz_targets() -> Vec<String> {
     out
 }
 
-fn execute_scenario_target(config: &Config, path: &Path, input: &[u8]) -> FozzyResult<FuzzExec> {
+fn execute_scenario_target(_config: &Config, path: &Path, input: &[u8]) -> FozzyResult<FuzzExec> {
     let seed = seed_from_input(input);
-    let scenario_path = ScenarioPath::new(path.to_path_buf());
-    let parsed = crate::Scenario::load_file(&scenario_path)?;
+    let parsed = scenario_target_cache(path)?;
     let (status, findings) = match parsed {
-        ScenarioFile::Steps(_) => {
-            let result = crate::run_scenario(
-                config,
-                scenario_path,
-                &RunOptions {
-                    det: true,
-                    seed: Some(seed),
-                    timeout: None,
-                    reporter: Reporter::Json,
-                    record_trace_to: None,
-                    filter: None,
-                    jobs: None,
-                    fail_fast: false,
-                    record_collision: RecordCollisionPolicy::Append,
-                    proc_backend: ProcBackend::Scripted,
-                    fs_backend: FsBackend::Virtual,
-                    http_backend: HttpBackend::Scripted,
-                    memory: scenario_fuzz_memory(),
-                },
-            )?;
-            (result.summary.status, result.summary.findings)
+        ScenarioTarget::Steps(scenario) => {
+            crate::run_embedded_steps_for_fuzz(&scenario, path, seed, scenario_fuzz_memory())?
         }
-        ScenarioFile::Distributed(_) => {
-            let result = crate::explore(
-                config,
-                scenario_path,
-                &ExploreOptions {
-                    seed: Some(seed),
-                    time: None,
-                    steps: Some(200),
-                    nodes: None,
-                    faults: Some("none".to_string()),
-                    schedule: ScheduleStrategy::CoverageGuided,
-                    checker: None,
-                    record_trace_to: None,
-                    shrink: false,
-                    minimize: false,
-                    reporter: Reporter::Json,
-                    record_collision: RecordCollisionPolicy::Append,
-                    memory: scenario_fuzz_memory(),
-                },
-            )?;
-            (result.summary.status, result.summary.findings)
-        }
-        ScenarioFile::Suites(_) => {
+        ScenarioTarget::Distributed(scenario) => crate::execute_explore_for_fuzz(&scenario, seed)?,
+        ScenarioTarget::Suites => {
             return Err(FozzyError::InvalidArgument(format!(
                 "scenario fuzz target {} uses suites variant; provide a steps or distributed scenario",
                 path.display()
@@ -714,6 +675,44 @@ fn execute_scenario_target(config: &Config, path: &Path, input: &[u8]) -> FozzyR
         events: vec![event],
         coverage,
     })
+}
+
+#[derive(Clone)]
+enum ScenarioTarget {
+    Steps(crate::ScenarioV1Steps),
+    Distributed(crate::ScenarioV1Explore),
+    Suites,
+}
+
+fn scenario_target_cache(path: &Path) -> FozzyResult<ScenarioTarget> {
+    static CACHE: OnceLock<Mutex<BTreeMap<PathBuf, ScenarioTarget>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Ok(guard) = cache.lock()
+        && let Some(found) = guard.get(path)
+    {
+        return Ok(found.clone());
+    }
+    let scenario_path = ScenarioPath::new(path.to_path_buf());
+    let parsed = crate::Scenario::load_file(&scenario_path)?;
+    let compiled = match parsed {
+        ScenarioFile::Steps(s) => ScenarioTarget::Steps(s),
+        ScenarioFile::Distributed(d) => {
+            ScenarioTarget::Distributed(crate::distributed_to_explore(d, None)?)
+        }
+        ScenarioFile::Suites(_) => ScenarioTarget::Suites,
+    };
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(path.to_path_buf(), compiled.clone());
+    }
+    Ok(compiled)
+}
+
+fn should_emit_heavy_artifacts(status: ExitStatus, explicit_request: bool) -> bool {
+    explicit_request
+        || status != ExitStatus::Pass
+        || std::env::var("FOZZY_ARTIFACTS_FULL")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 fn scenario_fuzz_memory() -> MemoryOptions {

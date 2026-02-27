@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use crate::{
     Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind,
     MemoryRunReport, MemoryState, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
-    RunSummary, ScenarioFile, ScenarioPath, TraceEvent, TraceFile, wall_time_iso_utc,
+    RunSummary, ScenarioFile, ScenarioPath, ScenarioV1Distributed, TraceEvent, TraceFile,
+    wall_time_iso_utc,
     write_memory_artifacts, write_profile_artifacts_from_trace, write_trace_with_policy,
 };
 
@@ -183,31 +184,7 @@ pub fn explore(
         findings: findings.clone(),
     };
 
-    std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
-    std::fs::write(
-        artifacts_dir.join("events.json"),
-        serde_json::to_vec_pretty(&events)?,
-    )?;
-    crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
-    if let Some(mem) = memory_report.as_ref()
-        && mem.options.artifacts
-    {
-        write_memory_artifacts(mem, &artifacts_dir)?;
-    }
-    let mut profile_trace = TraceFile::new_explore(
-        ExploreTrace {
-            scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
-            scenario: scenario.clone(),
-            schedule: opt.schedule,
-        },
-        decisions.clone(),
-        events.clone(),
-        summary.clone(),
-    );
-    profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
-    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
 
     if matches!(opt.reporter, Reporter::Junit) {
         std::fs::write(
@@ -234,8 +211,8 @@ pub fn explore(
                 scenario: scenario.clone(),
                 schedule: opt.schedule,
             },
-            decisions,
-            events,
+            decisions.clone(),
+            events.clone(),
             summary.clone(),
         );
         let mut trace = trace;
@@ -243,6 +220,28 @@ pub fn explore(
         let written = write_trace_with_policy(&trace, &out, opt.record_collision)?;
         summary.identity.trace_path = Some(written.to_string_lossy().to_string());
     }
+    if should_emit_heavy_artifacts(status, should_record) {
+        std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&events)?)?;
+        crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
+        if let Some(mem) = memory_report.as_ref()
+            && mem.options.artifacts
+        {
+            write_memory_artifacts(mem, &artifacts_dir)?;
+        }
+        let mut profile_trace = TraceFile::new_explore(
+            ExploreTrace {
+                scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
+                scenario: scenario.clone(),
+                schedule: opt.schedule,
+            },
+            decisions.clone(),
+            events.clone(),
+            summary.clone(),
+        );
+        profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    }
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
 }
@@ -300,26 +299,24 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         findings,
     };
 
-    std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
-    std::fs::write(
-        artifacts_dir.join("events.json"),
-        serde_json::to_vec_pretty(&events)?,
-    )?;
-    crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
-    if let Some(mem) = memory_report.as_ref()
-        && mem.options.artifacts
-    {
-        write_memory_artifacts(mem, &artifacts_dir)?;
+    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    if should_emit_heavy_artifacts(status, true) {
+        std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&events)?)?;
+        crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
+        if let Some(mem) = memory_report.as_ref()
+            && mem.options.artifacts
+        {
+            write_memory_artifacts(mem, &artifacts_dir)?;
+        }
+        let mut profile_trace = TraceFile::new_explore(
+            explore.clone(),
+            trace.decisions.clone(),
+            events.clone(),
+            summary.clone(),
+        );
+        profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
-    let mut profile_trace = TraceFile::new_explore(
-        explore.clone(),
-        trace.decisions.clone(),
-        events.clone(),
-        summary.clone(),
-    );
-    profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
-    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
@@ -532,6 +529,19 @@ fn load_explore_scenario(
         )));
     }
 
+    distributed_to_explore(d, nodes_override)
+}
+
+pub(crate) fn distributed_to_explore(
+    d: ScenarioV1Distributed,
+    nodes_override: Option<usize>,
+) -> FozzyResult<ScenarioV1Explore> {
+    if d.version != 1 {
+        return Err(FozzyError::Scenario(format!(
+            "unsupported distributed scenario version {} (expected 1)",
+            d.version
+        )));
+    }
     let nodes = if let Some(n) = nodes_override {
         (0..n).map(|i| format!("n{i}")).collect()
     } else if let Some(nodes) = d.distributed.nodes.clone() {
@@ -549,6 +559,28 @@ fn load_explore_scenario(
         steps: d.distributed.steps,
         invariants: d.distributed.invariants,
     })
+}
+
+pub(crate) fn execute_explore_for_fuzz(
+    scenario: &ScenarioV1Explore,
+    seed: u64,
+) -> FozzyResult<(ExitStatus, Vec<Finding>)> {
+    let (status, findings, _, _, _) = run_explore_inner(
+        scenario,
+        seed,
+        ScheduleStrategy::CoverageGuided,
+        Some(200),
+        None,
+    )?;
+    Ok((status, findings))
+}
+
+fn should_emit_heavy_artifacts(status: ExitStatus, explicit_request: bool) -> bool {
+    explicit_request
+        || status != ExitStatus::Pass
+        || std::env::var("FOZZY_ARTIFACTS_FULL")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 fn run_explore_inner(

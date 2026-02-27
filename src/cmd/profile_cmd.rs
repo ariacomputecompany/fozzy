@@ -142,6 +142,9 @@ pub enum ProfileCommand {
             long_help = RUN_OR_TRACE_LONG_HELP
         )]
         run: String,
+        /// Include expensive shrink + metric-preservation checks.
+        #[arg(long)]
+        deep: bool,
     },
 }
 
@@ -918,7 +921,7 @@ pub fn profile_command(
             }))
         }
         ProfileCommand::Env => Ok(profile_env_report(config, strict)),
-        ProfileCommand::Doctor { run } => profile_doctor(config, strict, run),
+        ProfileCommand::Doctor { run, deep } => profile_doctor(config, strict, run, *deep),
     }
 }
 
@@ -950,8 +953,10 @@ fn load_profile_bundle(
 ) -> FozzyResult<ProfileBundle> {
     let (artifacts_dir, trace_path) = resolve_profile_artifacts(config, selector)?;
     if let Some(trace_path) = trace_path {
-        let trace = TraceFile::read_json(&trace_path)?;
-        write_profile_artifacts_from_trace(&trace, &artifacts_dir)?;
+        if profile_artifacts_stale(&artifacts_dir, &trace_path)? {
+            let trace = TraceFile::read_json(&trace_path)?;
+            write_profile_artifacts_from_trace(&trace, &artifacts_dir)?;
+        }
     } else if !profile_artifacts_exist(&artifacts_dir) {
         return Err(FozzyError::InvalidArgument(format!(
             "no trace.fozzy found for {selector:?}; profiler requires trace artifacts"
@@ -1736,13 +1741,14 @@ fn explain_from_diff(
 
 fn metric_value(metric: ProfileMetric, trace: &TraceFile) -> FozzyResult<f64> {
     let timeline = build_profile_timeline(trace);
-    let cpu = build_cpu_profile(trace, &timeline);
-    let heap = build_heap_profile(trace, &timeline);
-    let latency = build_latency_profile(trace, &timeline);
     let value = match metric {
-        ProfileMetric::P99Latency => latency.distribution.p99_ms as f64,
-        ProfileMetric::CpuTime => cpu.folded_stacks.iter().map(|f| f.weight as f64).sum(),
-        ProfileMetric::AllocBytes => heap.total_alloc_bytes as f64,
+        ProfileMetric::P99Latency => build_latency_profile(trace, &timeline).distribution.p99_ms as f64,
+        ProfileMetric::CpuTime => build_cpu_profile(trace, &timeline)
+            .folded_stacks
+            .iter()
+            .map(|f| f.weight as f64)
+            .sum(),
+        ProfileMetric::AllocBytes => build_heap_profile(trace, &timeline).total_alloc_bytes as f64,
     };
     Ok(value)
 }
@@ -1825,7 +1831,12 @@ fn profile_env_report(config: &Config, strict: bool) -> serde_json::Value {
     })
 }
 
-fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde_json::Value> {
+fn profile_doctor(
+    config: &Config,
+    strict: bool,
+    run: &str,
+    deep: bool,
+) -> FozzyResult<serde_json::Value> {
     let mut checks = Vec::<serde_json::Value>::new();
     let mut issues = Vec::<String>::new();
     checks.push(serde_json::json!({
@@ -1960,64 +1971,73 @@ fn profile_doctor(config: &Config, strict: bool, run: &str) -> FozzyResult<serde
         "detail": format!("speedscope_frames={}", speedscope.get("shared").and_then(|v| v.get("frames")).and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0)),
     }));
 
-    let shrink_check = match resolve_profile_trace(config, run) {
-        Ok((_, trace_path)) => {
-            let out = std::env::temp_dir().join(format!(
-                "fozzy-profile-doctor-{}.trace.fozzy",
-                uuid::Uuid::new_v4()
-            ));
-            match shrink_trace(
-                config,
-                TracePath::new(trace_path.clone()),
-                &ShrinkOptions {
-                    out_trace_path: Some(out.clone()),
-                    budget: Some(std::time::Duration::from_secs(2)),
-                    aggressive: false,
-                    minimize: ShrinkMinimize::All,
-                },
-            ) {
-                Ok(s) => {
-                    let shrunk_trace = TraceFile::read_json(Path::new(&s.out_trace_path))?;
-                    let baseline =
-                        metric_value(ProfileMetric::CpuTime, &TraceFile::read_json(&trace_path)?)?;
-                    let after = metric_value(ProfileMetric::CpuTime, &shrunk_trace)?;
-                    let preserved = after >= baseline;
-                    serde_json::json!({
+    if deep {
+        let shrink_check = match resolve_profile_trace(config, run) {
+            Ok((_, trace_path)) => {
+                let out = std::env::temp_dir().join(format!(
+                    "fozzy-profile-doctor-{}.trace.fozzy",
+                    uuid::Uuid::new_v4()
+                ));
+                match shrink_trace(
+                    config,
+                    TracePath::new(trace_path.clone()),
+                    &ShrinkOptions {
+                        out_trace_path: Some(out.clone()),
+                        budget: Some(std::time::Duration::from_secs(2)),
+                        aggressive: false,
+                        minimize: ShrinkMinimize::All,
+                    },
+                ) {
+                    Ok(s) => {
+                        let shrunk_trace = TraceFile::read_json(Path::new(&s.out_trace_path))?;
+                        let baseline =
+                            metric_value(ProfileMetric::CpuTime, &TraceFile::read_json(&trace_path)?)?;
+                        let after = metric_value(ProfileMetric::CpuTime, &shrunk_trace)?;
+                        let preserved = after >= baseline;
+                        serde_json::json!({
+                            "name": "shrink_cpu_increase",
+                            "ok": true,
+                            "status": if preserved { "pass" } else { "warn" },
+                            "detail": if preserved {
+                                format!("preserved contract baseline={} after={}", format_metric_value(baseline), format_metric_value(after))
+                            } else {
+                                format!("no feasible shrink found that preserves increase contract baseline={} after={}", format_metric_value(baseline), format_metric_value(after))
+                            }
+                        })
+                    }
+                    Err(err) => serde_json::json!({
                         "name": "shrink_cpu_increase",
-                        "ok": true,
-                        "status": if preserved { "pass" } else { "warn" },
-                        "detail": if preserved {
-                            format!("preserved contract baseline={} after={}", format_metric_value(baseline), format_metric_value(after))
-                        } else {
-                            format!("no feasible shrink found that preserves increase contract baseline={} after={}", format_metric_value(baseline), format_metric_value(after))
-                        }
-                    })
+                        "ok": false,
+                        "status": "fail",
+                        "detail": err.to_string(),
+                    }),
                 }
-                Err(err) => serde_json::json!({
-                    "name": "shrink_cpu_increase",
-                    "ok": false,
-                    "status": "fail",
-                    "detail": err.to_string(),
-                }),
+            }
+            Err(err) => serde_json::json!({
+                "name": "shrink_cpu_increase",
+                "ok": false,
+                "status": "fail",
+                "detail": err.to_string(),
+            }),
+        };
+        if shrink_check
+            .get("ok")
+            .and_then(|v| v.as_bool())
+            .is_some_and(|v| !v)
+        {
+            if let Some(detail) = shrink_check.get("detail").and_then(|v| v.as_str()) {
+                issues.push(detail.to_string());
             }
         }
-        Err(err) => serde_json::json!({
+        checks.push(shrink_check);
+    } else {
+        checks.push(serde_json::json!({
             "name": "shrink_cpu_increase",
-            "ok": false,
-            "status": "fail",
-            "detail": err.to_string(),
-        }),
-    };
-    if shrink_check
-        .get("ok")
-        .and_then(|v| v.as_bool())
-        .is_some_and(|v| !v)
-    {
-        if let Some(detail) = shrink_check.get("detail").and_then(|v| v.as_str()) {
-            issues.push(detail.to_string());
-        }
+            "ok": true,
+            "status": "pass",
+            "detail": "skipped (use --deep for shrink+contract checks)",
+        }));
     }
-    checks.push(shrink_check);
 
     let ok = checks
         .iter()
@@ -2154,8 +2174,30 @@ fn write_json(path: &Path, value: &impl Serialize) -> FozzyResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(value)?)?;
+    std::fs::write(path, serde_json::to_vec(value)?)?;
     Ok(())
+}
+
+fn profile_artifacts_stale(artifacts_dir: &Path, trace_path: &Path) -> FozzyResult<bool> {
+    if !profile_artifacts_exist(artifacts_dir) {
+        return Ok(true);
+    }
+    let trace_mtime = std::fs::metadata(trace_path)?.modified()?;
+    for name in [
+        "profile.timeline.json",
+        "profile.cpu.json",
+        "profile.heap.json",
+        "profile.latency.json",
+        "profile.metrics.json",
+        "symbols.json",
+    ] {
+        let p = artifacts_dir.join(name);
+        let md = std::fs::metadata(&p)?;
+        if md.modified()? < trace_mtime {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn write_text(path: &Path, value: &str) -> FozzyResult<()> {
@@ -2571,6 +2613,7 @@ mod tests {
         let cfg = Config::default();
         let cmd = ProfileCommand::Doctor {
             run: trace.to_string_lossy().to_string(),
+            deep: false,
         };
         let out = profile_command(&cfg, &cmd, true).expect("doctor");
         assert_eq!(

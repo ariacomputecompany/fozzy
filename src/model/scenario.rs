@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use crate::{FozzyError, FozzyResult, parse_duration};
 
@@ -390,8 +391,16 @@ pub struct Scenario {
 
 impl Scenario {
     pub fn load_file(path: &ScenarioPath) -> FozzyResult<ScenarioFile> {
+        static CACHE: OnceLock<Mutex<std::collections::BTreeMap<PathBuf, ScenarioFile>>> =
+            OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
+        if let Ok(guard) = cache.lock()
+            && let Some(cached) = guard.get(path.as_path())
+        {
+            return Ok(cached.clone());
+        }
         let bytes = std::fs::read(path.as_path())?;
-        serde_json::from_slice(&bytes).map_err(|err| {
+        let parsed: ScenarioFile = serde_json::from_slice(&bytes).map_err(|err| {
             FozzyError::Scenario(format!(
                 "failed to parse scenario {}: {err}. expected one of: \
                  steps variant {{version,name,steps:[{{type:...}}]}}, \
@@ -400,7 +409,11 @@ impl Scenario {
                  try `fozzy schema --json` for full step/type definitions and examples.",
                 path.as_path().display()
             ))
-        })
+        })?;
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(path.as_path().to_path_buf(), parsed.clone());
+        }
+        Ok(parsed)
     }
 
     pub fn load(path: &ScenarioPath) -> FozzyResult<Self> {

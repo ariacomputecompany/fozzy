@@ -766,62 +766,49 @@ fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>>
         )));
     }
 
-    #[derive(Clone)]
-    struct Candidate {
-        dir: PathBuf,
-        finished_at: String,
-        status: ExitStatus,
-    }
-
-    let mut candidates: Vec<Candidate> = Vec::new();
-    for entry in std::fs::read_dir(&runs_dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let dir = entry.path();
-        let report = dir.join("report.json");
-        if !report.exists() {
-            continue;
-        }
-        let bytes = std::fs::read(&report)?;
-        let summary: RunSummary = match serde_json::from_slice(&bytes) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        candidates.push(Candidate {
-            dir,
-            finished_at: summary.finished_at,
-            status: summary.status,
-        });
-    }
-
-    if candidates.is_empty() {
+    let mut run_dirs = std::fs::read_dir(&runs_dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            let md = entry.metadata().ok()?;
+            let modified = md.modified().ok()?;
+            Some((entry.path(), modified))
+        })
+        .collect::<Vec<_>>();
+    run_dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if run_dirs.is_empty() {
         return Err(FozzyError::InvalidArgument(format!(
             "run alias {run:?} cannot be resolved: no completed runs with report.json found"
         )));
     }
-
-    candidates.sort_by(|a, b| {
-        a.finished_at
-            .cmp(&b.finished_at)
-            .then_with(|| a.dir.cmp(&b.dir))
-    });
-    candidates.reverse();
-
-    let selected = match key.as_str() {
-        "latest" => candidates.first(),
-        "last-pass" => candidates.iter().find(|c| c.status == ExitStatus::Pass),
-        "last-fail" => candidates.iter().find(|c| c.status != ExitStatus::Pass),
-        _ => None,
-    };
-
-    match selected {
-        Some(c) => Ok(Some(c.dir.clone())),
-        None => Err(FozzyError::InvalidArgument(format!(
-            "run alias {run:?} cannot be resolved: no matching run found"
-        ))),
+    if key == "latest" {
+        return Ok(run_dirs.first().map(|(p, _)| p.clone()));
     }
+
+    for (dir, _) in run_dirs {
+        let report = dir.join("report.json");
+        if !report.exists() {
+            continue;
+        }
+        let bytes = match std::fs::read(&report) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let summary: RunSummary = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if (key == "last-pass" && summary.status == ExitStatus::Pass)
+            || (key == "last-fail" && summary.status != ExitStatus::Pass)
+        {
+            return Ok(Some(dir));
+        }
+    }
+    Err(FozzyError::InvalidArgument(format!(
+        "run alias {run:?} cannot be resolved: no matching run found"
+    )))
 }
 
 fn push_if_exists(

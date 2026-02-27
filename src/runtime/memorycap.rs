@@ -34,11 +34,15 @@ pub struct MemoryState {
     graph_edges: Vec<MemoryGraphEdge>,
     free_count: u64,
     failed_alloc_count: u64,
+    pressure_wave_multipliers: Vec<u64>,
+    fragmentation_seed: u64,
 }
 
 impl MemoryState {
     pub fn new(options: MemoryOptions) -> Self {
         Self {
+            pressure_wave_multipliers: parse_pressure_wave(options.pressure_wave.as_deref()),
+            fragmentation_seed: options.fragmentation_seed.unwrap_or(0),
             options,
             next_alloc_id: 1,
             alloc_ops: 0,
@@ -267,31 +271,34 @@ impl MemoryState {
     }
 
     fn effective_alloc_bytes(&self, requested: u64) -> u64 {
-        let mut scaled = if let Some(pattern) = &self.options.pressure_wave {
-            let multipliers: Vec<u64> = pattern
-                .split(',')
-                .filter_map(|s| s.trim().parse::<u64>().ok())
-                .filter(|m| *m > 0)
-                .collect();
-            if multipliers.is_empty() {
-                requested
-            } else {
-                let idx = ((self.alloc_ops.saturating_sub(1)) as usize) % multipliers.len();
-                requested.saturating_mul(multipliers[idx])
-            }
-        } else {
+        let mut scaled = if self.pressure_wave_multipliers.is_empty() {
             requested
+        } else {
+            let idx =
+                ((self.alloc_ops.saturating_sub(1)) as usize) % self.pressure_wave_multipliers.len();
+            requested.saturating_mul(self.pressure_wave_multipliers[idx])
         };
 
         if self.options.fragmentation_seed.is_some() {
-            let mut input = Vec::with_capacity(24);
-            input.extend_from_slice(&self.options.fragmentation_seed.unwrap_or(0).to_le_bytes());
-            input.extend_from_slice(&self.alloc_ops.to_le_bytes());
-            input.extend_from_slice(&requested.to_le_bytes());
+            let mut input = [0u8; 24];
+            input[0..8].copy_from_slice(&self.fragmentation_seed.to_le_bytes());
+            input[8..16].copy_from_slice(&self.alloc_ops.to_le_bytes());
+            input[16..24].copy_from_slice(&requested.to_le_bytes());
             let h = blake3::hash(&input);
             let pct = (h.as_bytes()[0] as u64) % 31; // 0..30%
             scaled = scaled.saturating_add((scaled.saturating_mul(pct)) / 100);
         }
         scaled
     }
+}
+
+fn parse_pressure_wave(pattern: Option<&str>) -> Vec<u64> {
+    let Some(pattern) = pattern else {
+        return Vec::new();
+    };
+    pattern
+        .split(',')
+        .filter_map(|s| s.trim().parse::<u64>().ok())
+        .filter(|m| *m > 0)
+        .collect()
 }

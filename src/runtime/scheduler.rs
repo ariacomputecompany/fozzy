@@ -58,10 +58,12 @@ impl<T> DeterministicScheduler<T> {
         if self.queue.is_empty() {
             return None;
         }
-        let idx = match self.mode {
-            SchedulerMode::Fifo => 0usize,
-            SchedulerMode::Random => (self.rng.next_u64() as usize) % self.queue.len(),
-        };
-        self.queue.remove(idx)
+        match self.mode {
+            SchedulerMode::Fifo => self.queue.pop_front(),
+            SchedulerMode::Random => {
+                let idx = (self.rng.next_u64() as usize) % self.queue.len();
+                self.queue.swap_remove_back(idx)
+            }
+        }
     }
 }

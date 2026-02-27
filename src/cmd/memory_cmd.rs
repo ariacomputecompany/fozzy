@@ -249,68 +249,50 @@ fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<Pa
         return Ok(None);
     }
 
-    #[derive(Clone)]
-    struct Candidate {
-        dir: PathBuf,
-        finished_at: String,
-        status: ExitStatus,
+    let mut run_dirs = std::fs::read_dir(&runs_dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            let md = entry.metadata().ok()?;
+            let modified = md.modified().ok()?;
+            Some((entry.path(), modified))
+        })
+        .collect::<Vec<_>>();
+    run_dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if run_dirs.is_empty() {
+        return Ok(None);
     }
-    let mut candidates: Vec<Candidate> = Vec::new();
-    for entry in std::fs::read_dir(&runs_dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let dir = entry.path();
+    for (dir, _) in run_dirs {
         let report_path = dir.join("report.json");
-        if !report_path.exists() {
-            continue;
-        }
-        let summary: crate::RunSummary = match serde_json::from_slice(&std::fs::read(report_path)?)
-        {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let trace_memory = dir.join("trace.fozzy");
-        let trace_has_memory = if trace_memory.exists() {
-            TraceFile::read_json(&trace_memory)
-                .ok()
-                .and_then(|t| t.memory)
-                .is_some()
+        let summary = if report_path.exists() {
+            serde_json::from_slice::<crate::RunSummary>(&std::fs::read(&report_path)?).ok()
         } else {
-            false
+            None
         };
-        let has_memory = summary.memory.is_some()
+        let has_memory = summary
+            .as_ref()
+            .and_then(|s| s.memory.as_ref())
+            .is_some()
             || dir.join("memory.leaks.json").exists()
             || dir.join("memory.timeline.json").exists()
             || dir.join("memory.graph.json").exists()
-            || trace_has_memory;
+            || dir.join("trace.fozzy").exists();
         if !has_memory {
             continue;
         }
-        candidates.push(Candidate {
-            dir,
-            finished_at: summary.finished_at,
-            status: summary.status,
-        });
+        if key == "latest" {
+            return Ok(Some(dir));
+        }
+        let status = summary.as_ref().map(|s| s.status).unwrap_or(ExitStatus::Fail);
+        if (key == "last-pass" && status == ExitStatus::Pass)
+            || (key == "last-fail" && status != ExitStatus::Pass)
+        {
+            return Ok(Some(dir));
+        }
     }
-    if candidates.is_empty() {
-        return Ok(None);
-    }
-    candidates.sort_by(|a, b| {
-        a.finished_at
-            .cmp(&b.finished_at)
-            .then_with(|| a.dir.cmp(&b.dir))
-    });
-    candidates.reverse();
-
-    let selected = match key.as_str() {
-        "latest" => candidates.first(),
-        "last-pass" => candidates.iter().find(|c| c.status == ExitStatus::Pass),
-        "last-fail" => candidates.iter().find(|c| c.status != ExitStatus::Pass),
-        _ => None,
-    };
-    Ok(selected.map(|c| c.dir.clone()))
+    Ok(None)
 }
 
 fn load_summary_from_report(artifacts_dir: &Path) -> FozzyResult<MemorySummary> {

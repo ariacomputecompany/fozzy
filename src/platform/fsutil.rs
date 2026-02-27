@@ -12,6 +12,7 @@ use crate::{FozzyError, FozzyResult};
 pub fn find_matching_files(patterns: &[String]) -> FozzyResult<Vec<PathBuf>> {
     let set = compile_globset(patterns)?;
     let cwd = std::env::current_dir()?;
+    let check_abs = patterns.iter().any(|p| Path::new(p).is_absolute());
     let mut out = BTreeSet::new();
 
     // Accept direct file paths (absolute or relative) even when they are outside cwd.
@@ -43,8 +44,13 @@ pub fn find_matching_files(patterns: &[String]) -> FozzyResult<Vec<PathBuf>> {
             }
             let p = entry.path();
             let rel = p.strip_prefix(".").unwrap_or(p);
-            let abs = cwd.join(rel);
-            if set.is_match(rel) || set.is_match(&abs) {
+            let rel_match = set.is_match(rel);
+            let abs_match = if check_abs {
+                set.is_match(cwd.join(rel))
+            } else {
+                false
+            };
+            if rel_match || abs_match {
                 out.insert(rel.to_path_buf());
             }
         }

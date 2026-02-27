@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -504,7 +505,9 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
     let mut failed = 0u64;
     let mut skipped = 0u64;
     let mut findings = Vec::new();
-    let mut test_runs: Vec<ScenarioRun> = Vec::new();
+    let mut trace_runs: Vec<ScenarioRun> = Vec::new();
+    let mut memory_summary = crate::MemorySummary::default();
+    let mut has_memory = false;
 
     let started_at = wall_time_iso_utc();
     let started = Instant::now();
@@ -553,14 +556,57 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
                 _ => {
                     failed += 1;
                     findings.extend(run.findings.clone());
-                    test_runs.push(run);
+                    if let Some(mem) = run.memory.as_ref() {
+                        has_memory = true;
+                        memory_summary.alloc_count =
+                            memory_summary.alloc_count.saturating_add(mem.summary.alloc_count);
+                        memory_summary.free_count =
+                            memory_summary.free_count.saturating_add(mem.summary.free_count);
+                        memory_summary.failed_alloc_count = memory_summary
+                            .failed_alloc_count
+                            .saturating_add(mem.summary.failed_alloc_count);
+                        memory_summary.in_use_bytes =
+                            memory_summary.in_use_bytes.saturating_add(mem.summary.in_use_bytes);
+                        memory_summary.peak_bytes =
+                            memory_summary.peak_bytes.max(mem.summary.peak_bytes);
+                        memory_summary.leaked_bytes = memory_summary
+                            .leaked_bytes
+                            .saturating_add(mem.summary.leaked_bytes);
+                        memory_summary.leaked_allocs = memory_summary
+                            .leaked_allocs
+                            .saturating_add(mem.summary.leaked_allocs);
+                    }
+                    if opt.record_trace_to.is_some() {
+                        trace_runs.push(run);
+                    }
                     if opt.fail_fast {
                         break;
                     }
                     continue;
                 }
             }
-            test_runs.push(run);
+            if let Some(mem) = run.memory.as_ref() {
+                has_memory = true;
+                memory_summary.alloc_count =
+                    memory_summary.alloc_count.saturating_add(mem.summary.alloc_count);
+                memory_summary.free_count =
+                    memory_summary.free_count.saturating_add(mem.summary.free_count);
+                memory_summary.failed_alloc_count = memory_summary
+                    .failed_alloc_count
+                    .saturating_add(mem.summary.failed_alloc_count);
+                memory_summary.in_use_bytes =
+                    memory_summary.in_use_bytes.saturating_add(mem.summary.in_use_bytes);
+                memory_summary.peak_bytes = memory_summary.peak_bytes.max(mem.summary.peak_bytes);
+                memory_summary.leaked_bytes = memory_summary
+                    .leaked_bytes
+                    .saturating_add(mem.summary.leaked_bytes);
+                memory_summary.leaked_allocs = memory_summary
+                    .leaked_allocs
+                    .saturating_add(mem.summary.leaked_allocs);
+            }
+            if opt.record_trace_to.is_some() {
+                trace_runs.push(run);
+            }
         }
     } else {
         let (tx, rx) = mpsc::channel();
@@ -607,7 +653,32 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
                                     failed += 1;
                                     findings.extend(run.findings.clone());
                                 }
-                                test_runs.push(run);
+                                if let Some(mem) = run.memory.as_ref() {
+                                    has_memory = true;
+                                    memory_summary.alloc_count = memory_summary
+                                        .alloc_count
+                                        .saturating_add(mem.summary.alloc_count);
+                                    memory_summary.free_count = memory_summary
+                                        .free_count
+                                        .saturating_add(mem.summary.free_count);
+                                    memory_summary.failed_alloc_count = memory_summary
+                                        .failed_alloc_count
+                                        .saturating_add(mem.summary.failed_alloc_count);
+                                    memory_summary.in_use_bytes = memory_summary
+                                        .in_use_bytes
+                                        .saturating_add(mem.summary.in_use_bytes);
+                                    memory_summary.peak_bytes =
+                                        memory_summary.peak_bytes.max(mem.summary.peak_bytes);
+                                    memory_summary.leaked_bytes = memory_summary
+                                        .leaked_bytes
+                                        .saturating_add(mem.summary.leaked_bytes);
+                                    memory_summary.leaked_allocs = memory_summary
+                                        .leaked_allocs
+                                        .saturating_add(mem.summary.leaked_allocs);
+                                }
+                                if opt.record_trace_to.is_some() {
+                                    trace_runs.push(run);
+                                }
                             }
                             Err(FozzyError::Scenario(msg))
                                 if msg.contains("use `fozzy explore`") =>
@@ -665,15 +736,19 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             failed,
             skipped,
         }),
-        memory: aggregate_memory_summary(&test_runs),
+        memory: if has_memory {
+            Some(memory_summary)
+        } else {
+            None
+        },
         findings: crate::collapse_findings(findings),
     };
 
-    std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
+    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     if let Some(record_base) = &opt.record_trace_to {
-        write_test_traces(record_base, &test_runs, seed, opt.record_collision)?;
+        write_test_traces(record_base, &trace_runs, seed, opt.record_collision)?;
     }
 
     if matches!(opt.reporter, Reporter::Junit) {
@@ -835,29 +910,29 @@ pub fn run_scenario(
         findings: run.findings.clone(),
     };
 
-    std::fs::write(&report_path, serde_json::to_vec_pretty(&report_summary)?)?;
-    crate::write_run_manifest(&report_summary, &artifacts_dir)?;
-    std::fs::write(
-        artifacts_dir.join("events.json"),
-        serde_json::to_vec_pretty(&run.events)?,
-    )?;
-    crate::write_timeline(&run.events, &artifacts_dir.join("timeline.json"))?;
-    if let Some(mem) = run.memory.as_ref()
-        && opt.memory.artifacts
-    {
-        write_memory_artifacts(mem, &artifacts_dir)?;
+    std::fs::write(&report_path, serde_json::to_vec(&report_summary)?)?;
+    if should_emit_heavy_artifacts(run.status, opt.record_trace_to.is_some()) {
+        std::fs::write(
+            artifacts_dir.join("events.json"),
+            serde_json::to_vec(&run.events)?,
+        )?;
+        crate::write_timeline(&run.events, &artifacts_dir.join("timeline.json"))?;
+        if let Some(mem) = run.memory.as_ref()
+            && opt.memory.artifacts
+        {
+            write_memory_artifacts(mem, &artifacts_dir)?;
+        }
+        let mut profile_trace = TraceFile::new(
+            RunMode::Run,
+            Some(run.scenario_path.to_string_lossy().to_string()),
+            Some(run.scenario_embedded.clone()),
+            run.decisions.decisions.clone(),
+            run.events.clone(),
+            report_summary.clone(),
+        );
+        profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
+        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
-    let mut profile_trace = TraceFile::new(
-        RunMode::Run,
-        Some(run.scenario_path.to_string_lossy().to_string()),
-        Some(run.scenario_embedded.clone()),
-        run.decisions.decisions.clone(),
-        run.events.clone(),
-        report_summary.clone(),
-    );
-    profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    crate::write_run_manifest(&report_summary, &artifacts_dir)?;
 
     if matches!(opt.reporter, Reporter::Junit) {
         std::fs::write(
@@ -894,6 +969,7 @@ pub fn run_scenario(
 
     let mut summary = report_summary;
     summary.identity.trace_path = trace_path.map(|p| p.to_string_lossy().to_string());
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(RunResult { summary })
 }
@@ -1000,30 +1076,29 @@ pub fn replay_trace(
         findings,
     };
 
-    std::fs::write(&report_path, serde_json::to_vec_pretty(&summary)?)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
-    if opt.dump_events {
+    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    if should_emit_heavy_artifacts(run.status, opt.dump_events || opt.step) {
         std::fs::write(
             artifacts_dir.join("events.json"),
-            serde_json::to_vec_pretty(&run.events)?,
+            serde_json::to_vec(&run.events)?,
         )?;
         crate::write_timeline(&run.events, &artifacts_dir.join("timeline.json"))?;
+        if let Some(mem) = run.memory.as_ref()
+            && mem.options.artifacts
+        {
+            write_memory_artifacts(mem, &artifacts_dir)?;
+        }
+        let mut profile_trace = TraceFile::new(
+            RunMode::Replay,
+            Some(scenario_path),
+            Some(scenario),
+            run.decisions.decisions.clone(),
+            run.events.clone(),
+            summary.clone(),
+        );
+        profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
+        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
-    if let Some(mem) = run.memory.as_ref()
-        && mem.options.artifacts
-    {
-        write_memory_artifacts(mem, &artifacts_dir)?;
-    }
-    let mut profile_trace = TraceFile::new(
-        RunMode::Replay,
-        Some(scenario_path),
-        Some(scenario),
-        run.decisions.decisions.clone(),
-        run.events.clone(),
-        summary.clone(),
-    );
-    profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(RunResult { summary })
@@ -1066,9 +1141,8 @@ pub fn shrink_trace(
         let mut improved = false;
         let mut i = 0usize;
         while i < candidate.len() && Instant::now() < deadline {
-            let mut trial = candidate.clone();
-            let end = (i + chunk).min(trial.len());
-            trial.drain(i..end);
+            let end = (i + chunk).min(candidate.len());
+            let trial = remove_step_range(&candidate, i, end);
             if trial.is_empty() {
                 i += chunk;
                 continue;
@@ -1212,6 +1286,16 @@ pub(crate) fn shrink_status_matches(target: ExitStatus, candidate: ExitStatus) -
     }
 }
 
+fn remove_step_range(steps: &[crate::Step], start: usize, end: usize) -> Vec<crate::Step> {
+    let remove_len = end.saturating_sub(start);
+    let mut out = Vec::with_capacity(steps.len().saturating_sub(remove_len));
+    out.extend_from_slice(&steps[..start.min(steps.len())]);
+    if end < steps.len() {
+        out.extend_from_slice(&steps[end..]);
+    }
+    out
+}
+
 pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport> {
     let issues = Vec::new();
     let mut signals = Vec::new();
@@ -1319,31 +1403,18 @@ fn scenario_run_signature(run: &ScenarioRun) -> String {
     blake3::hash(&encoded).to_hex().to_string()
 }
 
-fn aggregate_memory_summary(runs: &[ScenarioRun]) -> Option<crate::MemorySummary> {
-    let mut any = false;
-    let mut out = crate::MemorySummary::default();
-    for run in runs {
-        let Some(mem) = run.memory.as_ref() else {
-            continue;
-        };
-        any = true;
-        out.alloc_count = out.alloc_count.saturating_add(mem.summary.alloc_count);
-        out.free_count = out.free_count.saturating_add(mem.summary.free_count);
-        out.failed_alloc_count = out
-            .failed_alloc_count
-            .saturating_add(mem.summary.failed_alloc_count);
-        out.in_use_bytes = out.in_use_bytes.saturating_add(mem.summary.in_use_bytes);
-        out.peak_bytes = out.peak_bytes.max(mem.summary.peak_bytes);
-        out.leaked_bytes = out.leaked_bytes.saturating_add(mem.summary.leaked_bytes);
-        out.leaked_allocs = out.leaked_allocs.saturating_add(mem.summary.leaked_allocs);
-    }
-    if any { Some(out) } else { None }
-}
-
 fn gen_seed() -> u64 {
     let mut seed = [0u8; 8];
     rand_core::OsRng.fill_bytes(&mut seed);
     u64::from_le_bytes(seed)
+}
+
+fn should_emit_heavy_artifacts(status: ExitStatus, explicit_request: bool) -> bool {
+    explicit_request
+        || status != ExitStatus::Pass
+        || std::env::var("FOZZY_ARTIFACTS_FULL")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 #[derive(Debug, Clone)]
@@ -1465,6 +1536,26 @@ fn run_embedded_scenario_inner(
     }
 
     Ok(ctx.finish(ExitStatus::Pass, scenario_path, scenario))
+}
+
+pub(crate) fn run_embedded_steps_for_fuzz(
+    scenario: &ScenarioV1Steps,
+    scenario_path: &Path,
+    seed: u64,
+    memory: MemoryOptions,
+) -> FozzyResult<(ExitStatus, Vec<Finding>)> {
+    let run = run_embedded_scenario_inner(
+        scenario.clone(),
+        scenario_path.to_path_buf(),
+        seed,
+        true,
+        None,
+        ProcBackend::Scripted,
+        FsBackend::Virtual,
+        HttpBackend::Scripted,
+        memory,
+    )?;
+    Ok((run.status, run.findings))
 }
 
 fn timeout_reached(
@@ -1635,7 +1726,7 @@ struct ExecCtx<'a> {
     host_fs_snapshots: BTreeMap<String, BTreeMap<PathBuf, Option<Vec<u8>>>>,
     http_rules: Vec<HttpRule>,
     proc_rules: Vec<ProcRule>,
-    net_queue: Vec<NetMessage>,
+    net_queue: VecDeque<NetMessage>,
     net_inbox: BTreeMap<String, Vec<NetMessage>>,
     net_partitions: BTreeSet<(String, String)>,
     net_next_id: u64,
@@ -1676,7 +1767,7 @@ impl<'a> ExecCtx<'a> {
             host_fs_snapshots: BTreeMap::new(),
             http_rules: Vec::new(),
             proc_rules: Vec::new(),
-            net_queue: Vec::new(),
+            net_queue: VecDeque::new(),
             net_inbox: BTreeMap::new(),
             net_partitions: BTreeSet::new(),
             net_next_id: 1,
@@ -1881,7 +1972,7 @@ impl<'a> ExecCtx<'a> {
     }
 
     fn host_fs_restore(&mut self, name: &str) -> Result<(), Finding> {
-        let Some(snapshot) = self.host_fs_snapshots.get(name).cloned() else {
+        let Some(snapshot) = self.host_fs_snapshots.get(name) else {
             return Err(Finding {
                 kind: FindingKind::Checker,
                 title: "host_fs_restore_missing_snapshot".to_string(),
@@ -1890,10 +1981,7 @@ impl<'a> ExecCtx<'a> {
             });
         };
 
-        let mut all_paths = self.host_fs_touched.clone();
-        all_paths.extend(snapshot.keys().cloned());
-
-        for path in &all_paths {
+        for path in snapshot.keys() {
             match snapshot.get(path) {
                 Some(Some(bytes)) => {
                     if let Some(parent) = path.parent() {
@@ -1921,6 +2009,20 @@ impl<'a> ExecCtx<'a> {
                         })?;
                     }
                 }
+            }
+        }
+        let snapshot_paths = snapshot.keys().cloned().collect::<BTreeSet<_>>();
+        for path in self.host_fs_touched.iter() {
+            if snapshot_paths.contains(path) {
+                continue;
+            }
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|e| Finding {
+                    kind: FindingKind::Assertion,
+                    title: "host_fs_restore".to_string(),
+                    message: format!("failed to remove restored file {:?}: {e}", path),
+                    location: None,
+                })?;
             }
         }
         self.host_fs_touched = snapshot.keys().cloned().collect();
@@ -2679,11 +2781,19 @@ impl<'a> ExecCtx<'a> {
                 );
                 proc_fields.insert(
                     "stdout".to_string(),
-                    serde_json::Value::String(rule.stdout.clone()),
+                    serde_json::Value::String(truncate_event_text(&rule.stdout)),
                 );
                 proc_fields.insert(
                     "stderr".to_string(),
-                    serde_json::Value::String(rule.stderr.clone()),
+                    serde_json::Value::String(truncate_event_text(&rule.stderr)),
+                );
+                proc_fields.insert(
+                    "stdout_bytes".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(rule.stdout.len() as u64)),
+                );
+                proc_fields.insert(
+                    "stderr_bytes".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(rule.stderr.len() as u64)),
                 );
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
@@ -2759,7 +2869,7 @@ impl<'a> ExecCtx<'a> {
             crate::Step::NetSend { from, to, payload } => {
                 let id = self.net_next_id;
                 self.net_next_id = self.net_next_id.saturating_add(1);
-                self.net_queue.push(NetMessage {
+                self.net_queue.push_back(NetMessage {
                     id,
                     from: from.clone(),
                     to: to.clone(),
@@ -2836,7 +2946,7 @@ impl<'a> ExecCtx<'a> {
                         location: None,
                     });
                 };
-                let msg = self.net_queue.remove(idx);
+                let msg = self.net_queue.remove(idx).expect("queue index exists");
 
                 if let Some(Decision::NetDrop { message_id, .. }) = self.replay_peek()
                     && *message_id != msg.id
@@ -3251,17 +3361,21 @@ impl<'a> ExecCtx<'a> {
     }
 
     fn exec_expect_failure(&mut self, title: &str, steps: &[crate::Step]) -> Result<(), Finding> {
-        let mut shadow = self.clone();
-        shadow.replay = None;
-        shadow.decisions = DecisionLog::default();
-        shadow.events.clear();
-        shadow.findings.clear();
-
+        let replay = self.replay;
+        let checkpoint = self.checkpoint();
+        self.replay = None;
+        self.decisions = DecisionLog::default();
+        self.events.clear();
+        self.findings.clear();
         for s in steps {
-            if shadow.exec_step(s).is_err() {
+            if self.exec_step(s).is_err() {
+                self.restore(checkpoint);
+                self.replay = replay;
                 return Ok(());
             }
         }
+        self.restore(checkpoint);
+        self.replay = replay;
 
         Err(Finding {
             kind: FindingKind::Assertion,
@@ -3278,6 +3392,66 @@ impl<'a> ExecCtx<'a> {
             std::thread::sleep(d);
         }
     }
+
+    fn checkpoint(&self) -> ExecCheckpoint {
+        ExecCheckpoint {
+            rng: self.rng.clone(),
+            clock: self.clock.clone(),
+            kv: self.kv.clone(),
+            fs: self.fs.clone(),
+            fs_snapshots: self.fs_snapshots.clone(),
+            host_fs_touched: self.host_fs_touched.clone(),
+            host_fs_snapshots: self.host_fs_snapshots.clone(),
+            http_rules: self.http_rules.clone(),
+            proc_rules: self.proc_rules.clone(),
+            net_queue: self.net_queue.clone(),
+            net_inbox: self.net_inbox.clone(),
+            net_partitions: self.net_partitions.clone(),
+            net_next_id: self.net_next_id,
+            net_drop_rate: self.net_drop_rate,
+            net_reorder: self.net_reorder,
+            memory: self.memory.clone(),
+        }
+    }
+
+    fn restore(&mut self, checkpoint: ExecCheckpoint) {
+        self.rng = checkpoint.rng;
+        self.clock = checkpoint.clock;
+        self.kv = checkpoint.kv;
+        self.fs = checkpoint.fs;
+        self.fs_snapshots = checkpoint.fs_snapshots;
+        self.host_fs_touched = checkpoint.host_fs_touched;
+        self.host_fs_snapshots = checkpoint.host_fs_snapshots;
+        self.http_rules = checkpoint.http_rules;
+        self.proc_rules = checkpoint.proc_rules;
+        self.net_queue = checkpoint.net_queue;
+        self.net_inbox = checkpoint.net_inbox;
+        self.net_partitions = checkpoint.net_partitions;
+        self.net_next_id = checkpoint.net_next_id;
+        self.net_drop_rate = checkpoint.net_drop_rate;
+        self.net_reorder = checkpoint.net_reorder;
+        self.memory = checkpoint.memory;
+    }
+}
+
+#[derive(Clone)]
+struct ExecCheckpoint {
+    rng: ChaCha20Rng,
+    clock: crate::VirtualClock,
+    kv: BTreeMap<String, String>,
+    fs: BTreeMap<String, String>,
+    fs_snapshots: BTreeMap<String, BTreeMap<String, String>>,
+    host_fs_touched: BTreeSet<PathBuf>,
+    host_fs_snapshots: BTreeMap<String, BTreeMap<PathBuf, Option<Vec<u8>>>>,
+    http_rules: Vec<HttpRule>,
+    proc_rules: Vec<ProcRule>,
+    net_queue: VecDeque<NetMessage>,
+    net_inbox: BTreeMap<String, Vec<NetMessage>>,
+    net_partitions: BTreeSet<(String, String)>,
+    net_next_id: u64,
+    net_drop_rate: f64,
+    net_reorder: bool,
+    memory: MemoryState,
 }
 
 #[derive(Debug, Clone)]
@@ -3544,3 +3718,16 @@ fn duration_to_ms(d: Duration) -> u64 {
 const HOST_PROC_MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 const HOST_PROC_MAX_STDERR_BYTES: usize = 8 * 1024 * 1024;
 const HOST_HTTP_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+const TRACE_EVENT_TEXT_LIMIT_BYTES: usize = 16 * 1024;
+
+fn truncate_event_text(text: &str) -> String {
+    if text.len() <= TRACE_EVENT_TEXT_LIMIT_BYTES {
+        return text.to_string();
+    }
+    let mut out = text
+        .chars()
+        .take(TRACE_EVENT_TEXT_LIMIT_BYTES)
+        .collect::<String>();
+    out.push_str("...[truncated]");
+    out
+}

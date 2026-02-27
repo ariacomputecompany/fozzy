@@ -315,6 +315,7 @@ pub fn map_suites(opt: &MapSuitesOptions) -> FozzyResult<MapSuitesReport> {
     let facts = scan_repo(&opt.root)?;
     let scenario_files = discover_scenarios(&opt.scenario_root)?;
     let scenario_facts = build_scenario_facts(&scenario_files);
+    let coverage_index = ScenarioCoverageIndex::new(&scenario_facts);
     let has_known_shrink_failure = scenario_facts.iter().any(|s| s.has_shrink && s.has_failure);
 
     let effective_min_risk = effective_min_risk(opt.min_risk, opt.profile);
@@ -339,6 +340,7 @@ pub fn map_suites(opt: &MapSuitesOptions) -> FozzyResult<MapSuitesReport> {
             &required_suites,
             &hints,
             &scenario_facts,
+            &coverage_index,
             opt.max_matched_scenarios.max(1),
         );
         let covered_suites = coverage_evidence
@@ -559,6 +561,7 @@ fn covered_suites_for_hotspot(
     required: &[String],
     hints: &[String],
     scenarios: &[ScenarioFact],
+    index: &ScenarioCoverageIndex,
     max_matched_scenarios: usize,
 ) -> Vec<SuiteCoverageEvidence> {
     let hint_tokens = hints
@@ -568,9 +571,10 @@ fn covered_suites_for_hotspot(
 
     let mut out = Vec::new();
     for suite in required {
-        let matches = scenarios
-            .iter()
-            .filter(|s| matches_suite_signal(s, suite.as_str()))
+        let matches = index
+            .candidates(suite)
+            .into_iter()
+            .filter_map(|idx| scenarios.get(*idx))
             .filter(|s| {
                 suite == SUITE_TEST_DET
                     || suite == SUITE_RUN_REPLAY_CI
@@ -616,6 +620,40 @@ fn covered_suites_for_hotspot(
     out
 }
 
+struct ScenarioCoverageIndex {
+    by_suite: BTreeMap<String, Vec<usize>>,
+}
+
+impl ScenarioCoverageIndex {
+    fn new(scenarios: &[ScenarioFact]) -> Self {
+        let mut by_suite: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (idx, s) in scenarios.iter().enumerate() {
+            for suite in [
+                SUITE_TEST_DET,
+                SUITE_RUN_REPLAY_CI,
+                SUITE_FUZZ,
+                SUITE_EXPLORE,
+                SUITE_HOST,
+                SUITE_MEMORY,
+                SUITE_SHRINK_EXERCISED,
+                SUITE_SHRINK_FAILURE,
+            ] {
+                if matches_suite_signal(s, suite) {
+                    by_suite.entry(suite.to_string()).or_default().push(idx);
+                }
+            }
+        }
+        Self { by_suite }
+    }
+
+    fn candidates<'a>(&'a self, suite: &str) -> &'a [usize] {
+        self.by_suite
+            .get(suite)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
 fn matches_suite_signal(s: &ScenarioFact, suite: &str) -> bool {
     match suite {
         SUITE_TEST_DET => true,
@@ -642,8 +680,8 @@ fn scenario_fact(path: &Path) -> FozzyResult<ScenarioFact> {
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let haystack = format!("{} {}", path.to_string_lossy().to_ascii_lowercase(), lower);
-    let tokens = tokenize(&haystack);
+    let mut tokens = tokenize(&lower);
+    tokens.extend(tokenize(&path.to_string_lossy().to_ascii_lowercase()));
 
     let has_explore = name.contains("explore") || lower.contains("\"distributed\"");
     let has_fuzz = name.contains("fuzz") || lower.contains("\"mode\":\"fuzz\"");
