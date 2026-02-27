@@ -23,6 +23,10 @@ pub struct SchemaDoc {
     pub distributed_invariant_schemas: BTreeMap<&'static str, StepSchema>,
     #[serde(rename = "profileOutputSchemas")]
     pub profile_output_schemas: BTreeMap<&'static str, ProfileOutputSchema>,
+    #[serde(rename = "profileArtifactSchemas")]
+    pub profile_artifact_schemas: BTreeMap<&'static str, ProfileArtifactSchema>,
+    #[serde(rename = "profileCompatibilityPolicy")]
+    pub profile_compatibility_policy: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -46,6 +50,18 @@ pub struct StepSchema {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProfileOutputSchema {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: &'static str,
+    #[serde(rename = "requiredFields")]
+    pub required_fields: Vec<&'static str>,
+    #[serde(rename = "optionalFields")]
+    pub optional_fields: Vec<&'static str>,
+    pub example: serde_json::Value,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileArtifactSchema {
     #[serde(rename = "schemaVersion")]
     pub schema_version: &'static str,
     #[serde(rename = "requiredFields")]
@@ -298,7 +314,7 @@ pub fn schema_doc() -> SchemaDoc {
         ProfileOutputSchema {
             schema_version: "fozzy.profile_top.v1",
             required_fields: vec!["schemaVersion", "run", "limit", "metrics", "emptyDomains"],
-            optional_fields: vec!["cpu", "heap", "latency", "io", "sched"],
+            optional_fields: vec!["cpu", "heap", "latency", "io", "sched", "warnings"],
             example: serde_json::json!({
                 "schemaVersion": "fozzy.profile_top.v1",
                 "run": "run-id-or-trace",
@@ -316,7 +332,7 @@ pub fn schema_doc() -> SchemaDoc {
         ProfileOutputSchema {
             schema_version: "fozzy.profile_diff.v1",
             required_fields: vec!["schemaVersion", "left", "right", "domains", "regressions"],
-            optional_fields: vec![],
+            optional_fields: vec!["warnings"],
             example: serde_json::json!({
                 "schemaVersion":"fozzy.profile_diff.v1",
                 "left":"left-run",
@@ -371,7 +387,7 @@ pub fn schema_doc() -> SchemaDoc {
         ProfileOutputSchema {
             schema_version: "fozzy.profile_export_result.v1",
             required_fields: vec!["schemaVersion", "run", "format", "out"],
-            optional_fields: vec![],
+            optional_fields: vec!["warnings"],
             example: serde_json::json!({
                 "schemaVersion":"fozzy.profile_export_result.v1",
                 "run":"run-id-or-trace",
@@ -451,8 +467,175 @@ pub fn schema_doc() -> SchemaDoc {
         },
     );
 
+    let mut profile_artifact_schemas = BTreeMap::<&'static str, ProfileArtifactSchema>::new();
+    profile_artifact_schemas.insert(
+        "profile.timeline.json",
+        ProfileArtifactSchema {
+            schema_version: "fozzy.profile_timeline_artifact.v2",
+            required_fields: vec!["schemaVersion", "runId", "events"],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_timeline_artifact.v2",
+                "runId":"run-id",
+                "events":[
+                    {
+                        "t_virtual":1,
+                        "t_mono":0,
+                        "kind":"event",
+                        "run_id":"run-id",
+                        "seed":7,
+                        "thread":"main",
+                        "task":"step",
+                        "span_id":"e-0",
+                        "parent_span_id":null,
+                        "tags":{"name":"trace_event"},
+                        "cost":{"duration_ms":1,"bytes":null,"count":1}
+                    }
+                ]
+            }),
+            notes: "Canonical event model with stable event ordering and explicit event-kind taxonomy."
+                .to_string(),
+        },
+    );
+    profile_artifact_schemas.insert(
+        "profile.cpu.json",
+        ProfileArtifactSchema {
+            schema_version: "fozzy.profile_cpu.v1",
+            required_fields: vec![
+                "schemaVersion",
+                "runId",
+                "collector",
+                "samplePeriodMs",
+                "sampleCount",
+                "samples",
+                "foldedStacks",
+                "symbolsRef",
+            ],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_cpu.v1",
+                "runId":"run-id",
+                "collector":{"domain":"host_time"},
+                "samplePeriodMs":1,
+                "sampleCount":1,
+                "samples":[{"thread":"main","stack":["fozzy::runtime"],"weightMs":1}],
+                "foldedStacks":[{"stack":"fozzy::runtime","weight":1}],
+                "symbolsRef":"symbols.json"
+            }),
+            notes: "CPU profile payload; folded stacks are deterministically sorted."
+                .to_string(),
+        },
+    );
+    profile_artifact_schemas.insert(
+        "profile.heap.json",
+        ProfileArtifactSchema {
+            schema_version: "fozzy.profile_heap.v1",
+            required_fields: vec![
+                "schemaVersion",
+                "runId",
+                "totalAllocBytes",
+                "inUseBytes",
+                "allocRatePerSec",
+                "hotspots",
+                "lifetimeHistogram",
+                "retentionSuspects",
+            ],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_heap.v1",
+                "runId":"run-id",
+                "totalAllocBytes":0,
+                "inUseBytes":0,
+                "allocRatePerSec":0.0,
+                "hotspots":[],
+                "lifetimeHistogram":[],
+                "retentionSuspects":[]
+            }),
+            notes: "Heap profile payload; hotspots and suspects are deterministically ordered."
+                .to_string(),
+        },
+    );
+    profile_artifact_schemas.insert(
+        "profile.latency.json",
+        ProfileArtifactSchema {
+            schema_version: "fozzy.profile_latency.v1",
+            required_fields: vec![
+                "schemaVersion",
+                "runId",
+                "distribution",
+                "criticalPath",
+                "waitReasons",
+            ],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_latency.v1",
+                "runId":"run-id",
+                "distribution":{"count":0,"p50Ms":0,"p95Ms":0,"p99Ms":0,"maxMs":0,"variance":0.0},
+                "criticalPath":[],
+                "waitReasons":[]
+            }),
+            notes: "Latency profile payload; critical path rows are deterministically sorted."
+                .to_string(),
+        },
+    );
+    profile_artifact_schemas.insert(
+        "profile.metrics.json",
+        ProfileArtifactSchema {
+            schema_version: "fozzy.profile_metrics.v1",
+            required_fields: vec![
+                "schemaVersion",
+                "runId",
+                "virtualTimeMs",
+                "hostTimeMs",
+                "cpuTimeMs",
+                "allocBytes",
+                "inUseBytes",
+                "p50LatencyMs",
+                "p95LatencyMs",
+                "p99LatencyMs",
+                "maxLatencyMs",
+                "ioOps",
+                "schedOps",
+            ],
+            optional_fields: vec!["confidence"],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_metrics.v1",
+                "runId":"run-id",
+                "virtualTimeMs":1,
+                "hostTimeMs":1,
+                "cpuTimeMs":1,
+                "allocBytes":0,
+                "inUseBytes":0,
+                "p50LatencyMs":0,
+                "p95LatencyMs":0,
+                "p99LatencyMs":0,
+                "maxLatencyMs":0,
+                "ioOps":0,
+                "schedOps":0,
+                "confidence":0.8
+            }),
+            notes: "Aggregate metrics consumed by top/diff/explain/shrink flows."
+                .to_string(),
+        },
+    );
+    profile_artifact_schemas.insert(
+        "symbols.json",
+        ProfileArtifactSchema {
+            schema_version: "fozzy.profile_symbols.v1",
+            required_fields: vec!["schemaVersion", "runId", "modules"],
+            optional_fields: vec![],
+            example: serde_json::json!({
+                "schemaVersion":"fozzy.profile_symbols.v1",
+                "runId":"run-id",
+                "modules":[{"name":"fozzy-runtime","buildId":"0.1.0-dev","symbols":["trace_event"]}]
+            }),
+            notes: "Symbol map for profile exports; module/symbol lists are deterministically ordered."
+                .to_string(),
+        },
+    );
+
     SchemaDoc {
-        schema_version: "fozzy.schema_doc.v3".to_string(),
+        schema_version: "fozzy.schema_doc.v4".to_string(),
         file_variants: vec![
             FileVariant {
                 name: "steps",
@@ -501,5 +684,7 @@ pub fn schema_doc() -> SchemaDoc {
         distributed_step_schemas,
         distributed_invariant_schemas,
         profile_output_schemas,
+        profile_artifact_schemas,
+        profile_compatibility_policy: "No backwards compatibility: profiler artifact consumers must require exact schemaVersion matches and reject unknown/older versions in production.".to_string(),
     }
 }

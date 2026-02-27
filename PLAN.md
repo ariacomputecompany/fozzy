@@ -318,17 +318,17 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 #### M13.2 Unified Profiler Data Model + Artifact Set (Schema-First)
 - ✅ Extend run artifact manifest with profiler capability + artifact pointers:
   - ✅ `manifest.json` entries for profiler domains and schema versions.
-- ⬜ Upgrade timeline schema to a canonical event model with stable ordering:
-  - ⬜ Required fields: `t_virtual`, `t_mono` (optional), `kind`, `run_id`, `seed`, `thread`, `task`, `span_id`, `parent_span_id`, `tags`, `cost`.
-  - ⬜ Event kinds: `span_start`, `span_end`, `event`, `sample`, `alloc`, `free`, `io`, `net`, `sched`.
-- ⬜ Add profiler artifacts (versioned, deterministic ordering where applicable):
-  - ⬜ `profile.cpu.json` (sampling + folded stacks + symbol refs)
-  - ⬜ `profile.heap.json` (allocation hotspots/lifetimes/retention suspects)
-  - ⬜ `profile.latency.json` (distributions + critical path + wait reasons)
-  - ⬜ `profile.metrics.json` (aggregates used by `top`, `diff`, `explain`)
-  - ⬜ `symbols.json` (or build-id reference map)
-- ⬜ Integrate all profiler artifacts with `fozzy artifacts ls|diff|export|pack|bundle`.
-- ⬜ Publish schema docs for all profiler artifacts with compatibility policy matching trace/manifest conventions.
+- ✅ Upgrade timeline schema to a canonical event model with stable ordering:
+  - ✅ Required fields: `t_virtual`, `t_mono` (optional), `kind`, `run_id`, `seed`, `thread`, `task`, `span_id`, `parent_span_id`, `tags`, `cost`.
+  - ✅ Event kinds: `span_start`, `span_end`, `event`, `sample`, `alloc`, `free`, `io`, `net`, `sched`.
+- ✅ Add profiler artifacts (versioned, deterministic ordering where applicable):
+  - ✅ `profile.cpu.json` (sampling + folded stacks + symbol refs)
+  - ✅ `profile.heap.json` (allocation hotspots/lifetimes/retention suspects)
+  - ✅ `profile.latency.json` (distributions + critical path + wait reasons)
+  - ✅ `profile.metrics.json` (aggregates used by `top`, `diff`, `explain`)
+  - ✅ `symbols.json` (or build-id reference map)
+- ✅ Integrate all profiler artifacts with `fozzy artifacts ls|diff|export|pack|bundle`.
+- ✅ Publish schema docs for all profiler artifacts with compatibility policy matching trace/manifest conventions.
 
 #### M13.3 Mode A: Deterministic Event Tracing Profiler (Always-On Baseline)
 - ✅ Reuse existing trace/timeline capture path as baseline profiler channel (lowest overhead mode).

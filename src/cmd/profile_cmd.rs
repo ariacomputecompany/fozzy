@@ -290,6 +290,15 @@ pub struct ProfileEvent {
     pub cost: ProfileCost,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileTimelineArtifact {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: String,
+    #[serde(rename = "runId")]
+    pub run_id: String,
+    pub events: Vec<ProfileEvent>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProfileCost {
     #[serde(rename = "duration_ms", skip_serializing_if = "Option::is_none")]
@@ -1029,7 +1038,14 @@ pub fn write_profile_artifacts_from_trace(
     let symbols = build_symbols_map(trace, &timeline);
     let metrics = build_profile_metrics(trace, &timeline, &cpu, &heap, &latency);
 
-    write_json(&artifacts_dir.join("profile.timeline.json"), &timeline)?;
+    write_json(
+        &artifacts_dir.join("profile.timeline.json"),
+        &ProfileTimelineArtifact {
+            schema_version: "fozzy.profile_timeline_artifact.v2".to_string(),
+            run_id: trace.summary.identity.run_id.clone(),
+            events: timeline,
+        },
+    )?;
     write_json(&artifacts_dir.join("profile.cpu.json"), &cpu)?;
     write_json(&artifacts_dir.join("profile.heap.json"), &heap)?;
     write_json(&artifacts_dir.join("profile.latency.json"), &latency)?;
@@ -1058,9 +1074,12 @@ fn load_profile_bundle(
     let metrics: ProfileMetrics =
         serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.metrics.json"))?)?;
     let timeline = if spec.timeline {
-        Some(serde_json::from_slice(&std::fs::read(
-            artifacts_dir.join("profile.timeline.json"),
-        )?)?)
+        Some(
+            serde_json::from_slice::<ProfileTimelineArtifact>(&std::fs::read(
+                artifacts_dir.join("profile.timeline.json"),
+            )?)?
+            .events,
+        )
     } else {
         None
     };
@@ -1170,6 +1189,9 @@ fn build_profile_timeline(trace: &TraceFile) -> Vec<ProfileEvent> {
 
 fn map_event_kind(name: &str) -> ProfileEventKind {
     match name {
+        "span_start" => ProfileEventKind::SpanStart,
+        "span_end" => ProfileEventKind::SpanEnd,
+        "sample" => ProfileEventKind::Sample,
         "memory_alloc" => ProfileEventKind::Alloc,
         "memory_free" => ProfileEventKind::Free,
         "http_request" | "proc_spawn" => ProfileEventKind::Io,

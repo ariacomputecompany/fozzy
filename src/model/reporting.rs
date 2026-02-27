@@ -290,6 +290,12 @@ pub struct RunManifest {
         default
     )]
     pub profile_artifacts: std::collections::BTreeMap<String, String>,
+    #[serde(
+        rename = "profileSchemaVersions",
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        default
+    )]
+    pub profile_schema_versions: std::collections::BTreeMap<String, String>,
 }
 
 pub fn write_run_manifest(
@@ -299,6 +305,7 @@ pub fn write_run_manifest(
     std::fs::create_dir_all(artifacts_dir)?;
     let mut profile_capabilities = Vec::new();
     let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut profile_schema_versions = std::collections::BTreeMap::new();
     for (capability, file_name) in [
         ("timeline", "profile.timeline.json"),
         ("cpu", "profile.cpu.json"),
@@ -311,6 +318,9 @@ pub fn write_run_manifest(
         if path.exists() {
             profile_capabilities.push(capability.to_string());
             profile_artifacts.insert(capability.to_string(), path.to_string_lossy().to_string());
+            if let Ok(Some(schema_version)) = profile_schema_version(&path) {
+                profile_schema_versions.insert(capability.to_string(), schema_version);
+            }
         }
     }
     let manifest = RunManifest {
@@ -335,10 +345,23 @@ pub fn write_run_manifest(
         memory_peak_bytes: summary.memory.as_ref().map(|m| m.peak_bytes),
         profile_capabilities,
         profile_artifacts,
+        profile_schema_versions,
     };
     let out = artifacts_dir.join("manifest.json");
     std::fs::write(&out, serde_json::to_vec_pretty(&manifest)?)?;
     Ok(out)
+}
+
+fn profile_schema_version(path: &Path) -> crate::FozzyResult<Option<String>> {
+    let bytes = std::fs::read(path)?;
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    Ok(value
+        .get("schemaVersion")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string))
 }
 
 pub fn duration_fields(elapsed: Duration) -> (u64, u64) {

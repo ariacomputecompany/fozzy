@@ -261,7 +261,7 @@ Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
 Resolution order for `<run-id|trace>`: direct `*.fozzy` path, then `.fozzy/runs/<selector>/trace.fozzy`, then `tracePath` from `report.json`, then `tracePath` from `manifest.json`, then existing profile artifacts in run dir.
 `fozzy profile shrink` returns `status=no_feasible_shrink_found` (non-error) when a contract-preserving shrink is impossible.
 `fozzy profile top` and `fozzy profile flame` include explicit empty-domain markers/reasons.
-`fozzy schema --json` includes `profileOutputSchemas` for stable profile command output contracts.
+`fozzy schema --json` includes `profileOutputSchemas`, `profileArtifactSchemas`, and `profileCompatibilityPolicy` for stable profiler command + artifact contracts.
 For race-sensitive CI automation, prefer explicit `runId` or trace paths over aliases.
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
