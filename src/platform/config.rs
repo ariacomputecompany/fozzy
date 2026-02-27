@@ -58,6 +58,14 @@ pub struct Config {
     /// Emit dedicated memory artifacts.
     #[serde(default = "default_mem_artifacts")]
     pub mem_artifacts: bool,
+
+    /// Optional heap total-allocation budget in bytes (profile-derived).
+    #[serde(default)]
+    pub profile_heap_alloc_budget: Option<u64>,
+
+    /// Optional heap in-use budget in bytes (profile-derived).
+    #[serde(default)]
+    pub profile_heap_in_use_budget: Option<u64>,
 }
 
 fn default_base_dir() -> PathBuf {
@@ -104,6 +112,8 @@ impl Default for Config {
             mem_fragmentation_seed: None,
             mem_pressure_wave: None,
             mem_artifacts: default_mem_artifacts(),
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
         }
     }
 }

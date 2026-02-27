@@ -14,13 +14,13 @@ use std::time::{Duration, Instant};
 
 use crate::{
     Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, MemoryOptions,
-    MemoryRunReport, MemoryState, Reporter, RunIdentity, RunMode, RunSummary, Scenario,
-    ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc,
-    write_memory_artifacts, write_memory_delta_artifact, write_profile_artifacts_from_trace,
-    write_trace_with_policy,
+    MemoryRunReport, MemoryState, Reporter, RunIdentity, RunMode, RunSummary, Scenario, ScenarioPath,
+    ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc, write_memory_artifacts,
+    write_memory_delta_artifact, write_profile_artifacts_from_trace, write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
+use crate::{HeapBudgetPolicy, heap_budget_findings_from_trace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -272,6 +272,13 @@ pub struct RunResult {
 pub struct ShrinkResult {
     pub out_trace_path: String,
     pub result: RunResult,
+}
+
+fn heap_budget_policy(config: &Config) -> HeapBudgetPolicy {
+    HeapBudgetPolicy {
+        alloc_bytes_budget: config.profile_heap_alloc_budget,
+        in_use_bytes_budget: config.profile_heap_in_use_budget,
+    }
 }
 
 pub fn init_project(
@@ -891,7 +898,7 @@ pub fn run_scenario(
     let report_path = artifacts_dir.join("report.json");
     let mut trace_path: Option<PathBuf> = None;
 
-    let report_summary = RunSummary {
+    let mut report_summary = RunSummary {
         status: run.status,
         mode: RunMode::Run,
         identity: RunIdentity {
@@ -909,6 +916,20 @@ pub fn run_scenario(
         memory: run.memory.as_ref().map(|m| m.summary.clone()),
         findings: run.findings.clone(),
     };
+    let mut profile_trace = TraceFile::new(
+        RunMode::Run,
+        Some(run.scenario_path.to_string_lossy().to_string()),
+        Some(run.scenario_embedded.clone()),
+        run.decisions.decisions.clone(),
+        run.events.clone(),
+        report_summary.clone(),
+    );
+    profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
+    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    if !heap_findings.is_empty() {
+        report_summary.findings.extend(heap_findings);
+        report_summary.findings = crate::collapse_findings(report_summary.findings.clone());
+    }
 
     std::fs::write(&report_path, serde_json::to_vec(&report_summary)?)?;
     if should_emit_heavy_artifacts(run.status, opt.record_trace_to.is_some()) {
@@ -922,15 +943,7 @@ pub fn run_scenario(
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
-        let mut profile_trace = TraceFile::new(
-            RunMode::Run,
-            Some(run.scenario_path.to_string_lossy().to_string()),
-            Some(run.scenario_embedded.clone()),
-            run.decisions.decisions.clone(),
-            run.events.clone(),
-            report_summary.clone(),
-        );
-        profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
+        profile_trace.summary = report_summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
 
@@ -1057,7 +1070,7 @@ pub fn replay_trace(
         });
     }
 
-    let summary = RunSummary {
+    let mut summary = RunSummary {
         status: run.status,
         mode: RunMode::Replay,
         identity: RunIdentity {
@@ -1075,6 +1088,20 @@ pub fn replay_trace(
         memory: run.memory.as_ref().map(|m| m.summary.clone()),
         findings,
     };
+    let mut profile_trace = TraceFile::new(
+        RunMode::Replay,
+        Some(scenario_path.clone()),
+        Some(scenario.clone()),
+        run.decisions.decisions.clone(),
+        run.events.clone(),
+        summary.clone(),
+    );
+    profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
+    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    if !heap_findings.is_empty() {
+        summary.findings.extend(heap_findings);
+        summary.findings = crate::collapse_findings(summary.findings.clone());
+    }
 
     std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
     if should_emit_heavy_artifacts(run.status, opt.dump_events || opt.step) {
@@ -1088,15 +1115,7 @@ pub fn replay_trace(
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
-        let mut profile_trace = TraceFile::new(
-            RunMode::Replay,
-            Some(scenario_path),
-            Some(scenario),
-            run.decisions.decisions.clone(),
-            run.events.clone(),
-            summary.clone(),
-        );
-        profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
+        profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
     crate::write_run_manifest(&summary, &artifacts_dir)?;

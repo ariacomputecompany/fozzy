@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use crate::{
-    Config, FozzyError, FozzyResult, RunManifest, RunSummary, ShrinkMinimize, ShrinkOptions,
-    TraceFile, TracePath, resolve_artifacts_dir, shrink_trace,
+    Config, Finding, FindingKind, FozzyError, FozzyResult, RunManifest, RunSummary, ShrinkMinimize,
+    ShrinkOptions, TraceFile, TracePath, resolve_artifacts_dir, shrink_trace,
 };
 
 const RUN_OR_TRACE_HELP: &str =
@@ -421,6 +421,8 @@ pub struct HeapCallsite {
     pub alloc_bytes: u64,
     #[serde(rename = "inUseBytes")]
     pub in_use_bytes: u64,
+    #[serde(rename = "allocRatePerSec")]
+    pub alloc_rate_per_sec: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,6 +440,16 @@ pub struct RetentionSuspect {
     pub bytes: u64,
     #[serde(rename = "ageMs")]
     pub age_ms: u64,
+    #[serde(rename = "graphAnchor")]
+    pub graph_anchor: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HeapBudgetPolicy {
+    #[serde(rename = "allocBytesBudget", skip_serializing_if = "Option::is_none")]
+    pub alloc_bytes_budget: Option<u64>,
+    #[serde(rename = "inUseBytesBudget", skip_serializing_if = "Option::is_none")]
+    pub in_use_bytes_budget: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -815,15 +827,37 @@ pub fn profile_command(
             if domains.iter().any(|d| d == "cpu") {
                 enforce_cpu_contract(strict, true)?;
             }
-            let l = match load_profile_bundle(config, left, ProfileLoadSpec::default()) {
+            let l = match load_profile_bundle(
+                config,
+                left,
+                ProfileLoadSpec {
+                    heap: domains.iter().any(|d| d == "heap"),
+                    ..ProfileLoadSpec::default()
+                },
+            ) {
                 Ok(v) => v,
                 Err(err) => return profile_contract_or_error(strict, "diff", left, err),
             };
-            let r = match load_profile_bundle(config, right, ProfileLoadSpec::default()) {
+            let r = match load_profile_bundle(
+                config,
+                right,
+                ProfileLoadSpec {
+                    heap: domains.iter().any(|d| d == "heap"),
+                    ..ProfileLoadSpec::default()
+                },
+            ) {
                 Ok(v) => v,
                 Err(err) => return profile_contract_or_error(strict, "diff", right, err),
             };
-            let diff = compute_diff(left, right, &domains, &l.metrics, &r.metrics);
+            let diff = compute_diff(
+                left,
+                right,
+                &domains,
+                &l.metrics,
+                &r.metrics,
+                l.heap.as_ref(),
+                r.heap.as_ref(),
+            );
             let mut out = serde_json::to_value(diff)?;
             if let Some(warn) = relaxed_cpu_warning(strict, domains.iter().any(|d| d == "cpu"))
                 && let Some(obj) = out.as_object_mut()
@@ -1429,6 +1463,7 @@ fn build_heap_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> HeapProfi
                 alloc_count: 0,
                 alloc_bytes: 0,
                 in_use_bytes: 0,
+                alloc_rate_per_sec: 0.0,
             });
         entry.alloc_count = entry.alloc_count.saturating_add(1);
         entry.alloc_bytes = entry.alloc_bytes.saturating_add(alloc.bytes);
@@ -1456,6 +1491,7 @@ fn build_heap_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> HeapProfi
             callsite_hash: alloc.callsite_hash.clone(),
             bytes: alloc.bytes,
             age_ms: age,
+            graph_anchor: format!("alloc:{alloc_id}"),
         });
     }
     suspects.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| b.age_ms.cmp(&a.age_ms)));
@@ -1484,6 +1520,9 @@ fn build_heap_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> HeapProfi
         .fold(0u64, |acc, a| acc.saturating_add(a.bytes));
     let span_s = (end_t.max(1) as f64) / 1000.0;
     let alloc_rate_per_sec = (total_alloc_bytes as f64) / span_s;
+    for callsite in &mut hotspot_list {
+        callsite.alloc_rate_per_sec = (callsite.alloc_bytes as f64) / span_s;
+    }
 
     let trace_memory_in_use = trace
         .memory
@@ -1492,7 +1531,7 @@ fn build_heap_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> HeapProfi
         .unwrap_or(0);
 
     HeapProfile {
-        schema_version: "fozzy.profile_heap.v1".to_string(),
+        schema_version: "fozzy.profile_heap.v2".to_string(),
         run_id: trace.summary.identity.run_id.clone(),
         total_alloc_bytes,
         in_use_bytes: in_use_bytes.max(trace_memory_in_use),
@@ -1583,6 +1622,45 @@ fn build_latency_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> Latenc
         critical_path,
         wait_reasons,
     }
+}
+
+pub fn heap_budget_findings_from_trace(
+    trace: &TraceFile,
+    policy: &HeapBudgetPolicy,
+) -> Vec<Finding> {
+    let mut findings = Vec::<Finding>::new();
+    if policy.alloc_bytes_budget.is_none() && policy.in_use_bytes_budget.is_none() {
+        return findings;
+    }
+    let timeline = build_profile_timeline(trace);
+    let heap = build_heap_profile(trace, &timeline);
+    if let Some(budget) = policy.alloc_bytes_budget
+        && heap.total_alloc_bytes > budget
+    {
+        findings.push(Finding {
+            kind: FindingKind::Checker,
+            title: "heap_alloc_budget".to_string(),
+            message: format!(
+                "heap allocation budget exceeded: alloc_bytes={} budget_bytes={}",
+                heap.total_alloc_bytes, budget
+            ),
+            location: None,
+        });
+    }
+    if let Some(budget) = policy.in_use_bytes_budget
+        && heap.in_use_bytes > budget
+    {
+        findings.push(Finding {
+            kind: FindingKind::Checker,
+            title: "heap_in_use_budget".to_string(),
+            message: format!(
+                "heap in-use budget exceeded: in_use_bytes={} budget_bytes={}",
+                heap.in_use_bytes, budget
+            ),
+            location: None,
+        });
+    }
+    findings
 }
 
 fn build_symbols_map(trace: &TraceFile, timeline: &[ProfileEvent], cpu: &CpuProfile) -> SymbolsMap {
@@ -1831,6 +1909,8 @@ fn compute_diff(
     domains: &[String],
     l: &ProfileMetrics,
     r: &ProfileMetrics,
+    l_heap: Option<&HeapProfile>,
+    r_heap: Option<&HeapProfile>,
 ) -> ProfileDiff {
     let mut regressions = Vec::<RegressionFinding>::new();
 
@@ -1879,6 +1959,11 @@ fn compute_diff(
                 confidence: 0.8,
             });
         }
+        if domain == "heap"
+            && let (Some(left_heap), Some(right_heap)) = (l_heap, r_heap)
+        {
+            regressions.extend(heap_callsite_regressions(left_heap, right_heap));
+        }
     }
 
     regressions.sort_by(|a, b| {
@@ -1896,6 +1981,64 @@ fn compute_diff(
         domains: domains.to_vec(),
         regressions,
     }
+}
+
+fn heap_callsite_regressions(left: &HeapProfile, right: &HeapProfile) -> Vec<RegressionFinding> {
+    let mut left_map = BTreeMap::<String, &HeapCallsite>::new();
+    let mut right_map = BTreeMap::<String, &HeapCallsite>::new();
+    for callsite in &left.hotspots {
+        left_map.insert(callsite.callsite_hash.clone(), callsite);
+    }
+    for callsite in &right.hotspots {
+        right_map.insert(callsite.callsite_hash.clone(), callsite);
+    }
+    let mut keys = BTreeSet::<String>::new();
+    keys.extend(left_map.keys().cloned());
+    keys.extend(right_map.keys().cloned());
+
+    let mut out = Vec::<RegressionFinding>::new();
+    for hash in keys {
+        let l = left_map.get(&hash).copied();
+        let r = right_map.get(&hash).copied();
+        let pairs = [
+            (
+                format!("callsite:{hash}.alloc_bytes"),
+                l.map(|v| v.alloc_bytes as f64).unwrap_or(0.0),
+                r.map(|v| v.alloc_bytes as f64).unwrap_or(0.0),
+            ),
+            (
+                format!("callsite:{hash}.in_use_bytes"),
+                l.map(|v| v.in_use_bytes as f64).unwrap_or(0.0),
+                r.map(|v| v.in_use_bytes as f64).unwrap_or(0.0),
+            ),
+            (
+                format!("callsite:{hash}.alloc_rate_per_sec"),
+                l.map(|v| v.alloc_rate_per_sec).unwrap_or(0.0),
+                r.map(|v| v.alloc_rate_per_sec).unwrap_or(0.0),
+            ),
+        ];
+        for (metric, lv, rv) in pairs {
+            let delta = rv - lv;
+            if delta.abs() < f64::EPSILON {
+                continue;
+            }
+            let delta_pct = if lv.abs() < f64::EPSILON {
+                100.0
+            } else {
+                (delta / lv) * 100.0
+            };
+            out.push(RegressionFinding {
+                domain: "heap".to_string(),
+                metric,
+                left_value: lv,
+                right_value: rv,
+                delta,
+                delta_pct,
+                confidence: 0.8,
+            });
+        }
+    }
+    out
 }
 
 fn explain_single(
@@ -1957,6 +2100,8 @@ fn explain_from_diff(
         ],
         l,
         r,
+        None,
+        None,
     );
     let top = diff.regressions.first();
     let (statement, path, domain) = if let Some(top) = top {
@@ -2197,6 +2342,8 @@ fn profile_doctor(
         &["cpu".to_string(), "heap".to_string(), "latency".to_string()],
         &bundle.metrics,
         &bundle.metrics,
+        bundle.heap.as_ref(),
+        bundle.heap.as_ref(),
     );
     checks.push(serde_json::json!({
         "name": "diff",
@@ -2698,6 +2845,8 @@ mod tests {
             &["latency".to_string(), "heap".to_string()],
             &metrics,
             &metrics,
+            Some(&heap),
+            Some(&heap),
         );
         let diff_b = compute_diff(
             "a",
@@ -2705,6 +2854,8 @@ mod tests {
             &["latency".to_string(), "heap".to_string()],
             &metrics,
             &metrics,
+            Some(&heap),
+            Some(&heap),
         );
         assert_eq!(
             serde_json::to_string(&diff_a).expect("json"),
@@ -2944,6 +3095,65 @@ mod tests {
         };
         let out = profile_command(&cfg, &cmd, true).expect("top");
         assert!(out.get("cpu").is_some(), "cpu domain should be available in strict mode");
+    }
+
+    #[test]
+    fn heap_budget_findings_emitted() {
+        let trace = sample_trace();
+        let findings = heap_budget_findings_from_trace(
+            &trace,
+            &HeapBudgetPolicy {
+                alloc_bytes_budget: Some(32),
+                in_use_bytes_budget: Some(0),
+            },
+        );
+        assert!(
+            findings.iter().any(|f| f.title == "heap_alloc_budget"),
+            "expected heap_alloc_budget finding"
+        );
+    }
+
+    #[test]
+    fn heap_diff_includes_callsite_metrics() {
+        let left = sample_trace();
+        let mut right = sample_trace();
+        if let Some(event) = right.events.get_mut(1) {
+            event
+                .fields
+                .insert("bytes".to_string(), serde_json::json!(256u64));
+        }
+        let left_timeline = build_profile_timeline(&left);
+        let right_timeline = build_profile_timeline(&right);
+        let left_cpu = build_cpu_profile(&left, &left_timeline);
+        let right_cpu = build_cpu_profile(&right, &right_timeline);
+        let left_heap = build_heap_profile(&left, &left_timeline);
+        let right_heap = build_heap_profile(&right, &right_timeline);
+        let left_latency = build_latency_profile(&left, &left_timeline);
+        let right_latency = build_latency_profile(&right, &right_timeline);
+        let left_metrics =
+            build_profile_metrics(&left, &left_timeline, &left_cpu, &left_heap, &left_latency);
+        let right_metrics = build_profile_metrics(
+            &right,
+            &right_timeline,
+            &right_cpu,
+            &right_heap,
+            &right_latency,
+        );
+        let diff = compute_diff(
+            "left",
+            "right",
+            &["heap".to_string()],
+            &left_metrics,
+            &right_metrics,
+            Some(&left_heap),
+            Some(&right_heap),
+        );
+        assert!(
+            diff.regressions
+                .iter()
+                .any(|r| r.metric.contains("callsite:") && r.metric.contains("alloc_bytes")),
+            "expected callsite alloc_bytes regression"
+        );
     }
 
     #[test]

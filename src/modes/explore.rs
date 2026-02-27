@@ -13,11 +13,12 @@ use crate::{
     Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind,
     MemoryRunReport, MemoryState, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
     RunSummary, ScenarioFile, ScenarioPath, ScenarioV1Distributed, TraceEvent, TraceFile,
-    wall_time_iso_utc,
-    write_memory_artifacts, write_profile_artifacts_from_trace, write_trace_with_policy,
+    wall_time_iso_utc, write_memory_artifacts, write_profile_artifacts_from_trace,
+    write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
+use crate::{HeapBudgetPolicy, heap_budget_findings_from_trace};
 
 type ExploreExecResult = (
     ExitStatus,
@@ -26,6 +27,13 @@ type ExploreExecResult = (
     u64,
     Vec<crate::Decision>,
 );
+
+fn heap_budget_policy(config: &Config) -> HeapBudgetPolicy {
+    HeapBudgetPolicy {
+        alloc_bytes_budget: config.profile_heap_alloc_budget,
+        in_use_bytes_budget: config.profile_heap_in_use_budget,
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -183,6 +191,22 @@ pub fn explore(
         memory: memory_report.as_ref().map(|m| m.summary.clone()),
         findings: findings.clone(),
     };
+    let mut profile_trace = TraceFile::new_explore(
+        ExploreTrace {
+            scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
+            scenario: scenario.clone(),
+            schedule: opt.schedule,
+        },
+        decisions.clone(),
+        events.clone(),
+        summary.clone(),
+    );
+    profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    if !heap_findings.is_empty() {
+        summary.findings.extend(heap_findings);
+        summary.findings = crate::collapse_findings(summary.findings.clone());
+    }
 
     std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
 
@@ -228,17 +252,7 @@ pub fn explore(
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
-        let mut profile_trace = TraceFile::new_explore(
-            ExploreTrace {
-                scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
-                scenario: scenario.clone(),
-                schedule: opt.schedule,
-            },
-            decisions.clone(),
-            events.clone(),
-            summary.clone(),
-        );
-        profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+        profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
     crate::write_run_manifest(&summary, &artifacts_dir)?;
@@ -280,7 +294,7 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         });
     }
 
-    let summary = RunSummary {
+    let mut summary = RunSummary {
         status,
         mode: RunMode::Replay,
         identity: RunIdentity {
@@ -298,6 +312,18 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         memory: trace.memory.as_ref().map(|m| m.summary.clone()),
         findings,
     };
+    let mut profile_trace = TraceFile::new_explore(
+        explore.clone(),
+        trace.decisions.clone(),
+        events.clone(),
+        summary.clone(),
+    );
+    profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    if !heap_findings.is_empty() {
+        summary.findings.extend(heap_findings);
+        summary.findings = crate::collapse_findings(summary.findings.clone());
+    }
 
     std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
     if should_emit_heavy_artifacts(status, true) {
@@ -308,13 +334,7 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
-        let mut profile_trace = TraceFile::new_explore(
-            explore.clone(),
-            trace.decisions.clone(),
-            events.clone(),
-            summary.clone(),
-        );
-        profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+        profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
     crate::write_run_manifest(&summary, &artifacts_dir)?;

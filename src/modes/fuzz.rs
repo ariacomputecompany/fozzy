@@ -21,8 +21,16 @@ use crate::{
 };
 
 use crate::{FozzyError, FozzyResult};
+use crate::{HeapBudgetPolicy, heap_budget_findings_from_trace};
 
 type LastExec = (Vec<u8>, Vec<TraceEvent>, ExitStatus, Vec<Finding>);
+
+fn heap_budget_policy(config: &Config) -> HeapBudgetPolicy {
+    HeapBudgetPolicy {
+        alloc_bytes_budget: config.profile_heap_alloc_budget,
+        in_use_bytes_budget: config.profile_heap_in_use_budget,
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -256,7 +264,7 @@ pub fn fuzz(
             let finished_at = wall_time_iso_utc();
             let (duration_ms, duration_ns) = crate::duration_fields(started.elapsed());
 
-            let summary = RunSummary {
+            let mut summary = RunSummary {
                 status: exec.status,
                 mode: RunMode::Fuzz,
                 identity: RunIdentity {
@@ -274,6 +282,19 @@ pub fn fuzz(
                 memory: memory_state.as_ref().map(|m| m.clone().finalize().summary),
                 findings: exec.findings.clone(),
             };
+            let mut budget_trace = TraceFile::new_fuzz(
+                target_string(target),
+                &input,
+                exec.events.clone(),
+                summary.clone(),
+            );
+            budget_trace.memory = memory_state.as_ref().map(|m| m.clone().finalize().to_trace());
+            let heap_findings =
+                heap_budget_findings_from_trace(&budget_trace, &heap_budget_policy(config));
+            if !heap_findings.is_empty() {
+                summary.findings.extend(heap_findings);
+                summary.findings = crate::collapse_findings(summary.findings.clone());
+            }
 
             std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
 
@@ -310,15 +331,8 @@ pub fn fuzz(
             if should_emit_heavy_artifacts(exec.status, true) {
                 std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&exec.events)?)?;
                 crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
-                let mut profile_trace = TraceFile::new_fuzz(
-                    target_string(target),
-                    &input,
-                    exec.events.clone(),
-                    summary.clone(),
-                );
-                profile_trace.memory = memory_state
-                    .as_ref()
-                    .map(|m| m.clone().finalize().to_trace());
+                let mut profile_trace = budget_trace;
+                profile_trace.summary = summary.clone();
                 write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
             }
             crate::write_run_manifest(&summary, &artifacts_dir)?;
@@ -367,19 +381,6 @@ pub fn fuzz(
         memory: memory_report.as_ref().map(|m| m.summary.clone()),
         findings,
     };
-    if let Some(mem) = memory_report.as_ref() {
-        if mem.options.fail_on_leak && mem.summary.leaked_bytes > 0 {
-            status = ExitStatus::Fail;
-            summary.status = status;
-        }
-    }
-
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
-    if let Some(mem) = memory_report.as_ref()
-        && mem.options.artifacts
-    {
-        write_memory_artifacts(mem, &artifacts_dir)?;
-    }
     let (profile_input, profile_events, profile_status, profile_findings) = last_exec
         .clone()
         .unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new()));
@@ -393,6 +394,29 @@ pub fn fuzz(
         profile_summary,
     );
     profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    if !heap_findings.is_empty() {
+        summary.findings.extend(heap_findings);
+        summary.findings = crate::collapse_findings(summary.findings.clone());
+    }
+    if let Some(mem) = memory_report.as_ref() {
+        if mem.options.fail_on_leak && mem.summary.leaked_bytes > 0 {
+            status = ExitStatus::Fail;
+            summary.status = status;
+        }
+    }
+
+    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    if let Some(mem) = memory_report.as_ref()
+        && mem.options.artifacts
+    {
+        write_memory_artifacts(mem, &artifacts_dir)?;
+    }
+    profile_trace.summary = {
+        let mut s = summary.clone();
+        s.status = profile_status;
+        s
+    };
     if should_emit_heavy_artifacts(status, opt.record_trace_to.is_some() || crash_trace_path.is_some())
     {
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
@@ -456,7 +480,7 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         });
     }
 
-    let summary = RunSummary {
+    let mut summary = RunSummary {
         status: exec.status,
         mode: RunMode::Replay,
         identity: RunIdentity {
@@ -474,18 +498,24 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         memory: trace.memory.as_ref().map(|m| m.summary.clone()),
         findings,
     };
+    let mut profile_trace = TraceFile::new_fuzz(
+        fuzz.target.clone(),
+        &input,
+        exec.events.clone(),
+        summary.clone(),
+    );
+    profile_trace.memory = trace.memory.clone();
+    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    if !heap_findings.is_empty() {
+        summary.findings.extend(heap_findings);
+        summary.findings = crate::collapse_findings(summary.findings.clone());
+    }
 
     std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
     if should_emit_heavy_artifacts(exec.status, true) {
         std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&exec.events)?)?;
         crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
-        let mut profile_trace = TraceFile::new_fuzz(
-            fuzz.target.clone(),
-            &input,
-            exec.events.clone(),
-            summary.clone(),
-        );
-        profile_trace.memory = trace.memory.clone();
+        profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
     crate::write_run_manifest(&summary, &artifacts_dir)?;

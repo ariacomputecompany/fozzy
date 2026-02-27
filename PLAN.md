@@ -352,14 +352,14 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Document and enforce host-time semantics: CPU samples are not replay-deterministic but are comparable across repeated deterministic replays.
 
 #### M13.5 Mode C: Heap/Allocation Profiler v1 (Memory Mode Leverage)
-- ⬜ Build heap profile on top of existing memory tracking in M12 (no duplicate alloc pipeline).
-- ⬜ Add callsite-centric analysis:
-  - ⬜ in-use bytes by callsite
-  - ⬜ alloc-rate by callsite
-  - ⬜ lifetime histograms
-  - ⬜ retention suspects and graph anchors
-- ⬜ Implement `fozzy profile top --heap` and `fozzy profile diff --heap`.
-- ⬜ Wire heap profiler findings into `report.json` finding taxonomy and strict budget semantics where configured.
+- ✅ Build heap profile on top of existing memory tracking in M12 (no duplicate alloc pipeline).
+- ✅ Add callsite-centric analysis:
+  - ✅ in-use bytes by callsite
+  - ✅ alloc-rate by callsite
+  - ✅ lifetime histograms
+  - ✅ retention suspects and graph anchors
+- ✅ Implement `fozzy profile top --heap` and `fozzy profile diff --heap`.
+- ✅ Wire heap profiler findings into `report.json` finding taxonomy and strict budget semantics where configured.
 
 #### M13.6 Mode D: Latency/Critical-Path Profiler v1 (Causal Diagnostics)
 - ⬜ Compute per-span latency distributions (p50/p95/p99/max) and variance summaries.

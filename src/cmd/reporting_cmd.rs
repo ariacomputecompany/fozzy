@@ -584,6 +584,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
             mem_fragmentation_seed: None,
             mem_pressure_wave: None,
         };
@@ -625,6 +627,8 @@ mod tests {
             fail_on_leak: false,
             leak_budget: None,
             mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
             mem_fragmentation_seed: None,
             mem_pressure_wave: None,
         };

@@ -529,7 +529,7 @@ pub fn schema_doc() -> SchemaDoc {
     profile_artifact_schemas.insert(
         "profile.heap.json",
         ProfileArtifactSchema {
-            schema_version: "fozzy.profile_heap.v1",
+            schema_version: "fozzy.profile_heap.v2",
             required_fields: vec![
                 "schemaVersion",
                 "runId",
@@ -542,14 +542,14 @@ pub fn schema_doc() -> SchemaDoc {
             ],
             optional_fields: vec![],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_heap.v1",
+                "schemaVersion":"fozzy.profile_heap.v2",
                 "runId":"run-id",
                 "totalAllocBytes":0,
                 "inUseBytes":0,
                 "allocRatePerSec":0.0,
-                "hotspots":[],
+                "hotspots":[{"callsiteHash":"abc","allocCount":1,"allocBytes":128,"inUseBytes":64,"allocRatePerSec":12.8}],
                 "lifetimeHistogram":[],
-                "retentionSuspects":[]
+                "retentionSuspects":[{"allocId":7,"callsiteHash":"abc","bytes":64,"ageMs":20,"graphAnchor":"alloc:7"}]
             }),
             notes: "Heap profile payload; hotspots and suspects are deterministically ordered."
                 .to_string(),
