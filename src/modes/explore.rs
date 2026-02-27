@@ -11,9 +11,10 @@ use std::time::{Duration, Instant};
 
 use crate::{
     Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind,
-    MemoryRunReport, MemoryState, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
-    RunSummary, ScenarioFile, ScenarioPath, ScenarioV1Distributed, TraceEvent, TraceFile,
-    wall_time_iso_utc, write_memory_artifacts, write_profile_artifacts_from_trace,
+    MemoryRunReport, MemoryState, ProfileCaptureLevel, RecordCollisionPolicy, Reporter,
+    RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath, ScenarioV1Distributed,
+    TraceEvent, TraceFile, should_emit_profile_artifacts, wall_time_iso_utc,
+    write_memory_artifacts, write_profile_artifacts_from_trace,
     write_trace_with_policy,
 };
 
@@ -84,6 +85,7 @@ pub struct ExploreOptions {
     pub minimize: bool,
     pub reporter: Reporter,
     pub record_collision: RecordCollisionPolicy,
+    pub profile_capture: ProfileCaptureLevel,
     pub memory: crate::MemoryOptions,
 }
 
@@ -244,7 +246,9 @@ pub fn explore(
         let written = write_trace_with_policy(&trace, &out, opt.record_collision)?;
         summary.identity.trace_path = Some(written.to_string_lossy().to_string());
     }
-    if should_emit_heavy_artifacts(status, should_record) {
+    let emit_heavy = should_emit_heavy_artifacts(status, should_record)
+        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+    if emit_heavy {
         std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&events)?)?;
         crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
         if let Some(mem) = memory_report.as_ref()
@@ -252,6 +256,8 @@ pub fn explore(
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
+    }
+    if should_emit_profile_artifacts(opt.profile_capture, status, should_record) {
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
@@ -334,9 +340,9 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
-        profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
+    profile_trace.summary = summary.clone();
+    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })

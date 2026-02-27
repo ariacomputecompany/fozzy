@@ -439,6 +439,7 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
             step: false,
             until: None,
             dump_events: false,
+            profile_capture: crate::ProfileCaptureLevel::Baseline,
             reporter: crate::Reporter::Json,
         },
     )?;
@@ -448,6 +449,8 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
             trace: trace_path.clone(),
             flake_runs: Vec::new(),
             flake_budget_pct: None,
+            perf_baseline: None,
+            max_p99_delta_pct: None,
             strict: true,
         },
     )?;

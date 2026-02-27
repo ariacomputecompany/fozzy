@@ -14,9 +14,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::{
-    Config, ExitStatus, Finding, FindingKind, MemoryOptions, MemoryState, RecordCollisionPolicy,
-    Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath, TraceEvent, TraceFile,
-    wall_time_iso_utc, write_memory_artifacts, write_profile_artifacts_from_trace,
+    Config, ExitStatus, Finding, FindingKind, MemoryOptions, MemoryState, ProfileCaptureLevel,
+    RecordCollisionPolicy, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
+    TraceEvent, TraceFile, should_emit_profile_artifacts, wall_time_iso_utc,
+    write_memory_artifacts, write_profile_artifacts_from_trace,
     write_trace_with_policy,
 };
 
@@ -109,6 +110,7 @@ pub struct FuzzOptions {
     pub crash_only: bool,
     pub minimize: bool,
     pub record_collision: RecordCollisionPolicy,
+    pub profile_capture: ProfileCaptureLevel,
     pub memory: MemoryOptions,
 }
 
@@ -328,9 +330,13 @@ pub fn fuzz(
                 .map(|m| m.clone().finalize().to_trace());
             let written = write_trace_with_policy(&trace, &trace_out, opt.record_collision)?;
             crash_trace_path = Some(written);
-            if should_emit_heavy_artifacts(exec.status, true) {
+            let emit_heavy = should_emit_heavy_artifacts(exec.status, true)
+                || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+            if emit_heavy {
                 std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&exec.events)?)?;
                 crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
+            }
+            if should_emit_profile_artifacts(opt.profile_capture, exec.status, true) {
                 let mut profile_trace = budget_trace;
                 profile_trace.summary = summary.clone();
                 write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
@@ -417,8 +423,13 @@ pub fn fuzz(
         s.status = profile_status;
         s
     };
-    if should_emit_heavy_artifacts(status, opt.record_trace_to.is_some() || crash_trace_path.is_some())
-    {
+    let explicit_capture = opt.record_trace_to.is_some() || crash_trace_path.is_some();
+    let emit_heavy = should_emit_heavy_artifacts(status, explicit_capture)
+        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+    if emit_heavy {
+        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    }
+    if !emit_heavy && should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture) {
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
     let coverage_stats = FuzzCoverageStats {

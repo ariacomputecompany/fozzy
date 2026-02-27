@@ -113,12 +113,12 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy profile".to_string(),
                 when: "Diagnose regressions with deterministic timeline/heap/latency, capability visibility, and one-shot profile health checks.".to_string(),
-                how: "fozzy profile env --json; fozzy profile top <runId|trace> --heap --latency --io --sched --limit 20; fozzy profile flame <runId|trace> --cpu --format speedscope --out cpu.speedscope.json; fozzy profile diff <left> <right> --cpu --heap --latency --json; fozzy profile explain <runId|trace> --diff-with <baseline>; fozzy profile export <runId|trace> --format otlp --out profile.otlp.json; fozzy profile shrink <runId|trace> --metric p99_latency --direction increase (returns status=no_feasible_shrink_found instead of hard error when contract preservation is impossible); fozzy profile doctor <runId|trace> --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
+                how: "fozzy run tests/example.fozzy.json --det --profile-capture sampled --record ./trace.fozzy --json; fozzy profile env --json; fozzy profile top <runId|trace> --heap --latency --io --sched --limit 20; fozzy profile flame <runId|trace> --cpu --format speedscope --out cpu.speedscope.json; fozzy profile diff <left> <right> --cpu --heap --latency --json; fozzy profile explain <runId|trace> --diff-with <baseline>; fozzy profile export <runId|trace> --format otlp --out profile.otlp.json; fozzy profile shrink <runId|trace> --metric p99_latency --direction increase --minimize all (returns status=no_feasible_shrink_found instead of hard error when contract preservation is impossible); fozzy profile doctor <runId|trace> --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy ci".to_string(),
                 when: "Run a canonical local gate bundle for one trace: verify, replay outcome check, artifacts zip integrity, optional flake budget.".to_string(),
-                how: "fozzy ci .fozzy/runs/<runId>/trace.fozzy --flake-run <run1> --flake-run <run2> --flake-budget 5 --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
+                how: "fozzy ci .fozzy/runs/<runId>/trace.fozzy --flake-run <run1> --flake-run <run2> --flake-budget 5 --perf-baseline <baselineRunOrTrace> --max-p99-delta-pct 10 --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy doctor".to_string(),

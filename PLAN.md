@@ -389,13 +389,13 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Ensure shrunk perf traces remain replayable, verifiable, and CI-gateable.
 
 #### M13.9 Integration Across Existing Surface (No Siloed Profiler)
-- ⬜ `fozzy run/test/fuzz/explore`: add profiler capture flags with safe defaults and explicit overhead levels.
-- ⬜ `fozzy replay`: support profiler-aware replay reports and optional export regeneration.
-- ⬜ `fozzy ci`: add optional performance gate checks (for example max p99 delta budget).
-- ⬜ `fozzy report`: include profiler diagnosis sections and queryable perf paths.
-- ⬜ `fozzy artifacts`: full parity for profiler artifact listing/diff/export/pack/bundle.
-- ⬜ `fozzy usage` + `fozzy full` + `fozzy gate`: include profiler-aware recommended flows and targeted execution where feasible.
-- ⬜ SDK-TS parity for profiler command wrappers and typed JSON outputs.
+- ✅ `fozzy run/test/fuzz/explore`: add profiler capture flags with safe defaults and explicit overhead levels.
+- ✅ `fozzy replay`: support profiler-aware replay reports and optional export regeneration.
+- ✅ `fozzy ci`: add optional performance gate checks (for example max p99 delta budget).
+- ✅ `fozzy report`: include profiler diagnosis sections and queryable perf paths.
+- ✅ `fozzy artifacts`: full parity for profiler artifact listing/diff/export/pack/bundle.
+- ✅ `fozzy usage` + `fozzy full` + `fozzy gate`: include profiler-aware recommended flows and targeted execution where feasible.
+- ✅ SDK-TS parity for profiler command wrappers and typed JSON outputs.
 
 #### M13.10 Production Gate Sequence (Profiler Shipping Contract)
 - ⬜ Deterministic baseline gate (scenario-level):

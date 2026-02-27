@@ -100,6 +100,7 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 fozzy test [globs...] [--det] [--seed <n>] [--jobs <n>] [--timeout <dur>] \
   [--filter <expr>] [--reporter <json|pretty|junit|html>] \
   [--record <path>] [--record-collision error|overwrite|append] [--fail-fast] \
+  [--profile-capture baseline|sampled|full] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
@@ -117,6 +118,7 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 fozzy run <scenario> [--det] [--seed <n>] [--timeout <dur>] \
   [--reporter <json|pretty|junit|html>] \
   [--record <path>] [--record-collision append|overwrite|error] \
+  [--profile-capture baseline|sampled|full] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
@@ -130,6 +132,7 @@ fozzy fuzz <target> [--mode coverage|property] [--seed <n>] [--time <dur>] \
   [--runs <n>] [--max-input <bytes>] [--corpus <dir>] [--mutator <name>] \
   [--shrink] [--record <path>] [--record-collision error|overwrite|append] \
   [--reporter <json|pretty|junit|html>] [--crash-only] [--minimize] \
+  [--profile-capture baseline|sampled|full] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
@@ -145,6 +148,7 @@ fozzy explore <scenario> [--seed <n>] [--time <dur>] [--steps <n>] [--nodes <n>]
   [--faults <preset|file>] [--schedule <strategy>] [--checker <name>] \
   [--record <path>] [--record-collision error|overwrite|append] [--shrink] \
   [--reporter <json|pretty|junit|html>] [--minimize] \
+  [--profile-capture baseline|sampled|full] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
@@ -160,7 +164,10 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 ### `replay`
 
 ```bash
-fozzy replay <trace.fozzy> [--step] [--until <dur>] [--dump-events] [--reporter <json|pretty|junit|html>]
+fozzy replay <trace.fozzy> [--step] [--until <dur>] [--dump-events] \
+  [--profile-capture baseline|sampled|full] [--profile-regen] \
+  [--profile-export-format speedscope|pprof|otlp --profile-export-out <path>] \
+  [--reporter <json|pretty|junit|html>]
 ```
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
@@ -213,7 +220,7 @@ fozzy gate [--profile targeted] [--scenario-root <dir>] [--scope <comma,list>] \
   [--seed <n>] [--doctor-runs <n>]
 ```
 
-`targeted` profile runs strict deterministic doctor/test/run+record/trace verify/replay/ci on matched step scenarios only.
+`targeted` profile runs strict deterministic doctor/test/run+record/trace verify/replay/ci/profile-top/profile-diff/profile-explain on matched step scenarios only.
 
 ### `report`
 
@@ -251,7 +258,7 @@ fozzy profile timeline <run-id|trace> [--out <path>] [--format json|html]
 fozzy profile diff <left-run-id|trace> <right-run-id|trace> [--cpu] [--heap] [--latency] [--io] [--sched]
 fozzy profile explain <run-id|trace> [--diff-with <run-id|trace>]
 fozzy profile export <run-id|trace> --format speedscope|pprof|otlp --out <path>
-fozzy profile shrink <run-id|trace> --metric p99_latency|cpu_time|alloc_bytes --direction increase|decrease [--budget <dur>]
+fozzy profile shrink <run-id|trace> --metric p99_latency|cpu_time|alloc_bytes --direction increase|decrease [--budget <dur>] [--minimize input|schedule|faults|all]
 fozzy profile env
 fozzy profile doctor <run-id|trace>
 ```
@@ -287,7 +294,8 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 ### `ci`
 
 ```bash
-fozzy ci <trace.fozzy> [--flake-run <run-id|trace>]... [--flake-budget <pct>]
+fozzy ci <trace.fozzy> [--flake-run <run-id|trace>]... [--flake-budget <pct>] \
+  [--perf-baseline <run-id|trace>] [--max-p99-delta-pct <pct>]
 ```
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 

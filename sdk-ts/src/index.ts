@@ -4,6 +4,7 @@ import { writeFile } from "node:fs/promises";
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 export type Duration = `${number}ms` | `${number}s` | `${number}m` | `${number}h`;
 export type Reporter = "pretty" | "json" | "junit" | "html";
+export type ProfileCaptureLevel = "baseline" | "sampled" | "full";
 export type ExitStatus = "pass" | "fail" | "error" | "timeout" | "crash";
 export type RunMode = "test" | "run" | "fuzz" | "explore" | "replay";
 
@@ -83,6 +84,7 @@ export interface TestOptions extends MemoryOptions {
   reporter?: Reporter;
   record?: string;
   failFast?: boolean;
+  profileCapture?: ProfileCaptureLevel;
 }
 
 export interface RunOptions extends MemoryOptions {
@@ -91,6 +93,7 @@ export interface RunOptions extends MemoryOptions {
   timeout?: Duration;
   reporter?: Reporter;
   record?: string;
+  profileCapture?: ProfileCaptureLevel;
 }
 
 export type FuzzMode = "coverage" | "property";
@@ -107,6 +110,7 @@ export interface FuzzOptions {
   reporter?: Reporter;
   crashOnly?: boolean;
   minimize?: boolean;
+  profileCapture?: ProfileCaptureLevel;
   memTrack?: boolean;
   memLimitMb?: number;
   memFailAfter?: number;
@@ -129,12 +133,17 @@ export interface ExploreOptions extends MemoryOptions {
   shrink?: boolean;
   minimize?: boolean;
   reporter?: Reporter;
+  profileCapture?: ProfileCaptureLevel;
 }
 
 export interface ReplayOptions {
   step?: boolean;
   until?: Duration;
   dumpEvents?: boolean;
+  profileCapture?: ProfileCaptureLevel;
+  profileRegen?: boolean;
+  profileExportFormat?: "speedscope" | "pprof" | "otlp";
+  profileExportOut?: string;
   reporter?: Reporter;
 }
 
@@ -159,6 +168,57 @@ export interface ReportShowOptions {
 export interface CiOptions {
   flakeRuns?: string[];
   flakeBudget?: number;
+  perfBaseline?: string;
+  maxP99DeltaPct?: number;
+}
+
+export interface ProfileTopOptions {
+  cpu?: boolean;
+  heap?: boolean;
+  latency?: boolean;
+  io?: boolean;
+  sched?: boolean;
+  limit?: number;
+}
+
+export interface ProfileFlameOptions {
+  cpu?: boolean;
+  heap?: boolean;
+  format?: "folded" | "svg" | "speedscope";
+  out?: string;
+}
+
+export interface ProfileTimelineOptions {
+  out?: string;
+  format?: "json" | "html";
+}
+
+export interface ProfileDiffOptions {
+  cpu?: boolean;
+  heap?: boolean;
+  latency?: boolean;
+  io?: boolean;
+  sched?: boolean;
+}
+
+export interface ProfileExplainOptions {
+  diffWith?: string;
+}
+
+export interface ProfileExportOptions {
+  format: "speedscope" | "pprof" | "otlp";
+  out: string;
+}
+
+export interface ProfileShrinkOptions {
+  metric: "p99_latency" | "cpu_time" | "alloc_bytes";
+  direction: "increase" | "decrease";
+  budget?: Duration;
+  minimize?: "input" | "schedule" | "faults" | "all";
+}
+
+export interface ProfileDoctorOptions {
+  deep?: boolean;
 }
 
 export interface FullOptions {
@@ -317,6 +377,7 @@ export class Fozzy {
     kv(args, "--reporter", opts.reporter);
     kv(args, "--record", opts.record);
     flag(args, opts.failFast, "--fail-fast");
+    kv(args, "--profile-capture", opts.profileCapture);
     appendMemoryArgs(args, opts);
     return await this.execRun(args);
   }
@@ -328,6 +389,7 @@ export class Fozzy {
     kv(args, "--timeout", opts.timeout);
     kv(args, "--reporter", opts.reporter);
     kv(args, "--record", opts.record);
+    kv(args, "--profile-capture", opts.profileCapture);
     appendMemoryArgs(args, opts);
     return await this.execRun(args);
   }
@@ -346,6 +408,7 @@ export class Fozzy {
     kv(args, "--reporter", opts.reporter);
     flag(args, opts.crashOnly, "--crash-only");
     flag(args, opts.minimize, "--minimize");
+    kv(args, "--profile-capture", opts.profileCapture);
     appendMemoryArgs(args, opts);
     return await this.execRun(args);
   }
@@ -363,17 +426,22 @@ export class Fozzy {
     flag(args, opts.shrink, "--shrink");
     flag(args, opts.minimize, "--minimize");
     kv(args, "--reporter", opts.reporter);
+    kv(args, "--profile-capture", opts.profileCapture);
     appendMemoryArgs(args, opts);
     return await this.execRun(args);
   }
 
-  async replay(trace: string, opts: ReplayOptions = {}): Promise<RunSummary> {
+  async replay(trace: string, opts: ReplayOptions = {}): Promise<unknown> {
     const args = ["replay", trace];
     flag(args, opts.step, "--step");
     kv(args, "--until", opts.until);
     flag(args, opts.dumpEvents, "--dump-events");
+    kv(args, "--profile-capture", opts.profileCapture);
+    flag(args, opts.profileRegen, "--profile-regen");
+    kv(args, "--profile-export-format", opts.profileExportFormat);
+    kv(args, "--profile-export-out", opts.profileExportOut);
     kv(args, "--reporter", opts.reporter);
-    return await this.execRun(args);
+    return await this.execJson(args);
   }
 
   async shrink(trace: string, opts: ShrinkOptions = {}): Promise<RunSummary> {
@@ -500,6 +568,73 @@ export class Fozzy {
       args.push("--flake-run", run);
     }
     kv(args, "--flake-budget", opts.flakeBudget);
+    kv(args, "--perf-baseline", opts.perfBaseline);
+    kv(args, "--max-p99-delta-pct", opts.maxP99DeltaPct);
+    return await this.execJson(args);
+  }
+
+  async profileTop(runOrTrace: string, opts: ProfileTopOptions = {}): Promise<unknown> {
+    const args = ["profile", "top", runOrTrace];
+    flag(args, opts.cpu, "--cpu");
+    flag(args, opts.heap, "--heap");
+    flag(args, opts.latency, "--latency");
+    flag(args, opts.io, "--io");
+    flag(args, opts.sched, "--sched");
+    kv(args, "--limit", opts.limit);
+    return await this.execJson(args);
+  }
+
+  async profileFlame(runOrTrace: string, opts: ProfileFlameOptions = {}): Promise<unknown> {
+    const args = ["profile", "flame", runOrTrace];
+    flag(args, opts.cpu, "--cpu");
+    flag(args, opts.heap, "--heap");
+    kv(args, "--format", opts.format);
+    kv(args, "--out", opts.out);
+    return await this.execJson(args);
+  }
+
+  async profileTimeline(runOrTrace: string, opts: ProfileTimelineOptions = {}): Promise<unknown> {
+    const args = ["profile", "timeline", runOrTrace];
+    kv(args, "--out", opts.out);
+    kv(args, "--format", opts.format);
+    return await this.execJson(args);
+  }
+
+  async profileDiff(left: string, right: string, opts: ProfileDiffOptions = {}): Promise<unknown> {
+    const args = ["profile", "diff", left, right];
+    flag(args, opts.cpu, "--cpu");
+    flag(args, opts.heap, "--heap");
+    flag(args, opts.latency, "--latency");
+    flag(args, opts.io, "--io");
+    flag(args, opts.sched, "--sched");
+    return await this.execJson(args);
+  }
+
+  async profileExplain(runOrTrace: string, opts: ProfileExplainOptions = {}): Promise<unknown> {
+    const args = ["profile", "explain", runOrTrace];
+    kv(args, "--diff-with", opts.diffWith);
+    return await this.execJson(args);
+  }
+
+  async profileExport(runOrTrace: string, opts: ProfileExportOptions): Promise<unknown> {
+    const args = ["profile", "export", runOrTrace, "--format", opts.format, "--out", opts.out];
+    return await this.execJson(args);
+  }
+
+  async profileShrink(runOrTrace: string, opts: ProfileShrinkOptions): Promise<unknown> {
+    const args = ["profile", "shrink", runOrTrace, "--metric", opts.metric, "--direction", opts.direction];
+    kv(args, "--budget", opts.budget);
+    kv(args, "--minimize", opts.minimize);
+    return await this.execJson(args);
+  }
+
+  async profileEnv(): Promise<unknown> {
+    return await this.execJson(["profile", "env"]);
+  }
+
+  async profileDoctor(runOrTrace: string, opts: ProfileDoctorOptions = {}): Promise<unknown> {
+    const args = ["profile", "doctor", runOrTrace];
+    flag(args, opts.deep, "--deep");
     return await this.execJson(args);
   }
 

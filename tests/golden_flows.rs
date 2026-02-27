@@ -68,6 +68,7 @@ fn golden_run_record_replay_shrink_replay_min() {
             jobs: None,
             fail_fast: false,
             record_collision: RecordCollisionPolicy::Overwrite,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             proc_backend: ProcBackend::Scripted,
             fs_backend: FsBackend::Virtual,
             http_backend: HttpBackend::Scripted,
@@ -84,6 +85,7 @@ fn golden_run_record_replay_shrink_replay_min() {
             step: false,
             until: None,
             dump_events: false,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             reporter: Reporter::Json,
         },
     )
@@ -114,6 +116,7 @@ fn golden_run_record_replay_shrink_replay_min() {
             step: false,
             until: None,
             dump_events: false,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             reporter: Reporter::Json,
         },
     )
@@ -165,6 +168,7 @@ fn golden_fuzz_record_replay_shrink_replay_min() {
             crash_only: false,
             minimize: false,
             record_collision: RecordCollisionPolicy::Overwrite,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             memory: fozzy::MemoryOptions::default(),
         },
     )
@@ -178,6 +182,7 @@ fn golden_fuzz_record_replay_shrink_replay_min() {
             step: false,
             until: None,
             dump_events: false,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             reporter: Reporter::Json,
         },
     )
@@ -208,6 +213,7 @@ fn golden_fuzz_record_replay_shrink_replay_min() {
             step: false,
             until: None,
             dump_events: false,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             reporter: Reporter::Json,
         },
     )
@@ -258,6 +264,7 @@ fn golden_explore_record_replay_shrink_replay_min() {
             minimize: false,
             reporter: Reporter::Json,
             record_collision: RecordCollisionPolicy::Overwrite,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             memory: fozzy::MemoryOptions::default(),
         },
     )
@@ -271,6 +278,7 @@ fn golden_explore_record_replay_shrink_replay_min() {
             step: false,
             until: None,
             dump_events: false,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             reporter: Reporter::Json,
         },
     )
@@ -301,6 +309,7 @@ fn golden_explore_record_replay_shrink_replay_min() {
             step: false,
             until: None,
             dump_events: false,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             reporter: Reporter::Json,
         },
     )
@@ -335,6 +344,7 @@ fn golden_init_scaffold_distributed_pass_succeeds_in_explore() {
             minimize: false,
             reporter: Reporter::Json,
             record_collision: RecordCollisionPolicy::Append,
+            profile_capture: fozzy::ProfileCaptureLevel::Baseline,
             memory: fozzy::MemoryOptions::default(),
         },
     )

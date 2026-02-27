@@ -14,9 +14,9 @@ use fozzy::{
     ArtifactCommand, CiOptions, Config, CorpusCommand, ExitStatus, ExploreOptions, FlakeBudget,
     FozzyDuration, FsBackend, FuzzMode, FuzzOptions, FuzzTarget, HttpBackend, InitTemplate,
     InitTestType, MapCommand, MapSuitesOptions, MemoryCommand, MemoryOptions, ProcBackend,
-    ProfileCommand, RecordCollisionPolicy, ReportCommand, Reporter, RunOptions, RunSummary,
-    ScenarioPath, ScheduleStrategy, ShrinkCoveragePolicy, ShrinkMinimize, TopologyProfile,
-    TracePath,
+    ProfileCaptureLevel, ProfileCommand, ProfileExportFormat, RecordCollisionPolicy, ReportCommand,
+    Reporter, RunOptions, RunSummary, ScenarioPath, ScheduleStrategy, ShrinkCoveragePolicy,
+    ShrinkMinimize, TopologyProfile, TracePath,
 };
 
 #[derive(Debug, Parser)]
@@ -161,6 +161,10 @@ enum Command {
         /// Emit dedicated memory artifacts.
         #[arg(long)]
         mem_artifacts: bool,
+
+        /// Profiler capture overhead level.
+        #[arg(long, default_value = "baseline")]
+        profile_capture: ProfileCaptureLevel,
     },
 
     /// Run a single scenario file (one-off)
@@ -202,6 +206,10 @@ enum Command {
         leak_budget: Option<u64>,
         #[arg(long)]
         mem_artifacts: bool,
+
+        /// Profiler capture overhead level.
+        #[arg(long, default_value = "baseline")]
+        profile_capture: ProfileCaptureLevel,
     },
 
     /// Coverage-guided or property-based fuzzing
@@ -267,6 +275,10 @@ enum Command {
         leak_budget: Option<u64>,
         #[arg(long)]
         mem_artifacts: bool,
+
+        /// Profiler capture overhead level.
+        #[arg(long, default_value = "baseline")]
+        profile_capture: ProfileCaptureLevel,
     },
 
     /// Deterministic distributed schedule + fault exploration
@@ -326,6 +338,10 @@ enum Command {
         leak_budget: Option<u64>,
         #[arg(long)]
         mem_artifacts: bool,
+
+        /// Profiler capture overhead level.
+        #[arg(long, default_value = "baseline")]
+        profile_capture: ProfileCaptureLevel,
     },
 
     /// Replay a previously recorded run exactly
@@ -340,6 +356,22 @@ enum Command {
 
         #[arg(long)]
         dump_events: bool,
+
+        /// Profiler capture overhead level.
+        #[arg(long, default_value = "baseline")]
+        profile_capture: ProfileCaptureLevel,
+
+        /// Force replay-side profile artifact regeneration for this replay run.
+        #[arg(long)]
+        profile_regen: bool,
+
+        /// Optional replay-side profiler export format.
+        #[arg(long)]
+        profile_export_format: Option<ProfileExportFormat>,
+
+        /// Output path used with --profile-export-format.
+        #[arg(long)]
+        profile_export_out: Option<PathBuf>,
 
         #[arg(long, default_value = "pretty")]
         reporter: Reporter,
@@ -439,6 +471,12 @@ enum Command {
         /// Maximum allowed flake rate percentage.
         #[arg(long = "flake-budget")]
         flake_budget: Option<FlakeBudget>,
+        /// Baseline run/trace used for profiler latency budget checks.
+        #[arg(long = "perf-baseline")]
+        perf_baseline: Option<String>,
+        /// Maximum allowed p99 latency delta percent vs --perf-baseline.
+        #[arg(long = "max-p99-delta-pct")]
+        max_p99_delta_pct: Option<f64>,
     },
 
     /// Run strict deterministic gate checks with optional scoped targeting.
@@ -750,6 +788,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             fail_on_leak,
             leak_budget,
             mem_artifacts,
+            profile_capture,
         } => {
             let memory = resolve_memory_options(
                 config,
@@ -775,6 +814,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
                     jobs: *jobs,
                     fail_fast: *fail_fast,
                     record_collision: *record_collision,
+                    profile_capture: *profile_capture,
                     proc_backend,
                     fs_backend,
                     http_backend,
@@ -802,6 +842,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             fail_on_leak,
             leak_budget,
             mem_artifacts,
+            profile_capture,
         } => {
             let memory = resolve_memory_options(
                 config,
@@ -827,6 +868,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
                     jobs: None,
                     fail_fast: false,
                     record_collision: *record_collision,
+                    profile_capture: *profile_capture,
                     proc_backend,
                     fs_backend,
                     http_backend,
@@ -862,6 +904,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             fail_on_leak,
             leak_budget,
             mem_artifacts,
+            profile_capture,
         } => {
             let memory = resolve_memory_options(
                 config,
@@ -893,6 +936,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
                     crash_only: *crash_only,
                     minimize: *minimize,
                     record_collision: *record_collision,
+                    profile_capture: *profile_capture,
                     memory,
                 },
             )?;
@@ -923,6 +967,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             fail_on_leak,
             leak_budget,
             mem_artifacts,
+            profile_capture,
         } => {
             let memory = resolve_memory_options(
                 config,
@@ -951,6 +996,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
                     minimize: *minimize,
                     reporter: *reporter,
                     record_collision: *record_collision,
+                    profile_capture: *profile_capture,
                     memory,
                 },
             )?;
@@ -964,8 +1010,17 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             step,
             until,
             dump_events,
+            profile_capture,
+            profile_regen,
+            profile_export_format,
+            profile_export_out,
             reporter,
         } => {
+            if profile_export_format.is_some() && profile_export_out.is_none() {
+                return Err(anyhow::anyhow!(
+                    "--profile-export-out is required when --profile-export-format is set"
+                ));
+            }
             let run = fozzy::replay_trace(
                 config,
                 TracePath::new(trace.clone()),
@@ -973,10 +1028,31 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
                     step: *step,
                     until: until.map(|d| d.0),
                     dump_events: *dump_events,
+                    profile_capture: if *profile_regen {
+                        ProfileCaptureLevel::Full
+                    } else {
+                        *profile_capture
+                    },
                     reporter: *reporter,
                 },
             )?;
-            logger.print_run_summary(&run.summary)?;
+            if let (Some(format), Some(out)) = (profile_export_format, profile_export_out.as_ref()) {
+                let export = fozzy::profile_command(
+                    config,
+                    &ProfileCommand::Export {
+                        run: run.summary.identity.run_id.clone(),
+                        format: *format,
+                        out: out.clone(),
+                    },
+                    strict_enabled(cli),
+                )?;
+                logger.print_serialized(&serde_json::json!({
+                    "run": run.summary,
+                    "profileExport": export
+                }))?;
+            } else {
+                logger.print_run_summary(&run.summary)?;
+            }
             enforce_strict_run(cli, &run.summary)?;
             Ok(exit_code_for_status(run.summary.status))
         }
@@ -1116,6 +1192,8 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             trace,
             flake_runs,
             flake_budget,
+            perf_baseline,
+            max_p99_delta_pct,
         } => {
             let out = fozzy::ci_command(
                 config,
@@ -1123,6 +1201,8 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
                     trace: trace.clone(),
                     flake_runs: flake_runs.clone(),
                     flake_budget_pct: *flake_budget,
+                    perf_baseline: perf_baseline.clone(),
+                    max_p99_delta_pct: *max_p99_delta_pct,
                     strict: strict_enabled(cli),
                 },
             )?;
@@ -1453,6 +1533,7 @@ fn run_gate_command(
             jobs: None,
             fail_fast: false,
             record_collision: RecordCollisionPolicy::Error,
+            profile_capture: ProfileCaptureLevel::Baseline,
             proc_backend: config.proc_backend,
             fs_backend: config.fs_backend,
             http_backend: config.http_backend,
@@ -1483,6 +1564,7 @@ fn run_gate_command(
         uuid::Uuid::new_v4()
     ));
     let mut primary_status: Option<ExitStatus> = None;
+    let mut replay_run_id: Option<String> = None;
     match fozzy::run_scenario(
         config,
         ScenarioPath::new(primary.clone()),
@@ -1496,6 +1578,7 @@ fn run_gate_command(
             jobs: None,
             fail_fast: false,
             record_collision: RecordCollisionPolicy::Overwrite,
+            profile_capture: ProfileCaptureLevel::Baseline,
             proc_backend: config.proc_backend,
             fs_backend: config.fs_backend,
             http_backend: config.http_backend,
@@ -1556,10 +1639,12 @@ fn run_gate_command(
                 step: false,
                 until: None,
                 dump_events: false,
+                profile_capture: ProfileCaptureLevel::Baseline,
                 reporter: Reporter::Json,
             },
         ) {
             Ok(replay) => {
+                replay_run_id = Some(replay.summary.identity.run_id.clone());
                 let class_ok = primary_status
                     .map(|s| (s == ExitStatus::Pass) == (replay.summary.status == ExitStatus::Pass))
                     .unwrap_or(false);
@@ -1586,6 +1671,8 @@ fn run_gate_command(
                 trace: trace_path.clone(),
                 flake_runs: Vec::new(),
                 flake_budget_pct: None,
+                perf_baseline: None,
+                max_p99_delta_pct: None,
                 strict,
             },
         );
@@ -1601,8 +1688,79 @@ fn run_gate_command(
             ),
             Err(err) => push("ci", FullStepStatus::Failed, err.to_string()),
         }
+
+        match fozzy::profile_command(
+            config,
+            &ProfileCommand::Top {
+                run: trace_path.display().to_string(),
+                cpu: true,
+                heap: true,
+                latency: true,
+                io: true,
+                sched: true,
+                limit: 10,
+            },
+            strict,
+        ) {
+            Ok(_) => push(
+                "profile_top",
+                FullStepStatus::Passed,
+                "profile top generated".to_string(),
+            ),
+            Err(err) => push("profile_top", FullStepStatus::Failed, err.to_string()),
+        }
+        if let Some(replay_run_id) = replay_run_id.as_ref() {
+            match fozzy::profile_command(
+                config,
+                &ProfileCommand::Diff {
+                    left: trace_path.display().to_string(),
+                    right: replay_run_id.clone(),
+                    cpu: true,
+                    heap: true,
+                    latency: true,
+                    io: true,
+                    sched: true,
+                },
+                strict,
+            ) {
+                Ok(_) => push(
+                    "profile_diff",
+                    FullStepStatus::Passed,
+                    "profile diff generated".to_string(),
+                ),
+                Err(err) => push("profile_diff", FullStepStatus::Failed, err.to_string()),
+            }
+        } else {
+            push(
+                "profile_diff",
+                FullStepStatus::Skipped,
+                "replay run id unavailable".to_string(),
+            );
+        }
+        match fozzy::profile_command(
+            config,
+            &ProfileCommand::Explain {
+                run: trace_path.display().to_string(),
+                diff_with: replay_run_id.clone(),
+            },
+            strict,
+        ) {
+            Ok(_) => push(
+                "profile_explain",
+                FullStepStatus::Passed,
+                "profile explain generated".to_string(),
+            ),
+            Err(err) => push("profile_explain", FullStepStatus::Failed, err.to_string()),
+        }
     } else {
-        for name in ["trace_verify", "replay", "ci"] {
+        for name in [
+            "trace_verify",
+            "replay",
+            "ci",
+            "profile_top",
+            "profile_diff",
+            "profile_explain",
+        ] {
             push(
                 name,
                 FullStepStatus::Skipped,
@@ -1933,6 +2091,7 @@ fn run_full_command(
                 jobs: None,
                 fail_fast: false,
                 record_collision: RecordCollisionPolicy::Error,
+                profile_capture: ProfileCaptureLevel::Baseline,
                 proc_backend: config.proc_backend,
                 fs_backend: config.fs_backend,
                 http_backend: config.http_backend,
@@ -1966,6 +2125,7 @@ fn run_full_command(
                 jobs: None,
                 fail_fast: false,
                 record_collision: RecordCollisionPolicy::Overwrite,
+                profile_capture: ProfileCaptureLevel::Baseline,
                 proc_backend: config.proc_backend,
                 fs_backend: config.fs_backend,
                 http_backend: config.http_backend,
@@ -2032,6 +2192,7 @@ fn run_full_command(
                 step: false,
                 until: None,
                 dump_events: false,
+                profile_capture: ProfileCaptureLevel::Baseline,
                 reporter: Reporter::Json,
             },
         ) {
@@ -2061,6 +2222,8 @@ fn run_full_command(
                 trace: trace.clone(),
                 flake_runs: Vec::new(),
                 flake_budget_pct: None,
+                perf_baseline: None,
+                max_p99_delta_pct: None,
                 strict,
             },
         ) {
@@ -2133,6 +2296,7 @@ fn run_full_command(
                     step: false,
                     until: None,
                     dump_events: false,
+                    profile_capture: ProfileCaptureLevel::Baseline,
                     reporter: Reporter::Json,
                 },
             ) {
@@ -2470,6 +2634,7 @@ fn run_full_command(
             crash_only: false,
             minimize: true,
             record_collision: RecordCollisionPolicy::Overwrite,
+            profile_capture: ProfileCaptureLevel::Baseline,
             memory: memory.clone(),
         },
     ) {
@@ -2501,6 +2666,7 @@ fn run_full_command(
                 minimize: true,
                 reporter: Reporter::Json,
                 record_collision: RecordCollisionPolicy::Error,
+                profile_capture: ProfileCaptureLevel::Baseline,
                 memory: memory.clone(),
             },
         ) {
@@ -2635,6 +2801,7 @@ fn run_full_command(
                 jobs: None,
                 fail_fast: false,
                 record_collision: RecordCollisionPolicy::Error,
+                profile_capture: ProfileCaptureLevel::Baseline,
                 proc_backend: fozzy::ProcBackend::Host,
                 fs_backend: fozzy::FsBackend::Host,
                 http_backend: fozzy::HttpBackend::Host,

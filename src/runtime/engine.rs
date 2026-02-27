@@ -154,6 +154,7 @@ pub struct RunOptions {
     pub jobs: Option<usize>,
     pub fail_fast: bool,
     pub record_collision: RecordCollisionPolicy,
+    pub profile_capture: ProfileCaptureLevel,
     pub proc_backend: ProcBackend,
     pub fs_backend: FsBackend,
     pub http_backend: HttpBackend,
@@ -165,7 +166,30 @@ pub struct ReplayOptions {
     pub step: bool,
     pub until: Option<Duration>,
     pub dump_events: bool,
+    pub profile_capture: ProfileCaptureLevel,
     pub reporter: Reporter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileCaptureLevel {
+    Baseline,
+    Sampled,
+    Full,
+}
+
+impl clap::ValueEnum for ProfileCaptureLevel {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Baseline, Self::Sampled, Self::Full]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::Baseline => clap::builder::PossibleValue::new("baseline"),
+            Self::Sampled => clap::builder::PossibleValue::new("sampled"),
+            Self::Full => clap::builder::PossibleValue::new("full"),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -932,7 +956,11 @@ pub fn run_scenario(
     }
 
     std::fs::write(&report_path, serde_json::to_vec(&report_summary)?)?;
-    if should_emit_heavy_artifacts(run.status, opt.record_trace_to.is_some()) {
+    let explicit_capture = opt.record_trace_to.is_some();
+    let emit_heavy = should_emit_heavy_artifacts(run.status, explicit_capture)
+        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+    let emit_profile = should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
+    if emit_heavy {
         std::fs::write(
             artifacts_dir.join("events.json"),
             serde_json::to_vec(&run.events)?,
@@ -943,6 +971,8 @@ pub fn run_scenario(
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
+    }
+    if emit_profile {
         profile_trace.summary = report_summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
@@ -1104,7 +1134,11 @@ pub fn replay_trace(
     }
 
     std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
-    if should_emit_heavy_artifacts(run.status, opt.dump_events || opt.step) {
+    let explicit_capture = opt.dump_events || opt.step;
+    let emit_heavy = should_emit_heavy_artifacts(run.status, explicit_capture)
+        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+    let emit_profile = should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
+    if emit_heavy {
         std::fs::write(
             artifacts_dir.join("events.json"),
             serde_json::to_vec(&run.events)?,
@@ -1115,6 +1149,8 @@ pub fn replay_trace(
         {
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
+    }
+    if emit_profile {
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
@@ -1497,6 +1533,17 @@ fn should_emit_heavy_artifacts(status: ExitStatus, explicit_request: bool) -> bo
         || std::env::var("FOZZY_ARTIFACTS_FULL")
             .ok()
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+pub fn should_emit_profile_artifacts(
+    capture: ProfileCaptureLevel,
+    status: ExitStatus,
+    explicit_request: bool,
+) -> bool {
+    match capture {
+        ProfileCaptureLevel::Baseline => should_emit_heavy_artifacts(status, explicit_request),
+        ProfileCaptureLevel::Sampled | ProfileCaptureLevel::Full => true,
+    }
 }
 
 #[derive(Debug, Clone)]

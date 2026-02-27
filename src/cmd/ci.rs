@@ -3,15 +3,18 @@ use std::path::PathBuf;
 
 use crate::{
     ArtifactCommand, Config, FlakeBudget, FozzyError, FozzyResult, ReplayOptions, ReportCommand,
-    Reporter, TraceFile, TracePath, artifacts_command, replay_trace, report_command,
-    verify_trace_file,
+    Reporter, TraceFile, TracePath, artifacts_command, profile_command, replay_trace,
+    report_command, verify_trace_file,
 };
+use crate::{ProfileCaptureLevel, ProfileCommand};
 
 #[derive(Debug, Clone)]
 pub struct CiOptions {
     pub trace: PathBuf,
     pub flake_runs: Vec<String>,
     pub flake_budget_pct: Option<FlakeBudget>,
+    pub perf_baseline: Option<String>,
+    pub max_p99_delta_pct: Option<f64>,
     pub strict: bool,
 }
 
@@ -47,6 +50,11 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
             "--flake-budget requires at least two --flake-run inputs".to_string(),
         ));
     }
+    if opt.max_p99_delta_pct.is_some() && opt.perf_baseline.is_none() {
+        return Err(FozzyError::InvalidArgument(
+            "--max-p99-delta-pct requires --perf-baseline".to_string(),
+        ));
+    }
     let mut checks = Vec::new();
 
     let verify = verify_trace_file(&opt.trace)?;
@@ -75,6 +83,7 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
             step: false,
             until: None,
             dump_events: false,
+            profile_capture: ProfileCaptureLevel::Baseline,
             reporter: Reporter::Json,
         },
     )?;
@@ -171,6 +180,42 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         });
     }
 
+    if let (Some(baseline), Some(max_p99_delta_pct)) = (&opt.perf_baseline, opt.max_p99_delta_pct) {
+        let diff = profile_command(
+            config,
+            &ProfileCommand::Diff {
+                left: baseline.clone(),
+                right: opt.trace.display().to_string(),
+                cpu: false,
+                heap: false,
+                latency: true,
+                io: false,
+                sched: false,
+            },
+            true,
+        )?;
+        let p99_delta_pct = diff
+            .get("regressions")
+            .and_then(|v| v.as_array())
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    row.get("metric")
+                        .and_then(|m| m.as_str())
+                        .is_some_and(|m| m == "p99_latency_ms")
+                })
+            })
+            .and_then(|row| row.get("deltaPct"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        checks.push(CiCheck {
+            name: "perf_p99_budget".to_string(),
+            ok: p99_delta_pct <= max_p99_delta_pct,
+            detail: Some(format!(
+                "baseline={baseline} delta_pct={p99_delta_pct:.4} budget_pct={max_p99_delta_pct:.4}"
+            )),
+        });
+    }
+
     let ok = checks.iter().all(|c| c.ok);
     Ok(CiReport {
         schema_version: "fozzy.ci_report.v1".to_string(),
@@ -231,6 +276,8 @@ mod tests {
                 trace,
                 flake_runs: Vec::new(),
                 flake_budget_pct: None,
+                perf_baseline: None,
+                max_p99_delta_pct: None,
                 strict: false,
             },
         )
@@ -294,6 +341,8 @@ mod tests {
                 trace,
                 flake_runs: Vec::new(),
                 flake_budget_pct: Some("5".parse().expect("budget")),
+                perf_baseline: None,
+                max_p99_delta_pct: None,
                 strict: false,
             },
         )
