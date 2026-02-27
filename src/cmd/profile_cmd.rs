@@ -568,7 +568,7 @@ pub fn profile_command(
             limit,
         } => {
             let domains = normalize_domains(*cpu, *heap, *latency, *io, *sched);
-            let bundle = load_profile_bundle(
+            let bundle = match load_profile_bundle(
                 config,
                 run,
                 ProfileLoadSpec {
@@ -578,10 +578,17 @@ pub fn profile_command(
                     latency: domains.iter().any(|d| d == "latency"),
                     symbols: false,
                 },
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(err) => return profile_contract_or_error(strict, "top", run, err),
+            };
             enforce_cpu_contract(strict, domains.contains(&"cpu".to_string()))?;
             let mut out = serde_json::Map::new();
             let mut empty_domains = Vec::<serde_json::Value>::new();
+            let mut warnings = Vec::<String>::new();
+            if let Some(warn) = relaxed_cpu_warning(strict, domains.iter().any(|d| d == "cpu")) {
+                warnings.push(warn);
+            }
             out.insert(
                 "schemaVersion".to_string(),
                 serde_json::json!("fozzy.profile_top.v1"),
@@ -664,6 +671,7 @@ pub fn profile_command(
                 "emptyDomains".to_string(),
                 serde_json::to_value(empty_domains)?,
             );
+            out.insert("warnings".to_string(), serde_json::to_value(warnings)?);
             out.insert("metrics".to_string(), serde_json::to_value(bundle.metrics)?);
             Ok(serde_json::Value::Object(out))
         }
@@ -675,7 +683,7 @@ pub fn profile_command(
             format,
         } => {
             let use_heap = *heap || !*cpu;
-            let bundle = load_profile_bundle(
+            let bundle = match load_profile_bundle(
                 config,
                 run,
                 ProfileLoadSpec {
@@ -683,7 +691,10 @@ pub fn profile_command(
                     heap: use_heap,
                     ..ProfileLoadSpec::default()
                 },
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(err) => return profile_contract_or_error(strict, "flame", run, err),
+            };
             if *cpu {
                 enforce_cpu_contract(strict, true)?;
             }
@@ -702,6 +713,11 @@ pub fn profile_command(
                 "heap" => "no heap samples in trace",
                 _ => "no cpu samples in trace",
             };
+            let warnings = if let Some(warn) = relaxed_cpu_warning(strict, *cpu) {
+                vec![warn]
+            } else {
+                Vec::new()
+            };
             let payload = match format {
                 ProfileFlameFormat::Folded => folded_to_text(&folded),
                 ProfileFlameFormat::Svg => folded_to_svg(&folded),
@@ -718,19 +734,23 @@ pub fn profile_command(
                 "domain": domain,
                 "empty": folded.is_empty(),
                 "reason": if folded.is_empty() { Some(empty_reason) } else { None::<&str> },
+                "warnings": warnings,
                 "format": format,
                 "content": payload
             }))
         }
         ProfileCommand::Timeline { run, out, format } => {
-            let bundle = load_profile_bundle(
+            let bundle = match load_profile_bundle(
                 config,
                 run,
                 ProfileLoadSpec {
                     timeline: true,
                     ..ProfileLoadSpec::default()
                 },
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(err) => return profile_contract_or_error(strict, "timeline", run, err),
+            };
             match format {
                 ProfileTimelineFormat::Json => {
                     let payload = serde_json::json!({
@@ -771,22 +791,40 @@ pub fn profile_command(
             if domains.iter().any(|d| d == "cpu") {
                 enforce_cpu_contract(strict, true)?;
             }
-            let l = load_profile_bundle(config, left, ProfileLoadSpec::default())?;
-            let r = load_profile_bundle(config, right, ProfileLoadSpec::default())?;
+            let l = match load_profile_bundle(config, left, ProfileLoadSpec::default()) {
+                Ok(v) => v,
+                Err(err) => return profile_contract_or_error(strict, "diff", left, err),
+            };
+            let r = match load_profile_bundle(config, right, ProfileLoadSpec::default()) {
+                Ok(v) => v,
+                Err(err) => return profile_contract_or_error(strict, "diff", right, err),
+            };
             let diff = compute_diff(left, right, &domains, &l.metrics, &r.metrics);
-            Ok(serde_json::to_value(diff)?)
+            let mut out = serde_json::to_value(diff)?;
+            if let Some(warn) = relaxed_cpu_warning(strict, domains.iter().any(|d| d == "cpu"))
+                && let Some(obj) = out.as_object_mut()
+            {
+                obj.insert("warnings".to_string(), serde_json::json!([warn]));
+            }
+            Ok(out)
         }
         ProfileCommand::Explain { run, diff_with } => {
-            let base = load_profile_bundle(
+            let base = match load_profile_bundle(
                 config,
                 run,
                 ProfileLoadSpec {
                     latency: diff_with.is_none(),
                     ..ProfileLoadSpec::default()
                 },
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(err) => return profile_contract_or_error(strict, "explain", run, err),
+            };
             let explain = if let Some(right) = diff_with {
-                let other = load_profile_bundle(config, right, ProfileLoadSpec::default())?;
+                let other = match load_profile_bundle(config, right, ProfileLoadSpec::default()) {
+                    Ok(v) => v,
+                    Err(err) => return profile_contract_or_error(strict, "explain", right, err),
+                };
                 explain_from_diff(run, right, &base.metrics, &other.metrics)
             } else {
                 explain_single(
@@ -801,7 +839,7 @@ pub fn profile_command(
             Ok(serde_json::to_value(explain)?)
         }
         ProfileCommand::Export { run, format, out } => {
-            let bundle = load_profile_bundle(
+            let bundle = match load_profile_bundle(
                 config,
                 run,
                 ProfileLoadSpec {
@@ -813,7 +851,28 @@ pub fn profile_command(
                     symbols: matches!(format, ProfileExportFormat::Pprof),
                     ..ProfileLoadSpec::default()
                 },
+            ) {
+                Ok(v) => v,
+                Err(err) => return profile_contract_or_error(strict, "export", run, err),
+            };
+            enforce_cpu_contract(
+                strict,
+                matches!(
+                    format,
+                    ProfileExportFormat::Speedscope | ProfileExportFormat::Pprof
+                ),
             )?;
+            let warnings = if let Some(warn) = relaxed_cpu_warning(
+                strict,
+                matches!(
+                    format,
+                    ProfileExportFormat::Speedscope | ProfileExportFormat::Pprof
+                ),
+            ) {
+                vec![warn]
+            } else {
+                Vec::new()
+            };
             let value = match format {
                 ProfileExportFormat::Speedscope => serde_json::to_value(folded_to_speedscope(
                     run,
@@ -847,6 +906,7 @@ pub fn profile_command(
                 "run": run,
                 "format": format,
                 "out": out,
+                "warnings": warnings,
             }))
         }
         ProfileCommand::Shrink {
@@ -855,7 +915,10 @@ pub fn profile_command(
             direction,
             budget,
         } => {
-            let (artifacts_dir, trace_path) = resolve_profile_trace(config, run)?;
+            let (artifacts_dir, trace_path) = match resolve_profile_trace(config, run) {
+                Ok(v) => v,
+                Err(err) => return profile_contract_or_error(strict, "shrink", run, err),
+            };
             let input = TraceFile::read_json(&trace_path)?;
             let baseline = metric_value(*metric, &input)?;
             let shrunk = shrink_trace(
@@ -923,6 +986,35 @@ pub fn profile_command(
         ProfileCommand::Env => Ok(profile_env_report(config, strict)),
         ProfileCommand::Doctor { run, deep } => profile_doctor(config, strict, run, *deep),
     }
+}
+
+fn profile_contract_or_error(
+    strict: bool,
+    command: &str,
+    selector: &str,
+    err: FozzyError,
+) -> FozzyResult<serde_json::Value> {
+    if strict {
+        return Err(err);
+    }
+    match err {
+        FozzyError::InvalidArgument(msg) => Ok(serde_json::json!({
+            "schemaVersion": "fozzy.profile_contract_warning.v1",
+            "status": "warn",
+            "command": command,
+            "run": selector,
+            "detail": msg,
+            "hint": "rerun with --strict for hard-fail contract enforcement",
+        })),
+        other => Err(other),
+    }
+}
+
+fn relaxed_cpu_warning(strict: bool, cpu_requested: bool) -> Option<String> {
+    if strict || !cpu_requested {
+        return None;
+    }
+    Some("cpu domain uses host-time samples and is non-deterministic across replays; use --strict to hard-fail this contract".to_string())
 }
 
 pub fn write_profile_artifacts_from_trace(
@@ -2621,5 +2713,53 @@ mod tests {
             Some("fozzy.profile_doctor.v1")
         );
         assert!(out.get("checks").and_then(|v| v.as_array()).is_some());
+    }
+
+    #[test]
+    fn relaxed_mode_returns_warning_for_missing_profile_inputs() {
+        let cfg = Config::default();
+        let cmd = ProfileCommand::Top {
+            run: "missing.fozzy".to_string(),
+            cpu: false,
+            heap: true,
+            latency: false,
+            io: false,
+            sched: false,
+            limit: 5,
+        };
+        let out = profile_command(&cfg, &cmd, false).expect("relaxed warning");
+        assert_eq!(
+            out.get("schemaVersion").and_then(|v| v.as_str()),
+            Some("fozzy.profile_contract_warning.v1")
+        );
+        assert_eq!(out.get("status").and_then(|v| v.as_str()), Some("warn"));
+    }
+
+    #[test]
+    fn relaxed_mode_emits_cpu_warning() {
+        let ws = temp_workspace("cpu-warn");
+        let trace = ws.join("trace.fozzy");
+        std::fs::write(
+            &trace,
+            serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"),
+        )
+        .expect("trace");
+        let cfg = Config::default();
+        let cmd = ProfileCommand::Top {
+            run: trace.to_string_lossy().to_string(),
+            cpu: true,
+            heap: false,
+            latency: false,
+            io: false,
+            sched: false,
+            limit: 5,
+        };
+        let out = profile_command(&cfg, &cmd, false).expect("top");
+        let warnings = out
+            .get("warnings")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(!warnings.is_empty(), "expected warnings");
     }
 }
