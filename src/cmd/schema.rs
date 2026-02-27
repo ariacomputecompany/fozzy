@@ -436,15 +436,15 @@ pub fn schema_doc() -> SchemaDoc {
     profile_output_schemas.insert(
         "env",
         ProfileOutputSchema {
-            schema_version: "fozzy.profile_env.v1",
+            schema_version: "fozzy.profile_env.v2",
             required_fields: vec!["schemaVersion", "strict", "host", "backends", "domains"],
             optional_fields: vec![],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_env.v1",
+                "schemaVersion":"fozzy.profile_env.v2",
                 "strict":true,
                 "host":{"os":"macos","arch":"aarch64"},
                 "backends":{"proc":"scripted","fs":"virtual","http":"scripted"},
-                "domains":{"cpu":{"available":true,"quality":"degraded"}}
+                "domains":{"cpu":{"available":true,"quality":"degraded","activeCollector":"in_process_sampler","diagnostics":[]}}
             }),
             notes: "Describes profiler domain capability/quality by host + backend setup."
                 .to_string(),
@@ -500,7 +500,7 @@ pub fn schema_doc() -> SchemaDoc {
     profile_artifact_schemas.insert(
         "profile.cpu.json",
         ProfileArtifactSchema {
-            schema_version: "fozzy.profile_cpu.v1",
+            schema_version: "fozzy.profile_cpu.v2",
             required_fields: vec![
                 "schemaVersion",
                 "runId",
@@ -513,10 +513,10 @@ pub fn schema_doc() -> SchemaDoc {
             ],
             optional_fields: vec![],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_cpu.v1",
+                "schemaVersion":"fozzy.profile_cpu.v2",
                 "runId":"run-id",
-                "collector":{"domain":"host_time"},
-                "samplePeriodMs":1,
+                "collector":{"domain":"host_time","primaryCollector":"perf_event_open","activeCollector":"in_process_sampler","diagnostics":[]},
+                "samplePeriodMs":10,
                 "sampleCount":1,
                 "samples":[{"thread":"main","stack":["fozzy::runtime"],"weightMs":1}],
                 "foldedStacks":[{"stack":"fozzy::runtime","weight":1}],

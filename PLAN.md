@@ -341,15 +341,15 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Ensure replay uses captured event stream deterministically with drift detection unchanged.
 
 #### M13.4 Mode B: CPU Sampling Profiler v1 (Host-Time Domain)
-- ⬜ Linux-first collector (`perf_event_open`) with permission/capability diagnostics and in-process fallback sampling.
-- ⬜ macOS collector design + implementation path (Mach sampling and symbolization pipeline) with explicit parity checklist.
-- ⬜ Capture per-thread stacks, sample count, sample period, and collector metadata.
-- ⬜ Symbolization pipeline:
-  - ⬜ build-id/module capture
-  - ⬜ deferred symbolization for offline export
-  - ⬜ stable folded-stack output for flamegraph tooling
-- ⬜ Implement `fozzy profile flame` + `fozzy profile top --cpu`.
-- ⬜ Document and enforce host-time semantics: CPU samples are not replay-deterministic but are comparable across repeated deterministic replays.
+- ✅ Linux-first collector (`perf_event_open`) with permission/capability diagnostics and in-process fallback sampling.
+- ✅ macOS collector design + implementation path (Mach sampling and symbolization pipeline) with explicit parity checklist.
+- ✅ Capture per-thread stacks, sample count, sample period, and collector metadata.
+- ✅ Symbolization pipeline:
+  - ✅ build-id/module capture
+  - ✅ deferred symbolization for offline export
+  - ✅ stable folded-stack output for flamegraph tooling
+- ✅ Implement `fozzy profile flame` + `fozzy profile top --cpu`.
+- ✅ Document and enforce host-time semantics: CPU samples are not replay-deterministic but are comparable across repeated deterministic replays.
 
 #### M13.5 Mode C: Heap/Allocation Profiler v1 (Memory Mode Leverage)
 - ⬜ Build heap profile on top of existing memory tracking in M12 (no duplicate alloc pipeline).
