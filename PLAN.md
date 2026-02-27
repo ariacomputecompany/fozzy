@@ -414,21 +414,21 @@ Fozzy is a deterministic full-stack testing platform built from first principles
   - ✅ `fozzy profile explain <run|trace> --json`
 
 #### M13.11 Test Matrix + Hardening Requirements
-- ⬜ Unit tests:
-  - ⬜ event schema encode/decode + compatibility
-  - ⬜ folded-stack aggregation correctness
-  - ⬜ latency critical-path extraction correctness
-  - ⬜ heap callsite aggregation + lifetime histogram correctness
-  - ⬜ diff heuristics stability and tie-breaking determinism
-- ⬜ Integration tests:
-  - ⬜ golden `run -> profile top/flame/timeline/export` flows
-  - ⬜ golden `record -> replay -> profile diff/explain` parity flows
-  - ⬜ `artifacts ls/diff/export/pack/bundle` profiler coverage
-  - ⬜ strict/unsafe behavior for missing/legacy profiler artifacts
-- ⬜ Performance/overhead tests:
-  - ⬜ overhead budgets per profiling mode (`baseline`, `sampled`, `full`)
-  - ⬜ bounded memory growth for long-running captures
-  - ⬜ artifact size budgets + compression behavior
+- ✅ Unit tests:
+  - ✅ event schema encode/decode + compatibility
+  - ✅ folded-stack aggregation correctness
+  - ✅ latency critical-path extraction correctness
+  - ✅ heap callsite aggregation + lifetime histogram correctness
+  - ✅ diff heuristics stability and tie-breaking determinism
+- ✅ Integration tests:
+  - ✅ golden `run -> profile top/flame/timeline/export` flows
+  - ✅ golden `record -> replay -> profile diff/explain` parity flows
+  - ✅ `artifacts ls/diff/export/pack/bundle` profiler coverage
+  - ✅ strict/unsafe behavior for missing/legacy profiler artifacts
+- ✅ Performance/overhead tests:
+  - ✅ overhead budgets per profiling mode (`baseline`, `sampled`, `full`)
+  - ✅ bounded memory growth for long-running captures
+  - ✅ artifact size budgets + compression behavior
 
 #### M13.12 Rollout Plan (Execution Order)
 1. ✅ M13.2 schema + artifact plumbing and `artifacts`/`report` integration.

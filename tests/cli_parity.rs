@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
@@ -25,6 +25,14 @@ fn run_cli(args: &[String]) -> std::process::Output {
         .args(args)
         .output()
         .expect("run cli")
+}
+
+fn run_cli_in(cwd: &Path, args: &[String]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_fozzy"))
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("run cli in cwd")
 }
 
 fn spawn_one_shot_http_server() -> (String, mpsc::Sender<()>) {
@@ -105,6 +113,14 @@ fn spawn_header_http_server() -> (String, mpsc::Sender<()>) {
 fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
     let s = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(s.trim()).expect("stdout json")
+}
+
+fn json_run_id(doc: &serde_json::Value) -> String {
+    doc.get("identity")
+        .and_then(|v| v.get("runId").or_else(|| v.get("run_id")))
+        .and_then(|v| v.as_str())
+        .expect("run id")
+        .to_string()
 }
 
 fn full_step_status(doc: &serde_json::Value, name: &str) -> Option<String> {
@@ -1815,4 +1831,499 @@ fn gate_targeted_profile_runs_scoped_strict_bundle() {
             .unwrap_or_default(),
         1
     );
+}
+
+#[test]
+fn profile_golden_run_top_flame_timeline_export_flow() {
+    let ws = temp_workspace("profile-golden-flow");
+    let scenario = ws.join("memory.pass.fozzy.json");
+    std::fs::write(&scenario, fixture("memory.pass.fozzy.json")).expect("write scenario");
+    let cfg = ws.join("fozzy.toml");
+    std::fs::write(&cfg, "base_dir = \".fozzy\"\n").expect("write config");
+    let trace = ws.join("golden.trace.fozzy");
+
+    let run = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.to_string_lossy().to_string(),
+            "--det".into(),
+            "--seed".into(),
+            "7".into(),
+            "--profile-capture".into(),
+            "full".into(),
+            "--record".into(),
+            trace.to_string_lossy().to_string(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "run stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(trace.exists(), "expected recorded trace");
+
+    let top = run_cli_in(
+        &ws,
+        &[
+            "profile".into(),
+            "top".into(),
+            trace.to_string_lossy().to_string(),
+            "--cpu".into(),
+            "--heap".into(),
+            "--latency".into(),
+            "--io".into(),
+            "--sched".into(),
+            "--limit".into(),
+            "10".into(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        top.status.code(),
+        Some(0),
+        "profile top stderr={}",
+        String::from_utf8_lossy(&top.stderr)
+    );
+    let top_doc = parse_json_stdout(&top);
+    assert_eq!(
+        top_doc
+            .get("schemaVersion")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        "fozzy.profile_top.v1"
+    );
+    assert!(top_doc.get("cpu").is_some());
+    assert!(top_doc.get("heap").is_some());
+    assert!(top_doc.get("latency").is_some());
+
+    let folded_out = ws.join("cpu.folded.txt");
+    let flame = run_cli_in(
+        &ws,
+        &[
+            "profile".into(),
+            "flame".into(),
+            trace.to_string_lossy().to_string(),
+            "--cpu".into(),
+            "--format".into(),
+            "folded".into(),
+            "--out".into(),
+            folded_out.to_string_lossy().to_string(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        flame.status.code(),
+        Some(0),
+        "profile flame stderr={}",
+        String::from_utf8_lossy(&flame.stderr)
+    );
+    assert!(folded_out.exists(), "folded output must exist");
+    assert!(
+        std::fs::metadata(&folded_out)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false),
+        "folded output should be non-empty"
+    );
+
+    let timeline_out = ws.join("timeline.json");
+    let timeline = run_cli_in(
+        &ws,
+        &[
+            "profile".into(),
+            "timeline".into(),
+            trace.to_string_lossy().to_string(),
+            "--format".into(),
+            "json".into(),
+            "--out".into(),
+            timeline_out.to_string_lossy().to_string(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        timeline.status.code(),
+        Some(0),
+        "profile timeline stderr={}",
+        String::from_utf8_lossy(&timeline.stderr)
+    );
+    assert!(timeline_out.exists(), "timeline output must exist");
+
+    let export_out = ws.join("profile.otlp.json");
+    let export = run_cli_in(
+        &ws,
+        &[
+            "profile".into(),
+            "export".into(),
+            trace.to_string_lossy().to_string(),
+            "--format".into(),
+            "otlp".into(),
+            "--out".into(),
+            export_out.to_string_lossy().to_string(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        export.status.code(),
+        Some(0),
+        "profile export stderr={}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    assert!(export_out.exists(), "profile export output must exist");
+}
+
+#[test]
+fn profile_record_replay_diff_explain_and_artifact_parity_flow() {
+    let ws = temp_workspace("profile-diff-flow");
+    let cfg = ws.join("fozzy.toml");
+    std::fs::write(&cfg, "base_dir = \".fozzy\"\n").expect("write config");
+    let left_scenario = ws.join("left.fozzy.json");
+    let right_scenario = ws.join("right.fozzy.json");
+    std::fs::write(&left_scenario, fixture("example.fozzy.json")).expect("left scenario");
+    std::fs::write(&right_scenario, fixture("memory.pass.fozzy.json")).expect("right scenario");
+    let left_trace = ws.join("left.trace.fozzy");
+    let right_trace = ws.join("right.trace.fozzy");
+
+    let mut left_run_id = String::new();
+    let mut right_run_id = String::new();
+    for (idx, (scenario, trace, seed)) in [
+        (left_scenario.as_path(), left_trace.as_path(), "7"),
+        (right_scenario.as_path(), right_trace.as_path(), "13"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let run = run_cli_in(
+            &ws,
+            &[
+                "run".into(),
+                scenario.to_string_lossy().to_string(),
+                "--det".into(),
+                "--seed".into(),
+                seed.into(),
+                "--profile-capture".into(),
+                "full".into(),
+                "--record".into(),
+                trace.to_string_lossy().to_string(),
+                "--config".into(),
+                cfg.to_string_lossy().to_string(),
+                "--json".into(),
+            ],
+        );
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "run stderr={}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let run_doc = parse_json_stdout(&run);
+        if idx == 0 {
+            left_run_id = json_run_id(&run_doc);
+        } else {
+            right_run_id = json_run_id(&run_doc);
+        }
+        let replay = run_cli_in(
+            &ws,
+            &[
+                "replay".into(),
+                trace.to_string_lossy().to_string(),
+                "--profile-capture".into(),
+                "full".into(),
+                "--config".into(),
+                cfg.to_string_lossy().to_string(),
+                "--json".into(),
+            ],
+        );
+        assert_eq!(
+            replay.status.code(),
+            Some(0),
+            "replay stderr={}",
+            String::from_utf8_lossy(&replay.stderr)
+        );
+    }
+
+    let diff = run_cli_in(
+        &ws,
+        &[
+            "profile".into(),
+            "diff".into(),
+            left_trace.to_string_lossy().to_string(),
+            right_trace.to_string_lossy().to_string(),
+            "--cpu".into(),
+            "--heap".into(),
+            "--latency".into(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        diff.status.code(),
+        Some(0),
+        "profile diff stderr={}",
+        String::from_utf8_lossy(&diff.stderr)
+    );
+    let diff_doc = parse_json_stdout(&diff);
+    assert_eq!(
+        diff_doc
+            .get("schemaVersion")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        "fozzy.profile_diff.v2"
+    );
+    assert!(diff_doc.get("regressions").is_some());
+
+    let explain = run_cli_in(
+        &ws,
+        &[
+            "profile".into(),
+            "explain".into(),
+            left_trace.to_string_lossy().to_string(),
+            "--diff-with".into(),
+            right_trace.to_string_lossy().to_string(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        explain.status.code(),
+        Some(0),
+        "profile explain stderr={}",
+        String::from_utf8_lossy(&explain.stderr)
+    );
+    let explain_doc = parse_json_stdout(&explain);
+    assert_eq!(
+        explain_doc
+            .get("schemaVersion")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        "fozzy.profile_explain.v1"
+    );
+
+    let ls = run_cli_in(
+        &ws,
+        &[
+            "artifacts".into(),
+            "ls".into(),
+            left_run_id.clone(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        ls.status.code(),
+        Some(0),
+        "artifacts ls stderr={}",
+        String::from_utf8_lossy(&ls.stderr)
+    );
+    let ls_stdout = String::from_utf8_lossy(&ls.stdout);
+    assert!(ls_stdout.contains("profile.timeline.json"));
+    assert!(ls_stdout.contains("profile.cpu.json"));
+    assert!(ls_stdout.contains("profile.heap.json"));
+    assert!(ls_stdout.contains("profile.latency.json"));
+    assert!(ls_stdout.contains("profile.metrics.json"));
+
+    let adiff = run_cli_in(
+        &ws,
+        &[
+            "artifacts".into(),
+            "diff".into(),
+            left_run_id.clone(),
+            right_run_id.clone(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        adiff.status.code(),
+        Some(0),
+        "artifacts diff stderr={}",
+        String::from_utf8_lossy(&adiff.stderr)
+    );
+    let adiff_doc = parse_json_stdout(&adiff);
+    assert_eq!(
+        adiff_doc
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        "diff"
+    );
+
+    let export_zip = ws.join("artifacts.export.zip");
+    let pack_zip = ws.join("artifacts.pack.zip");
+    let bundle_zip = ws.join("artifacts.bundle.zip");
+    for (sub, out, target) in [
+        ("export", &export_zip, left_run_id.clone()),
+        ("pack", &pack_zip, left_run_id.clone()),
+        ("bundle", &bundle_zip, left_trace.to_string_lossy().to_string()),
+    ] {
+        let out_cmd = run_cli_in(
+            &ws,
+            &[
+                "artifacts".into(),
+                sub.into(),
+                target,
+                "--out".into(),
+                out.to_string_lossy().to_string(),
+                "--config".into(),
+                cfg.to_string_lossy().to_string(),
+                "--json".into(),
+            ],
+        );
+        assert_eq!(
+            out_cmd.status.code(),
+            Some(0),
+            "artifacts {sub} stderr={}",
+            String::from_utf8_lossy(&out_cmd.stderr)
+        );
+        let size = std::fs::metadata(out).expect("zip metadata").len();
+        assert!(size > 0, "zip should be non-empty");
+        assert!(size <= 8 * 1024 * 1024, "zip should stay within budget");
+    }
+}
+
+#[test]
+fn profile_strict_and_unsafe_legacy_behavior_and_capture_mode_budgets() {
+    let ws = temp_workspace("profile-strict-unsafe");
+    let cfg = ws.join("fozzy.toml");
+    std::fs::write(&cfg, "base_dir = \".fozzy\"\n").expect("write config");
+    let missing = ws.join("missing.trace.fozzy");
+
+    let strict = run_cli_in(
+        &ws,
+        &[
+            "profile".into(),
+            "top".into(),
+            missing.to_string_lossy().to_string(),
+            "--heap".into(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_ne!(strict.status.code(), Some(0), "strict should fail");
+
+    let unsafe_out = run_cli_in(
+        &ws,
+        &[
+            "--unsafe".into(),
+            "profile".into(),
+            "top".into(),
+            missing.to_string_lossy().to_string(),
+            "--heap".into(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(unsafe_out.status.code(), Some(0), "unsafe should warn");
+    let unsafe_doc = parse_json_stdout(&unsafe_out);
+    assert_eq!(
+        unsafe_doc
+            .get("schemaVersion")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        "fozzy.profile_contract_warning.v1"
+    );
+
+    let run_dir = ws.join(".fozzy/runs/legacy-partial");
+    std::fs::create_dir_all(&run_dir).expect("legacy run dir");
+    std::fs::write(
+        run_dir.join("profile.metrics.json"),
+        br#"{"schemaVersion":"fozzy.profile_metrics.v2","runId":"legacy","timeDomains":{"virtualTime":"deterministic","hostMonotonicTime":"host"},"virtualTimeMs":0,"hostTimeMs":0,"cpuTimeMs":0,"allocBytes":0,"inUseBytes":0,"p50LatencyMs":0,"p95LatencyMs":0,"p99LatencyMs":0,"maxLatencyMs":0,"ioOps":0,"schedOps":0}"#,
+    )
+    .expect("legacy metrics");
+
+    let legacy_strict = run_cli_in(
+        &ws,
+        &[
+            "profile".into(),
+            "top".into(),
+            "legacy-partial".into(),
+            "--heap".into(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_ne!(
+        legacy_strict.status.code(),
+        Some(0),
+        "strict should fail for legacy partial artifacts"
+    );
+    let legacy_unsafe = run_cli_in(
+        &ws,
+        &[
+            "--unsafe".into(),
+            "profile".into(),
+            "top".into(),
+            "legacy-partial".into(),
+            "--heap".into(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        legacy_unsafe.status.code(),
+        Some(0),
+        "unsafe should downgrade legacy contract error"
+    );
+
+    let scenario = ws.join("example.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+    for (level, expect_profile) in [("baseline", false), ("sampled", true), ("full", true)] {
+        let out = run_cli_in(
+            &ws,
+            &[
+                "run".into(),
+                scenario.to_string_lossy().to_string(),
+                "--det".into(),
+                "--seed".into(),
+                "7".into(),
+                "--profile-capture".into(),
+                level.into(),
+                "--config".into(),
+                cfg.to_string_lossy().to_string(),
+                "--json".into(),
+            ],
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "run ({level}) stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let doc = parse_json_stdout(&out);
+        let run_id = json_run_id(&doc);
+        let metrics_path = ws
+            .join(".fozzy")
+            .join("runs")
+            .join(run_id)
+            .join("profile.metrics.json");
+        assert_eq!(
+            metrics_path.exists(),
+            expect_profile,
+            "profile artifact policy mismatch for {level}"
+        );
+        if expect_profile {
+            let size = std::fs::metadata(&metrics_path).expect("metrics metadata").len();
+            assert!(size > 0, "metrics artifact should be non-empty");
+            assert!(size < 2 * 1024 * 1024, "metrics artifact should stay bounded");
+        }
+    }
 }
