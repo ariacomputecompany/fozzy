@@ -296,6 +296,8 @@ pub struct ProfileTimelineArtifact {
     pub schema_version: String,
     #[serde(rename = "runId")]
     pub run_id: String,
+    #[serde(rename = "timeDomains")]
+    pub time_domains: TimeDomains,
     pub events: Vec<ProfileEvent>,
 }
 
@@ -315,6 +317,8 @@ pub struct ProfileMetrics {
     pub schema_version: String,
     #[serde(rename = "runId")]
     pub run_id: String,
+    #[serde(rename = "timeDomains")]
+    pub time_domains: TimeDomains,
     #[serde(rename = "virtualTimeMs")]
     pub virtual_time_ms: u64,
     #[serde(rename = "hostTimeMs")]
@@ -339,6 +343,14 @@ pub struct ProfileMetrics {
     pub sched_ops: u64,
     #[serde(rename = "confidence", skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeDomains {
+    #[serde(rename = "virtualTime")]
+    pub virtual_time: String,
+    #[serde(rename = "hostMonotonicTime")]
+    pub host_monotonic_time: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -550,6 +562,10 @@ pub struct ProfileDiff {
     pub schema_version: String,
     pub left: String,
     pub right: String,
+    #[serde(rename = "leftSamples")]
+    pub left_samples: usize,
+    #[serde(rename = "rightSamples")]
+    pub right_samples: usize,
     pub domains: Vec<String>,
     #[serde(rename = "regressions")]
     pub regressions: Vec<RegressionFinding>,
@@ -567,8 +583,31 @@ pub struct RegressionFinding {
     pub delta: f64,
     #[serde(rename = "deltaPct")]
     pub delta_pct: f64,
+    #[serde(rename = "timeDomain")]
+    pub time_domain: String,
     #[serde(rename = "confidence")]
     pub confidence: f64,
+    #[serde(
+        rename = "confidenceMeta",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub confidence_meta: Option<ConfidenceMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfidenceMeta {
+    pub method: String,
+    #[serde(rename = "leftSampleCount")]
+    pub left_sample_count: usize,
+    #[serde(rename = "rightSampleCount")]
+    pub right_sample_count: usize,
+    #[serde(rename = "leftStdDev")]
+    pub left_std_dev: f64,
+    #[serde(rename = "rightStdDev")]
+    pub right_std_dev: f64,
+    #[serde(rename = "pooledStdErr")]
+    pub pooled_std_err: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -599,6 +638,13 @@ struct CpuCollectorCapability {
     linux_perf_event_open: bool,
     diagnostics: Vec<String>,
     sample_period_ms: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MetricStats {
+    n: usize,
+    mean: f64,
+    std_dev: f64,
 }
 
 pub fn profile_command(
@@ -813,6 +859,10 @@ pub fn profile_command(
                         "schemaVersion": "fozzy.profile_timeline.v1",
                         "run": run,
                         "format": "json",
+                        "timeDomains": {
+                            "virtualTime": "deterministic, replay-critical",
+                            "hostMonotonicTime": "non-deterministic ordering/perf context"
+                        },
                         "events": bundle.timeline.as_ref().expect("timeline requested")
                     });
                     if let Some(path) = out {
@@ -829,6 +879,10 @@ pub fn profile_command(
                         "schemaVersion": "fozzy.profile_timeline.v1",
                         "run": run,
                         "format": "html",
+                        "timeDomains": {
+                            "virtualTime": "deterministic, replay-critical",
+                            "hostMonotonicTime": "non-deterministic ordering/perf context"
+                        },
                         "content": html
                     }))
                 }
@@ -847,9 +901,11 @@ pub fn profile_command(
             if domains.iter().any(|d| d == "cpu") {
                 enforce_cpu_contract(strict, true)?;
             }
-            let l = match load_profile_bundle(
+            let left_selectors = parse_selector_group(left);
+            let right_selectors = parse_selector_group(right);
+            let left_bundles = match load_profile_bundle_group(
                 config,
-                left,
+                &left_selectors,
                 ProfileLoadSpec {
                     heap: domains.iter().any(|d| d == "heap"),
                     ..ProfileLoadSpec::default()
@@ -858,9 +914,9 @@ pub fn profile_command(
                 Ok(v) => v,
                 Err(err) => return profile_contract_or_error(strict, "diff", left, err),
             };
-            let r = match load_profile_bundle(
+            let right_bundles = match load_profile_bundle_group(
                 config,
-                right,
+                &right_selectors,
                 ProfileLoadSpec {
                     heap: domains.iter().any(|d| d == "heap"),
                     ..ProfileLoadSpec::default()
@@ -869,14 +925,22 @@ pub fn profile_command(
                 Ok(v) => v,
                 Err(err) => return profile_contract_or_error(strict, "diff", right, err),
             };
+            let (l, l_stats) = aggregate_metric_bundle(&left_bundles)?;
+            let (r, r_stats) = aggregate_metric_bundle(&right_bundles)?;
+            let l_heap = left_bundles.first().and_then(|b| b.heap.as_ref());
+            let r_heap = right_bundles.first().and_then(|b| b.heap.as_ref());
             let diff = compute_diff(
                 left,
                 right,
                 &domains,
-                &l.metrics,
-                &r.metrics,
-                l.heap.as_ref(),
-                r.heap.as_ref(),
+                &l,
+                &r,
+                l_heap,
+                r_heap,
+                &l_stats,
+                &r_stats,
+                left_bundles.len(),
+                right_bundles.len(),
             );
             let mut out = serde_json::to_value(diff)?;
             if let Some(warn) = relaxed_cpu_warning(strict, domains.iter().any(|d| d == "cpu"))
@@ -1113,8 +1177,15 @@ pub fn write_profile_artifacts_from_trace(
     write_json(
         &artifacts_dir.join("profile.timeline.json"),
         &ProfileTimelineArtifact {
-            schema_version: "fozzy.profile_timeline_artifact.v2".to_string(),
+            schema_version: "fozzy.profile_timeline_artifact.v3".to_string(),
             run_id: trace.summary.identity.run_id.clone(),
+            time_domains: TimeDomains {
+                virtual_time: "deterministic, replay-critical timeline derived from virtual clock"
+                    .to_string(),
+                host_monotonic_time:
+                    "non-deterministic host monotonic ordering used for performance comparison"
+                        .to_string(),
+            },
             events: timeline,
         },
     )?;
@@ -1193,6 +1264,104 @@ fn load_profile_bundle(
         metrics,
         symbols,
     })
+}
+
+fn parse_selector_group(value: &str) -> Vec<String> {
+    let selectors = value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if selectors.is_empty() {
+        vec![value.to_string()]
+    } else {
+        selectors
+    }
+}
+
+fn load_profile_bundle_group(
+    config: &Config,
+    selectors: &[String],
+    spec: ProfileLoadSpec,
+) -> FozzyResult<Vec<ProfileBundle>> {
+    let mut bundles = Vec::<ProfileBundle>::new();
+    for selector in selectors {
+        bundles.push(load_profile_bundle(config, selector, spec)?);
+    }
+    Ok(bundles)
+}
+
+fn aggregate_metric_bundle(
+    bundles: &[ProfileBundle],
+) -> FozzyResult<(ProfileMetrics, HashMap<String, MetricStats>)> {
+    let first = bundles
+        .first()
+        .ok_or_else(|| FozzyError::InvalidArgument("diff requires at least one sample".to_string()))?;
+    let values_for = |field: fn(&ProfileMetrics) -> f64| {
+        bundles
+            .iter()
+            .map(|b| field(&b.metrics))
+            .collect::<Vec<f64>>()
+    };
+    let mut stats = HashMap::<String, MetricStats>::new();
+    for (name, values) in [
+        ("virtual_time_ms", values_for(|m| m.virtual_time_ms as f64)),
+        ("cpu_time_ms", values_for(|m| m.cpu_time_ms as f64)),
+        ("host_time_ms", values_for(|m| m.host_time_ms as f64)),
+        ("p50_latency_ms", values_for(|m| m.p50_latency_ms as f64)),
+        ("p95_latency_ms", values_for(|m| m.p95_latency_ms as f64)),
+        ("p99_latency_ms", values_for(|m| m.p99_latency_ms as f64)),
+        ("max_latency_ms", values_for(|m| m.max_latency_ms as f64)),
+        ("alloc_bytes", values_for(|m| m.alloc_bytes as f64)),
+        ("in_use_bytes", values_for(|m| m.in_use_bytes as f64)),
+        ("io_ops", values_for(|m| m.io_ops as f64)),
+        ("sched_ops", values_for(|m| m.sched_ops as f64)),
+    ] {
+        stats.insert(name.to_string(), metric_stats(&values));
+    }
+
+    let mean_u64 = |name: &str, fallback: u64| {
+        stats
+            .get(name)
+            .map(|s| s.mean.max(0.0).round() as u64)
+            .unwrap_or(fallback)
+    };
+    let mut out = first.metrics.clone();
+    out.virtual_time_ms = mean_u64("virtual_time_ms", out.virtual_time_ms);
+    out.host_time_ms = mean_u64("host_time_ms", out.host_time_ms);
+    out.cpu_time_ms = mean_u64("cpu_time_ms", out.cpu_time_ms);
+    out.alloc_bytes = mean_u64("alloc_bytes", out.alloc_bytes);
+    out.in_use_bytes = mean_u64("in_use_bytes", out.in_use_bytes);
+    out.p50_latency_ms = mean_u64("p50_latency_ms", out.p50_latency_ms);
+    out.p95_latency_ms = mean_u64("p95_latency_ms", out.p95_latency_ms);
+    out.p99_latency_ms = mean_u64("p99_latency_ms", out.p99_latency_ms);
+    out.max_latency_ms = mean_u64("max_latency_ms", out.max_latency_ms);
+    out.io_ops = mean_u64("io_ops", out.io_ops);
+    out.sched_ops = mean_u64("sched_ops", out.sched_ops);
+    out.confidence = Some(if bundles.len() <= 1 { 0.8 } else { 0.9 });
+    Ok((out, stats))
+}
+
+fn metric_stats(values: &[f64]) -> MetricStats {
+    if values.is_empty() {
+        return MetricStats::default();
+    }
+    let n = values.len();
+    let mean = values.iter().copied().sum::<f64>() / n as f64;
+    let variance = values
+        .iter()
+        .map(|v| {
+            let d = *v - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / n as f64;
+    MetricStats {
+        n,
+        mean,
+        std_dev: variance.sqrt(),
+    }
 }
 
 fn build_profile_timeline(trace: &TraceFile) -> Vec<ProfileEvent> {
@@ -1886,8 +2055,12 @@ fn build_profile_metrics(
         .filter(|e| e.kind == ProfileEventKind::Sched)
         .count() as u64;
     ProfileMetrics {
-        schema_version: "fozzy.profile_metrics.v1".to_string(),
+        schema_version: "fozzy.profile_metrics.v2".to_string(),
         run_id: trace.summary.identity.run_id.clone(),
+        time_domains: TimeDomains {
+            virtual_time: "deterministic, replay-critical".to_string(),
+            host_monotonic_time: "non-deterministic, statistical comparison only".to_string(),
+        },
         virtual_time_ms,
         host_time_ms,
         cpu_time_ms,
@@ -2070,6 +2243,10 @@ fn compute_diff(
     r: &ProfileMetrics,
     l_heap: Option<&HeapProfile>,
     r_heap: Option<&HeapProfile>,
+    l_stats: &HashMap<String, MetricStats>,
+    r_stats: &HashMap<String, MetricStats>,
+    left_samples: usize,
+    right_samples: usize,
 ) -> ProfileDiff {
     let mut regressions = Vec::<RegressionFinding>::new();
 
@@ -2115,13 +2292,20 @@ fn compute_diff(
                 right_value: rv,
                 delta,
                 delta_pct,
-                confidence: 0.8,
+                time_domain: metric_time_domain(metric).to_string(),
+                confidence: regression_confidence(metric, delta, l_stats, r_stats),
+                confidence_meta: Some(confidence_meta(metric, l_stats, r_stats)),
             });
         }
         if domain == "heap"
             && let (Some(left_heap), Some(right_heap)) = (l_heap, r_heap)
         {
-            regressions.extend(heap_callsite_regressions(left_heap, right_heap));
+            regressions.extend(heap_callsite_regressions(
+                left_heap,
+                right_heap,
+                l_stats,
+                r_stats,
+            ));
         }
     }
 
@@ -2137,12 +2321,19 @@ fn compute_diff(
         schema_version: "fozzy.profile_diff.v1".to_string(),
         left: left.to_string(),
         right: right.to_string(),
+        left_samples,
+        right_samples,
         domains: domains.to_vec(),
         regressions,
     }
 }
 
-fn heap_callsite_regressions(left: &HeapProfile, right: &HeapProfile) -> Vec<RegressionFinding> {
+fn heap_callsite_regressions(
+    left: &HeapProfile,
+    right: &HeapProfile,
+    l_stats: &HashMap<String, MetricStats>,
+    r_stats: &HashMap<String, MetricStats>,
+) -> Vec<RegressionFinding> {
     let mut left_map = BTreeMap::<String, &HeapCallsite>::new();
     let mut right_map = BTreeMap::<String, &HeapCallsite>::new();
     for callsite in &left.hotspots {
@@ -2193,11 +2384,65 @@ fn heap_callsite_regressions(left: &HeapProfile, right: &HeapProfile) -> Vec<Reg
                 right_value: rv,
                 delta,
                 delta_pct,
-                confidence: 0.8,
+                time_domain: metric_time_domain("alloc_bytes").to_string(),
+                confidence: regression_confidence("alloc_bytes", delta, l_stats, r_stats),
+                confidence_meta: Some(confidence_meta("alloc_bytes", l_stats, r_stats)),
             });
         }
     }
     out
+}
+
+fn metric_time_domain(metric: &str) -> &'static str {
+    if metric == "cpu_time_ms" || metric == "host_time_ms" {
+        "host_monotonic_time"
+    } else {
+        "virtual_time"
+    }
+}
+
+fn confidence_meta(
+    metric: &str,
+    l_stats: &HashMap<String, MetricStats>,
+    r_stats: &HashMap<String, MetricStats>,
+) -> ConfidenceMeta {
+    let l = l_stats.get(metric).cloned().unwrap_or_default();
+    let r = r_stats.get(metric).cloned().unwrap_or_default();
+    let pooled_std_err = ((l.std_dev.powi(2) / l.n.max(1) as f64)
+        + (r.std_dev.powi(2) / r.n.max(1) as f64))
+        .sqrt();
+    ConfidenceMeta {
+        method: if metric_time_domain(metric) == "host_monotonic_time" {
+            "effect_size_over_pooled_stderr".to_string()
+        } else {
+            "deterministic_domain".to_string()
+        },
+        left_sample_count: l.n,
+        right_sample_count: r.n,
+        left_std_dev: l.std_dev,
+        right_std_dev: r.std_dev,
+        pooled_std_err,
+    }
+}
+
+fn regression_confidence(
+    metric: &str,
+    delta: f64,
+    l_stats: &HashMap<String, MetricStats>,
+    r_stats: &HashMap<String, MetricStats>,
+) -> f64 {
+    if metric_time_domain(metric) == "virtual_time" {
+        return 1.0;
+    }
+    let meta = confidence_meta(metric, l_stats, r_stats);
+    if meta.left_sample_count < 2 || meta.right_sample_count < 2 {
+        return 0.75;
+    }
+    if meta.pooled_std_err <= f64::EPSILON {
+        return 0.99;
+    }
+    let effect = delta.abs() / meta.pooled_std_err;
+    (effect / (1.0 + effect)).clamp(0.5, 0.99)
 }
 
 fn explain_single(
@@ -2274,6 +2519,10 @@ fn explain_from_diff(
         r,
         None,
         None,
+        &HashMap::new(),
+        &HashMap::new(),
+        1,
+        1,
     );
     let top = diff.regressions.first();
     let (statement, path, domain) = if let Some(top) = top {
@@ -2363,8 +2612,12 @@ fn profile_env_report(config: &Config, strict: bool) -> serde_json::Value {
         "degraded"
     };
     serde_json::json!({
-        "schemaVersion": "fozzy.profile_env.v2",
+        "schemaVersion": "fozzy.profile_env.v3",
         "strict": strict,
+        "determinismContract": {
+            "replayBoundTo": "deterministic_decisions_and_virtual_events",
+            "nonDeterministicMeasurements": ["cpu_time_ms", "host_time_ms"],
+        },
         "host": {
             "os": os,
             "arch": arch,
@@ -2523,6 +2776,10 @@ fn profile_doctor(
         &bundle.metrics,
         bundle.heap.as_ref(),
         bundle.heap.as_ref(),
+        &HashMap::new(),
+        &HashMap::new(),
+        1,
+        1,
     );
     checks.push(serde_json::json!({
         "name": "diff",
@@ -3026,6 +3283,10 @@ mod tests {
             &metrics,
             Some(&heap),
             Some(&heap),
+            &HashMap::new(),
+            &HashMap::new(),
+            1,
+            1,
         );
         let diff_b = compute_diff(
             "a",
@@ -3035,6 +3296,10 @@ mod tests {
             &metrics,
             Some(&heap),
             Some(&heap),
+            &HashMap::new(),
+            &HashMap::new(),
+            1,
+            1,
         );
         assert_eq!(
             serde_json::to_string(&diff_a).expect("json"),
@@ -3248,7 +3513,7 @@ mod tests {
         let out = profile_command(&cfg, &ProfileCommand::Env, true).expect("env");
         assert_eq!(
             out.get("schemaVersion").and_then(|v| v.as_str()),
-            Some("fozzy.profile_env.v2")
+            Some("fozzy.profile_env.v3")
         );
         assert!(out.get("domains").is_some());
     }
@@ -3326,6 +3591,10 @@ mod tests {
             &right_metrics,
             Some(&left_heap),
             Some(&right_heap),
+            &HashMap::new(),
+            &HashMap::new(),
+            1,
+            1,
         );
         assert!(
             diff.regressions

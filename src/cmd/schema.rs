@@ -320,7 +320,7 @@ pub fn schema_doc() -> SchemaDoc {
                 "run": "run-id-or-trace",
                 "limit": 10,
                 "heap": [],
-                "metrics": {"schemaVersion": "fozzy.profile_metrics.v1"},
+                "metrics": {"schemaVersion": "fozzy.profile_metrics.v2"},
                 "emptyDomains": [{"domain":"heap","empty":true,"reason":"no heap samples in trace"}]
             }),
             notes: "Domain arrays may be empty; inspect emptyDomains for explicit reasons."
@@ -331,14 +331,24 @@ pub fn schema_doc() -> SchemaDoc {
         "diff",
         ProfileOutputSchema {
             schema_version: "fozzy.profile_diff.v1",
-            required_fields: vec!["schemaVersion", "left", "right", "domains", "regressions"],
+            required_fields: vec![
+                "schemaVersion",
+                "left",
+                "right",
+                "leftSamples",
+                "rightSamples",
+                "domains",
+                "regressions",
+            ],
             optional_fields: vec!["warnings"],
             example: serde_json::json!({
                 "schemaVersion":"fozzy.profile_diff.v1",
                 "left":"left-run",
                 "right":"right-run",
+                "leftSamples":2,
+                "rightSamples":2,
                 "domains":["heap"],
-                "regressions":[]
+                "regressions":[{"domain":"cpu","metric":"cpu_time_ms","left":10.0,"right":12.0,"delta":2.0,"deltaPct":20.0,"timeDomain":"host_monotonic_time","confidence":0.81,"confidenceMeta":{"method":"effect_size_over_pooled_stderr"}}]
             }),
             notes: "Regressions are sorted by absolute delta descending.".to_string(),
         },
@@ -371,12 +381,13 @@ pub fn schema_doc() -> SchemaDoc {
         "timeline",
         ProfileOutputSchema {
             schema_version: "fozzy.profile_timeline.v1",
-            required_fields: vec!["schemaVersion", "run", "format"],
+            required_fields: vec!["schemaVersion", "run", "format", "timeDomains"],
             optional_fields: vec!["events", "content"],
             example: serde_json::json!({
                 "schemaVersion":"fozzy.profile_timeline.v1",
                 "run":"run-id-or-trace",
                 "format":"json",
+                "timeDomains":{"virtualTime":"deterministic","hostMonotonicTime":"non-deterministic"},
                 "events":[]
             }),
             notes: "stdout and --out JSON share the same object schema.".to_string(),
@@ -436,12 +447,20 @@ pub fn schema_doc() -> SchemaDoc {
     profile_output_schemas.insert(
         "env",
         ProfileOutputSchema {
-            schema_version: "fozzy.profile_env.v2",
-            required_fields: vec!["schemaVersion", "strict", "host", "backends", "domains"],
+            schema_version: "fozzy.profile_env.v3",
+            required_fields: vec![
+                "schemaVersion",
+                "strict",
+                "determinismContract",
+                "host",
+                "backends",
+                "domains",
+            ],
             optional_fields: vec![],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_env.v2",
+                "schemaVersion":"fozzy.profile_env.v3",
                 "strict":true,
+                "determinismContract":{"replayBoundTo":"deterministic_decisions_and_virtual_events"},
                 "host":{"os":"macos","arch":"aarch64"},
                 "backends":{"proc":"scripted","fs":"virtual","http":"scripted"},
                 "domains":{"cpu":{"available":true,"quality":"degraded","activeCollector":"in_process_sampler","diagnostics":[]}}
@@ -471,12 +490,13 @@ pub fn schema_doc() -> SchemaDoc {
     profile_artifact_schemas.insert(
         "profile.timeline.json",
         ProfileArtifactSchema {
-            schema_version: "fozzy.profile_timeline_artifact.v2",
-            required_fields: vec!["schemaVersion", "runId", "events"],
+            schema_version: "fozzy.profile_timeline_artifact.v3",
+            required_fields: vec!["schemaVersion", "runId", "timeDomains", "events"],
             optional_fields: vec![],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_timeline_artifact.v2",
+                "schemaVersion":"fozzy.profile_timeline_artifact.v3",
                 "runId":"run-id",
+                "timeDomains":{"virtualTime":"deterministic","hostMonotonicTime":"non-deterministic"},
                 "events":[
                     {
                         "t_virtual":1,
@@ -585,10 +605,11 @@ pub fn schema_doc() -> SchemaDoc {
     profile_artifact_schemas.insert(
         "profile.metrics.json",
         ProfileArtifactSchema {
-            schema_version: "fozzy.profile_metrics.v1",
+            schema_version: "fozzy.profile_metrics.v2",
             required_fields: vec![
                 "schemaVersion",
                 "runId",
+                "timeDomains",
                 "virtualTimeMs",
                 "hostTimeMs",
                 "cpuTimeMs",
@@ -603,8 +624,9 @@ pub fn schema_doc() -> SchemaDoc {
             ],
             optional_fields: vec!["confidence"],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_metrics.v1",
+                "schemaVersion":"fozzy.profile_metrics.v2",
                 "runId":"run-id",
+                "timeDomains":{"virtualTime":"deterministic","hostMonotonicTime":"non-deterministic"},
                 "virtualTimeMs":1,
                 "hostTimeMs":1,
                 "cpuTimeMs":1,

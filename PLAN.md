@@ -373,12 +373,12 @@ Fozzy is a deterministic full-stack testing platform built from first principles
   - ✅ evidence pointers (artifact + span/callsite ids)
 
 #### M13.7 Determinism Contract: Dual Time Domains
-- ⬜ Formalize two time domains in docs + schemas:
-  - ⬜ `virtual_time` (deterministic, replay-critical)
-  - ⬜ `host_monotonic_time` (performance measurement, non-deterministic)
-- ⬜ Keep replay correctness bound only to deterministic decisions/events.
-- ⬜ Add statistical comparison support for host-time metrics across repeated identical deterministic runs.
-- ⬜ Expose confidence metadata for regression diffs when host-time data is used.
+- ✅ Formalize two time domains in docs + schemas:
+  - ✅ `virtual_time` (deterministic, replay-critical)
+  - ✅ `host_monotonic_time` (performance measurement, non-deterministic)
+- ✅ Keep replay correctness bound only to deterministic decisions/events.
+- ✅ Add statistical comparison support for host-time metrics across repeated identical deterministic runs.
+- ✅ Expose confidence metadata for regression diffs when host-time data is used.
 
 #### M13.8 Regression Diff + Shrink-on-Metric (Fozzy Differentiator)
 - ⬜ Implement `fozzy profile diff` as first-class regression analyzer (not just raw metric delta dump).
