@@ -330,7 +330,7 @@ pub fn schema_doc() -> SchemaDoc {
     profile_output_schemas.insert(
         "diff",
         ProfileOutputSchema {
-            schema_version: "fozzy.profile_diff.v1",
+            schema_version: "fozzy.profile_diff.v2",
             required_fields: vec![
                 "schemaVersion",
                 "left",
@@ -338,19 +338,22 @@ pub fn schema_doc() -> SchemaDoc {
                 "leftSamples",
                 "rightSamples",
                 "domains",
+                "summary",
                 "regressions",
             ],
             optional_fields: vec!["warnings"],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_diff.v1",
+                "schemaVersion":"fozzy.profile_diff.v2",
                 "left":"left-run",
                 "right":"right-run",
                 "leftSamples":2,
                 "rightSamples":2,
                 "domains":["heap"],
-                "regressions":[{"domain":"cpu","metric":"cpu_time_ms","left":10.0,"right":12.0,"delta":2.0,"deltaPct":20.0,"timeDomain":"host_monotonic_time","confidence":0.81,"confidenceMeta":{"method":"effect_size_over_pooled_stderr"}}]
+                "summary":{"verdict":"regression_detected","regressionCount":1,"improvementCount":0,"significantRegressionCount":1,"topRegressionMetric":"cpu_time_ms"},
+                "regressions":[{"domain":"cpu","metric":"cpu_time_ms","left":10.0,"right":12.0,"delta":2.0,"deltaPct":20.0,"classification":"regression","isRegression":true,"isSignificant":true,"severity":"high","analysis":"host-time change 2 at confidence 0.81","timeDomain":"host_monotonic_time","confidence":0.81,"confidenceMeta":{"method":"effect_size_over_pooled_stderr"}}]
             }),
-            notes: "Regressions are sorted by absolute delta descending.".to_string(),
+            notes: "Diff is an analyzer output with significance classification, severity, and rollup verdict."
+                .to_string(),
         },
     );
     profile_output_schemas.insert(
@@ -420,6 +423,7 @@ pub fn schema_doc() -> SchemaDoc {
                 "outTrace",
                 "metric",
                 "direction",
+                "minimize",
                 "baseline",
                 "after",
                 "preserved",
@@ -434,6 +438,7 @@ pub fn schema_doc() -> SchemaDoc {
                 "outTrace":"/tmp/in.min.fozzy",
                 "metric":"cpu_time",
                 "direction":"increase",
+                "minimize":"all",
                 "baseline":8.0,
                 "after":0.0,
                 "preserved":false,

@@ -1128,6 +1128,24 @@ pub fn shrink_trace(
     trace_path: TracePath,
     opt: &ShrinkOptions,
 ) -> FozzyResult<ShrinkResult> {
+    shrink_trace_inner(config, trace_path, opt, None)
+}
+
+pub fn shrink_trace_with_predicate(
+    config: &Config,
+    trace_path: TracePath,
+    opt: &ShrinkOptions,
+    objective: &dyn Fn(&TraceFile) -> FozzyResult<bool>,
+) -> FozzyResult<ShrinkResult> {
+    shrink_trace_inner(config, trace_path, opt, Some(objective))
+}
+
+fn shrink_trace_inner(
+    config: &Config,
+    trace_path: TracePath,
+    opt: &ShrinkOptions,
+    objective: Option<&dyn Fn(&TraceFile) -> FozzyResult<bool>>,
+) -> FozzyResult<ShrinkResult> {
     let trace = TraceFile::read_json(trace_path.as_path())?;
     if trace.fuzz.is_some() && trace.scenario.is_none() {
         return crate::shrink_fuzz_trace(config, trace_path, opt);
@@ -1153,6 +1171,30 @@ pub fn shrink_trace(
 
     let mut best = scenario.steps.clone();
     let mut candidate = best.clone();
+    let mut best_run = run_embedded_scenario_inner(
+        scenario.clone(),
+        PathBuf::from("<shrink-baseline>"),
+        seed,
+        true,
+        None,
+        ProcBackend::Scripted,
+        FsBackend::Virtual,
+        HttpBackend::Scripted,
+        trace
+            .memory
+            .as_ref()
+            .map(|m| m.options.clone())
+            .unwrap_or_default(),
+    )?;
+    if !shrink_status_matches(target_status, best_run.status) {
+        return Err(FozzyError::Trace(
+            "baseline trace no longer matches shrink target status".to_string(),
+        ));
+    }
+    if let Some(pred) = objective {
+        let preview = build_shrink_preview_trace(&scenario, seed, &best_run);
+        let _ = pred(&preview)?;
+    }
 
     // Delta-debugging style: try removing chunks of steps while keeping failure.
     let mut chunk = candidate.len().max(1).div_ceil(2);
@@ -1173,15 +1215,12 @@ pub fn shrink_trace(
                 steps: trial.clone(),
             };
 
-            let res = run_scenario_replay_inner(
-                config,
-                RunMode::Run,
-                &trial_scenario,
-                "<shrunk>",
+            let res = run_embedded_scenario_inner(
+                trial_scenario.clone(),
+                PathBuf::from("<shrunk>"),
                 seed,
-                None, // not replaying decisions; we just want to see if it still fails
+                true,
                 None,
-                false,
                 ProcBackend::Scripted,
                 FsBackend::Virtual,
                 HttpBackend::Scripted,
@@ -1191,13 +1230,23 @@ pub fn shrink_trace(
                     .map(|m| m.options.clone())
                     .unwrap_or_default(),
             )?;
-            if shrink_status_matches(target_status, res.status) {
+            if !shrink_status_matches(target_status, res.status) {
+                i += chunk;
+                continue;
+            }
+            if let Some(pred) = objective {
+                let preview = build_shrink_preview_trace(&trial_scenario, seed, &res);
+                if !pred(&preview)? {
+                    i += chunk;
+                    continue;
+                }
+            }
+            {
                 candidate = trial;
+                best_run = res;
                 improved = true;
                 continue;
             }
-
-            i += chunk;
         }
 
         if !improved {
@@ -1220,28 +1269,11 @@ pub fn shrink_trace(
         .clone()
         .unwrap_or_else(|| crate::default_min_trace_path(trace_path.as_path()));
 
-    // Re-run once to produce a replayable trace for the minimized scenario.
-    let run = run_embedded_scenario_inner(
-        out_scenario.clone(),
-        PathBuf::from("<shrunk>"),
-        seed,
-        true,
-        None,
-        ProcBackend::Scripted,
-        FsBackend::Virtual,
-        HttpBackend::Scripted,
-        trace
-            .memory
-            .as_ref()
-            .map(|m| m.options.clone())
-            .unwrap_or_default(),
-    )?;
-
     let run_id = Uuid::new_v4().to_string();
     let started_at = wall_time_iso_utc();
     let finished_at = wall_time_iso_utc();
     let summary = RunSummary {
-        status: run.status,
+        status: best_run.status,
         mode: RunMode::Run,
         identity: RunIdentity {
             run_id,
@@ -1255,27 +1287,27 @@ pub fn shrink_trace(
         duration_ms: 0,
         duration_ns: 0,
         tests: None,
-        memory: run.memory.as_ref().map(|m| m.summary.clone()),
-        findings: run.findings.clone(),
+        memory: best_run.memory.as_ref().map(|m| m.summary.clone()),
+        findings: best_run.findings.clone(),
     };
 
     let trace_out = TraceFile::new(
         RunMode::Run,
         None,
         Some(out_scenario),
-        run.decisions.decisions,
-        run.events,
+        best_run.decisions.decisions.clone(),
+        best_run.events.clone(),
         summary.clone(),
     );
     let mut trace_out = trace_out;
-    trace_out.memory = run.memory.as_ref().map(|m| m.to_trace());
+    trace_out.memory = best_run.memory.as_ref().map(|m| m.to_trace());
     trace_out.write_json(&out_path).map_err(|err| {
         FozzyError::Trace(format!(
             "failed to write shrunk trace to {}: {err}",
             out_path.display()
         ))
     })?;
-    if let (Some(before), Some(after)) = (trace.memory.as_ref(), run.memory.as_ref()) {
+    if let (Some(before), Some(after)) = (trace.memory.as_ref(), best_run.memory.as_ref()) {
         let before_report = MemoryRunReport {
             schema_version: "fozzy.memory_report.v1".to_string(),
             options: before.options.clone(),
@@ -1295,6 +1327,37 @@ pub fn shrink_trace(
         out_trace_path: out_path.to_string_lossy().to_string(),
         result: RunResult { summary },
     })
+}
+
+fn build_shrink_preview_trace(scenario: &ScenarioV1Steps, seed: u64, run: &ScenarioRun) -> TraceFile {
+    let summary = RunSummary {
+        status: run.status,
+        mode: RunMode::Run,
+        identity: RunIdentity {
+            run_id: "shrink-preview".to_string(),
+            seed,
+            trace_path: None,
+            report_path: None,
+            artifacts_dir: None,
+        },
+        started_at: String::new(),
+        finished_at: String::new(),
+        duration_ms: 0,
+        duration_ns: 0,
+        tests: None,
+        memory: run.memory.as_ref().map(|m| m.summary.clone()),
+        findings: run.findings.clone(),
+    };
+    let mut out = TraceFile::new(
+        RunMode::Run,
+        None,
+        Some(scenario.clone()),
+        run.decisions.decisions.clone(),
+        run.events.clone(),
+        summary,
+    );
+    out.memory = run.memory.as_ref().map(|m| m.to_trace());
+    out
 }
 
 pub(crate) fn shrink_status_matches(target: ExitStatus, candidate: ExitStatus) -> bool {

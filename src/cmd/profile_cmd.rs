@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::{
     Config, Finding, FindingKind, FozzyError, FozzyResult, RunManifest, RunSummary, ShrinkMinimize,
     ShrinkOptions, TraceFile, TracePath, resolve_artifacts_dir, shrink_trace,
+    shrink_trace_with_predicate,
 };
 
 const RUN_OR_TRACE_HELP: &str =
@@ -131,6 +132,8 @@ pub enum ProfileCommand {
         direction: ProfileDirection,
         #[arg(long)]
         budget: Option<crate::FozzyDuration>,
+        #[arg(long, value_enum, default_value = "all")]
+        minimize: ShrinkMinimize,
     },
     /// Show profiler capability visibility for this host/backend setup.
     Env,
@@ -567,8 +570,23 @@ pub struct ProfileDiff {
     #[serde(rename = "rightSamples")]
     pub right_samples: usize,
     pub domains: Vec<String>,
+    pub summary: DiffSummary,
     #[serde(rename = "regressions")]
     pub regressions: Vec<RegressionFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffSummary {
+    #[serde(rename = "verdict")]
+    pub verdict: String,
+    #[serde(rename = "regressionCount")]
+    pub regression_count: usize,
+    #[serde(rename = "improvementCount")]
+    pub improvement_count: usize,
+    #[serde(rename = "significantRegressionCount")]
+    pub significant_regression_count: usize,
+    #[serde(rename = "topRegressionMetric", skip_serializing_if = "Option::is_none")]
+    pub top_regression_metric: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -583,6 +601,16 @@ pub struct RegressionFinding {
     pub delta: f64,
     #[serde(rename = "deltaPct")]
     pub delta_pct: f64,
+    #[serde(rename = "classification")]
+    pub classification: String,
+    #[serde(rename = "isRegression")]
+    pub is_regression: bool,
+    #[serde(rename = "isSignificant")]
+    pub is_significant: bool,
+    #[serde(rename = "severity")]
+    pub severity: String,
+    #[serde(rename = "analysis")]
+    pub analysis: String,
     #[serde(rename = "timeDomain")]
     pub time_domain: String,
     #[serde(rename = "confidence")]
@@ -1056,6 +1084,7 @@ pub fn profile_command(
             metric,
             direction,
             budget,
+            minimize,
         } => {
             let (artifacts_dir, trace_path) = match resolve_profile_trace(config, run) {
                 Ok(v) => v,
@@ -1063,14 +1092,25 @@ pub fn profile_command(
             };
             let input = TraceFile::read_json(&trace_path)?;
             let baseline = metric_value(*metric, &input)?;
-            let shrunk = shrink_trace(
+            let baseline_for_predicate = baseline;
+            let metric_for_predicate = *metric;
+            let direction_for_predicate = *direction;
+            let shrunk = shrink_trace_with_predicate(
                 config,
                 TracePath::new(trace_path.clone()),
                 &ShrinkOptions {
                     out_trace_path: None,
                     budget: budget.map(|b| b.0),
                     aggressive: false,
-                    minimize: ShrinkMinimize::All,
+                    minimize: *minimize,
+                },
+                &move |candidate_trace: &TraceFile| {
+                    let candidate_value = metric_value(metric_for_predicate, candidate_trace)?;
+                    let keep = match direction_for_predicate {
+                        ProfileDirection::Increase => candidate_value >= baseline_for_predicate,
+                        ProfileDirection::Decrease => candidate_value <= baseline_for_predicate,
+                    };
+                    Ok(keep)
                 },
             )?;
             let shrunk_trace = TraceFile::read_json(Path::new(&shrunk.out_trace_path))?;
@@ -1107,6 +1147,7 @@ pub fn profile_command(
                 "outTrace": shrunk.out_trace_path,
                 "metric": metric,
                 "direction": direction,
+                "minimize": shrink_minimize_name(*minimize),
                 "baseline": baseline_out,
                 "after": after_out,
                 "preserved": preserved,
@@ -2285,6 +2326,10 @@ fn compute_diff(
             } else {
                 (delta / lv) * 100.0
             };
+            let time_domain = metric_time_domain(metric);
+            let confidence = regression_confidence(metric, delta, l_stats, r_stats);
+            let (classification, is_regression, is_significant, severity, analysis) =
+                classify_regression(metric, delta, delta_pct, confidence, time_domain);
             regressions.push(RegressionFinding {
                 domain: domain.clone(),
                 metric: metric.to_string(),
@@ -2292,8 +2337,13 @@ fn compute_diff(
                 right_value: rv,
                 delta,
                 delta_pct,
-                time_domain: metric_time_domain(metric).to_string(),
-                confidence: regression_confidence(metric, delta, l_stats, r_stats),
+                classification,
+                is_regression,
+                is_significant,
+                severity,
+                analysis,
+                time_domain: time_domain.to_string(),
+                confidence,
                 confidence_meta: Some(confidence_meta(metric, l_stats, r_stats)),
             });
         }
@@ -2310,20 +2360,55 @@ fn compute_diff(
     }
 
     regressions.sort_by(|a, b| {
-        b.delta
-            .abs()
-            .partial_cmp(&a.delta.abs())
+        regression_priority_score(b)
+            .partial_cmp(&regression_priority_score(a))
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                b.delta
+                    .abs()
+                    .partial_cmp(&a.delta.abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| a.metric.cmp(&b.metric))
     });
 
+    let regression_count = regressions.iter().filter(|r| r.is_regression).count();
+    let improvement_count = regressions
+        .iter()
+        .filter(|r| r.classification == "improvement")
+        .count();
+    let significant_regression_count = regressions
+        .iter()
+        .filter(|r| r.is_regression && r.is_significant)
+        .count();
+    let top_regression_metric = regressions
+        .iter()
+        .find(|r| r.is_regression)
+        .map(|r| r.metric.clone());
+    let verdict = if significant_regression_count > 0 {
+        "regression_detected"
+    } else if regression_count > 0 {
+        "minor_regression"
+    } else if improvement_count > 0 {
+        "improvement"
+    } else {
+        "stable"
+    };
+
     ProfileDiff {
-        schema_version: "fozzy.profile_diff.v1".to_string(),
+        schema_version: "fozzy.profile_diff.v2".to_string(),
         left: left.to_string(),
         right: right.to_string(),
         left_samples,
         right_samples,
         domains: domains.to_vec(),
+        summary: DiffSummary {
+            verdict: verdict.to_string(),
+            regression_count,
+            improvement_count,
+            significant_regression_count,
+            top_regression_metric,
+        },
         regressions,
     }
 }
@@ -2377,6 +2462,10 @@ fn heap_callsite_regressions(
             } else {
                 (delta / lv) * 100.0
             };
+            let time_domain = metric_time_domain("alloc_bytes");
+            let confidence = regression_confidence("alloc_bytes", delta, l_stats, r_stats);
+            let (classification, is_regression, is_significant, severity, analysis) =
+                classify_regression("alloc_bytes", delta, delta_pct, confidence, time_domain);
             out.push(RegressionFinding {
                 domain: "heap".to_string(),
                 metric,
@@ -2384,8 +2473,13 @@ fn heap_callsite_regressions(
                 right_value: rv,
                 delta,
                 delta_pct,
-                time_domain: metric_time_domain("alloc_bytes").to_string(),
-                confidence: regression_confidence("alloc_bytes", delta, l_stats, r_stats),
+                classification,
+                is_regression,
+                is_significant,
+                severity,
+                analysis,
+                time_domain: time_domain.to_string(),
+                confidence,
                 confidence_meta: Some(confidence_meta("alloc_bytes", l_stats, r_stats)),
             });
         }
@@ -2443,6 +2537,78 @@ fn regression_confidence(
     }
     let effect = delta.abs() / meta.pooled_std_err;
     (effect / (1.0 + effect)).clamp(0.5, 0.99)
+}
+
+fn classify_regression(
+    metric: &str,
+    delta: f64,
+    delta_pct: f64,
+    confidence: f64,
+    time_domain: &str,
+) -> (String, bool, bool, String, String) {
+    let classification = if delta > 0.0 {
+        "regression"
+    } else if delta < 0.0 {
+        "improvement"
+    } else {
+        "stable"
+    };
+    let abs_pct = delta_pct.abs();
+    let abs_delta = delta.abs();
+    let significant = if time_domain == "virtual_time" {
+        abs_delta >= 1.0 && abs_pct >= 2.0
+    } else {
+        confidence >= 0.8 && abs_pct >= 5.0
+    };
+    let is_regression = classification == "regression";
+    let severity = if classification == "stable" || !significant {
+        "none"
+    } else if abs_pct >= 30.0 {
+        "critical"
+    } else if abs_pct >= 15.0 {
+        "high"
+    } else if abs_pct >= 5.0 {
+        "medium"
+    } else {
+        "low"
+    };
+    let analysis = if classification == "stable" {
+        format!("{metric} unchanged")
+    } else if time_domain == "virtual_time" {
+        format!(
+            "deterministic-domain change {} with replay-stable confidence",
+            format_metric_value(delta)
+        )
+    } else {
+        format!(
+            "host-time change {} at confidence {}",
+            format_metric_value(delta),
+            format_metric_value(confidence)
+        )
+    };
+    (
+        classification.to_string(),
+        is_regression,
+        significant,
+        severity.to_string(),
+        analysis,
+    )
+}
+
+fn regression_priority_score(finding: &RegressionFinding) -> f64 {
+    let severity = match finding.severity.as_str() {
+        "critical" => 4.0,
+        "high" => 3.0,
+        "medium" => 2.0,
+        "low" => 1.0,
+        _ => 0.0,
+    };
+    let class = match finding.classification.as_str() {
+        "regression" => 2.0,
+        "improvement" => 1.0,
+        _ => 0.0,
+    };
+    severity * 10.0 + class + finding.confidence
 }
 
 fn explain_single(
@@ -2592,6 +2758,15 @@ fn format_metric_value(value: f64) -> String {
 
 fn normalize_metric_value(value: f64) -> f64 {
     if value == 0.0 { 0.0 } else { value }
+}
+
+fn shrink_minimize_name(minimize: ShrinkMinimize) -> &'static str {
+    match minimize {
+        ShrinkMinimize::Input => "input",
+        ShrinkMinimize::Schedule => "schedule",
+        ShrinkMinimize::Faults => "faults",
+        ShrinkMinimize::All => "all",
+    }
 }
 
 fn empty_domain(domain: &str, reason: &str) -> serde_json::Value {
@@ -3434,6 +3609,7 @@ mod tests {
             metric: ProfileMetric::P99Latency,
             direction: ProfileDirection::Increase,
             budget: None,
+            minimize: ShrinkMinimize::All,
         };
         let err = profile_command(&cfg, &cmd, true).expect_err("must fail");
         match err {
@@ -3467,6 +3643,7 @@ mod tests {
             metric: ProfileMetric::CpuTime,
             direction: ProfileDirection::Increase,
             budget: Some(crate::FozzyDuration(std::time::Duration::from_secs(1))),
+            minimize: ShrinkMinimize::All,
         };
         let out = profile_command(&cfg, &cmd, true).expect("shrink output");
         assert_eq!(

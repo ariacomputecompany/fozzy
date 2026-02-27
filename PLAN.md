@@ -381,12 +381,12 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Expose confidence metadata for regression diffs when host-time data is used.
 
 #### M13.8 Regression Diff + Shrink-on-Metric (Fozzy Differentiator)
-- ⬜ Implement `fozzy profile diff` as first-class regression analyzer (not just raw metric delta dump).
-- ⬜ Add metric-preserving shrink objective path:
-  - ⬜ `fozzy profile shrink <trace> --metric ... --direction ...`
-  - ⬜ Preserve target regression condition while minimizing input/schedule/fault surface.
-- ⬜ Reuse existing shrink infrastructure (`input|schedule|faults|all`) and extend objective function for performance predicates.
-- ⬜ Ensure shrunk perf traces remain replayable, verifiable, and CI-gateable.
+- ✅ Implement `fozzy profile diff` as first-class regression analyzer (not just raw metric delta dump).
+- ✅ Add metric-preserving shrink objective path:
+  - ✅ `fozzy profile shrink <trace> --metric ... --direction ...`
+  - ✅ Preserve target regression condition while minimizing input/schedule/fault surface.
+- ✅ Reuse existing shrink infrastructure (`input|schedule|faults|all`) and extend objective function for performance predicates.
+- ✅ Ensure shrunk perf traces remain replayable, verifiable, and CI-gateable.
 
 #### M13.9 Integration Across Existing Surface (No Siloed Profiler)
 - ⬜ `fozzy run/test/fuzz/explore`: add profiler capture flags with safe defaults and explicit overhead levels.
