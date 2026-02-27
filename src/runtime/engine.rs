@@ -1519,10 +1519,58 @@ fn run_embedded_scenario_inner(
             task_id: item.id,
             label: item.label,
         });
+        let step_kind = step.kind_name().to_string();
+        let span_id = format!("step-{idx}");
+        let step_start_ms = ctx.clock.now_ms();
+        ctx.events.push(TraceEvent {
+            time_ms: step_start_ms,
+            name: "sched_pick".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("task_id".to_string(), serde_json::json!(item.id)),
+                ("step_index".to_string(), serde_json::json!(idx as u64)),
+                ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+            ]),
+        });
+        ctx.events.push(TraceEvent {
+            time_ms: step_start_ms,
+            name: "span_start".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("span".to_string(), serde_json::json!(span_id.clone())),
+                ("task".to_string(), serde_json::json!("step")),
+                ("step_index".to_string(), serde_json::json!(idx as u64)),
+                ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+            ]),
+        });
         if let Err(finding) = ctx.exec_step(step) {
+            let end_ms = ctx.clock.now_ms();
+            ctx.events.push(TraceEvent {
+                time_ms: end_ms,
+                name: "span_end".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("span".to_string(), serde_json::json!(span_id)),
+                    ("status".to_string(), serde_json::json!("error")),
+                    (
+                        "duration_ms".to_string(),
+                        serde_json::json!(end_ms.saturating_sub(step_start_ms)),
+                    ),
+                ]),
+            });
             ctx.findings.push(finding);
             return Ok(ctx.finish(ExitStatus::Fail, scenario_path, scenario));
         }
+        let end_ms = ctx.clock.now_ms();
+        ctx.events.push(TraceEvent {
+            time_ms: end_ms,
+            name: "span_end".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("span".to_string(), serde_json::json!(span_id)),
+                ("status".to_string(), serde_json::json!("ok")),
+                (
+                    "duration_ms".to_string(),
+                    serde_json::json!(end_ms.saturating_sub(step_start_ms)),
+                ),
+            ]),
+        });
 
         if timeout_reached(&ctx, det, timeout, deadline, start_virtual_ms) {
             ctx.findings.push(Finding {
@@ -1641,7 +1689,42 @@ fn run_scenario_replay_inner<'a>(
             }
 
             ctx.expect_scheduler_pick(item.id, &item.label)?;
+            let step_kind = step_def.kind_name().to_string();
+            let span_id = format!("step-{idx}");
+            let step_start_ms = ctx.clock.now_ms();
+            ctx.events.push(TraceEvent {
+                time_ms: step_start_ms,
+                name: "sched_pick".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("task_id".to_string(), serde_json::json!(item.id)),
+                    ("step_index".to_string(), serde_json::json!(idx as u64)),
+                    ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                ]),
+            });
+            ctx.events.push(TraceEvent {
+                time_ms: step_start_ms,
+                name: "span_start".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("span".to_string(), serde_json::json!(span_id.clone())),
+                    ("task".to_string(), serde_json::json!("step")),
+                    ("step_index".to_string(), serde_json::json!(idx as u64)),
+                    ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                ]),
+            });
             if let Err(finding) = ctx.exec_step(step_def) {
+                let end_ms = ctx.clock.now_ms();
+                ctx.events.push(TraceEvent {
+                    time_ms: end_ms,
+                    name: "span_end".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("span".to_string(), serde_json::json!(span_id)),
+                        ("status".to_string(), serde_json::json!("error")),
+                        (
+                            "duration_ms".to_string(),
+                            serde_json::json!(end_ms.saturating_sub(step_start_ms)),
+                        ),
+                    ]),
+                });
                 ctx.findings.push(finding);
                 return Ok(ctx.finish(
                     ExitStatus::Fail,
@@ -1649,6 +1732,19 @@ fn run_scenario_replay_inner<'a>(
                     scenario.clone(),
                 ));
             }
+            let end_ms = ctx.clock.now_ms();
+            ctx.events.push(TraceEvent {
+                time_ms: end_ms,
+                name: "span_end".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("span".to_string(), serde_json::json!(span_id)),
+                    ("status".to_string(), serde_json::json!("ok")),
+                    (
+                        "duration_ms".to_string(),
+                        serde_json::json!(end_ms.saturating_sub(step_start_ms)),
+                    ),
+                ]),
+            });
         }
     } else {
         for (idx, step_def) in scenario.steps.iter().enumerate() {
@@ -1673,7 +1769,42 @@ fn run_scenario_replay_inner<'a>(
             }
 
             ctx.expect_step(idx)?;
+            let step_kind = step_def.kind_name().to_string();
+            let span_id = format!("step-{idx}");
+            let step_start_ms = ctx.clock.now_ms();
+            ctx.events.push(TraceEvent {
+                time_ms: step_start_ms,
+                name: "sched_pick".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("task_id".to_string(), serde_json::json!(idx as u64 + 1)),
+                    ("step_index".to_string(), serde_json::json!(idx as u64)),
+                    ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                ]),
+            });
+            ctx.events.push(TraceEvent {
+                time_ms: step_start_ms,
+                name: "span_start".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("span".to_string(), serde_json::json!(span_id.clone())),
+                    ("task".to_string(), serde_json::json!("step")),
+                    ("step_index".to_string(), serde_json::json!(idx as u64)),
+                    ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                ]),
+            });
             if let Err(finding) = ctx.exec_step(step_def) {
+                let end_ms = ctx.clock.now_ms();
+                ctx.events.push(TraceEvent {
+                    time_ms: end_ms,
+                    name: "span_end".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("span".to_string(), serde_json::json!(span_id)),
+                        ("status".to_string(), serde_json::json!("error")),
+                        (
+                            "duration_ms".to_string(),
+                            serde_json::json!(end_ms.saturating_sub(step_start_ms)),
+                        ),
+                    ]),
+                });
                 ctx.findings.push(finding);
                 return Ok(ctx.finish(
                     ExitStatus::Fail,
@@ -1681,6 +1812,19 @@ fn run_scenario_replay_inner<'a>(
                     scenario.clone(),
                 ));
             }
+            let end_ms = ctx.clock.now_ms();
+            ctx.events.push(TraceEvent {
+                time_ms: end_ms,
+                name: "span_end".to_string(),
+                fields: serde_json::Map::from_iter([
+                    ("span".to_string(), serde_json::json!(span_id)),
+                    ("status".to_string(), serde_json::json!("ok")),
+                    (
+                        "duration_ms".to_string(),
+                        serde_json::json!(end_ms.saturating_sub(step_start_ms)),
+                    ),
+                ]),
+            });
         }
     }
 
@@ -2277,15 +2421,37 @@ impl<'a> ExecCtx<'a> {
             }
 
             crate::Step::FsWrite { path, data } => {
+                let start_ms = self.clock.now_ms();
                 if matches!(self.fs_backend, FsBackend::Host) {
                     self.host_fs_write(path, data)?;
                 } else {
                     self.fs.insert(path.clone(), data.clone());
                 }
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "capability_fs".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("op".to_string(), serde_json::json!("write")),
+                        ("path".to_string(), serde_json::json!(path)),
+                        (
+                            "backend".to_string(),
+                            serde_json::json!(match self.fs_backend {
+                                FsBackend::Virtual => "virtual",
+                                FsBackend::Host => "host",
+                            }),
+                        ),
+                        ("payload_bytes".to_string(), serde_json::json!(data.len() as u64)),
+                        (
+                            "duration_ms".to_string(),
+                            serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
+                        ),
+                    ]),
+                });
                 Ok(())
             }
 
             crate::Step::FsReadAssert { path, equals } => {
+                let start_ms = self.clock.now_ms();
                 if matches!(self.fs_backend, FsBackend::Host) {
                     self.host_fs_read_assert(path, equals)?;
                 } else {
@@ -2299,19 +2465,63 @@ impl<'a> ExecCtx<'a> {
                         });
                     }
                 }
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "capability_fs".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("op".to_string(), serde_json::json!("read_assert")),
+                        ("path".to_string(), serde_json::json!(path)),
+                        (
+                            "backend".to_string(),
+                            serde_json::json!(match self.fs_backend {
+                                FsBackend::Virtual => "virtual",
+                                FsBackend::Host => "host",
+                            }),
+                        ),
+                        (
+                            "payload_bytes".to_string(),
+                            serde_json::json!(equals.len() as u64),
+                        ),
+                        (
+                            "duration_ms".to_string(),
+                            serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
+                        ),
+                    ]),
+                });
                 Ok(())
             }
 
             crate::Step::FsSnapshot { name } => {
+                let start_ms = self.clock.now_ms();
                 if matches!(self.fs_backend, FsBackend::Host) {
                     self.host_fs_snapshot(name)?;
                 } else {
                     self.fs_snapshots.insert(name.clone(), self.fs.clone());
                 }
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "capability_fs".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("op".to_string(), serde_json::json!("snapshot")),
+                        ("name".to_string(), serde_json::json!(name)),
+                        (
+                            "backend".to_string(),
+                            serde_json::json!(match self.fs_backend {
+                                FsBackend::Virtual => "virtual",
+                                FsBackend::Host => "host",
+                            }),
+                        ),
+                        (
+                            "duration_ms".to_string(),
+                            serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
+                        ),
+                    ]),
+                });
                 Ok(())
             }
 
             crate::Step::FsRestore { name } => {
+                let start_ms = self.clock.now_ms();
                 if matches!(self.fs_backend, FsBackend::Host) {
                     self.host_fs_restore(name)?;
                 } else {
@@ -2325,6 +2535,25 @@ impl<'a> ExecCtx<'a> {
                     };
                     self.fs = snapshot;
                 }
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "capability_fs".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("op".to_string(), serde_json::json!("restore")),
+                        ("name".to_string(), serde_json::json!(name)),
+                        (
+                            "backend".to_string(),
+                            serde_json::json!(match self.fs_backend {
+                                FsBackend::Virtual => "virtual",
+                                FsBackend::Host => "host",
+                            }),
+                        ),
+                        (
+                            "duration_ms".to_string(),
+                            serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
+                        ),
+                    ]),
+                });
                 Ok(())
             }
 
@@ -2397,6 +2626,7 @@ impl<'a> ExecCtx<'a> {
                 expect_json,
                 save_body_as,
             } => {
+                let start_ms = self.clock.now_ms();
                 if expect_body.is_some() && expect_json.is_some() {
                     return Err(Finding {
                         kind: FindingKind::Checker,
@@ -2561,6 +2791,35 @@ impl<'a> ExecCtx<'a> {
                                 resp_headers.len() as u64
                             )),
                         ),
+                        (
+                            "request_payload_bytes".to_string(),
+                            serde_json::json!(body.as_ref().map(|s| s.len() as u64).unwrap_or(0)),
+                        ),
+                        (
+                            "response_payload_bytes".to_string(),
+                            serde_json::json!(resp_body.len() as u64),
+                        ),
+                        (
+                            "duration_ms".to_string(),
+                            serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
+                        ),
+                    ]),
+                });
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "capability_http".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("op".to_string(), serde_json::json!("request")),
+                        ("method".to_string(), serde_json::json!(method)),
+                        ("path".to_string(), serde_json::json!(path)),
+                        (
+                            "payload_bytes".to_string(),
+                            serde_json::json!(resp_body.len() as u64),
+                        ),
+                        (
+                            "duration_ms".to_string(),
+                            serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
+                        ),
                     ]),
                 });
 
@@ -2654,6 +2913,7 @@ impl<'a> ExecCtx<'a> {
                 expect_stderr,
                 save_stdout_as,
             } => {
+                let start_ms = self.clock.now_ms();
                 let call_args = args.clone().unwrap_or_default();
                 let replay_rule = match self.replay_peek().cloned() {
                     Some(Decision::ProcSpawn {
@@ -2800,6 +3060,22 @@ impl<'a> ExecCtx<'a> {
                     name: "proc_spawn".to_string(),
                     fields: proc_fields,
                 });
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "capability_proc".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("op".to_string(), serde_json::json!("spawn")),
+                        ("cmd".to_string(), serde_json::json!(cmd)),
+                        (
+                            "payload_bytes".to_string(),
+                            serde_json::json!((rule.stdout.len() + rule.stderr.len()) as u64),
+                        ),
+                        (
+                            "duration_ms".to_string(),
+                            serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
+                        ),
+                    ]),
+                });
 
                 if let Some(expected) = expect_exit
                     && rule.exit_code != *expected
@@ -2874,6 +3150,25 @@ impl<'a> ExecCtx<'a> {
                     from: from.clone(),
                     to: to.clone(),
                     payload: payload.clone(),
+                });
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "net_send".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("id".to_string(), serde_json::json!(id)),
+                        ("from".to_string(), serde_json::json!(from)),
+                        ("to".to_string(), serde_json::json!(to)),
+                        ("payload_size".to_string(), serde_json::json!(payload.len() as u64)),
+                    ]),
+                });
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "capability_net".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("op".to_string(), serde_json::json!("send")),
+                        ("payload_bytes".to_string(), serde_json::json!(payload.len() as u64)),
+                        ("duration_ms".to_string(), serde_json::json!(0u64)),
+                    ]),
                 });
                 Ok(())
             }
@@ -2988,6 +3283,10 @@ impl<'a> ExecCtx<'a> {
                             ("id".to_string(), serde_json::Value::Number(msg.id.into())),
                             ("from".to_string(), serde_json::Value::String(msg.from)),
                             ("to".to_string(), serde_json::Value::String(msg.to)),
+                            (
+                                "payload_size".to_string(),
+                                serde_json::json!(msg.payload.len() as u64),
+                            ),
                         ]),
                     });
                     return Ok(());
@@ -3004,6 +3303,22 @@ impl<'a> ExecCtx<'a> {
                         ("id".to_string(), serde_json::Value::Number(msg.id.into())),
                         ("from".to_string(), serde_json::Value::String(msg.from)),
                         ("to".to_string(), serde_json::Value::String(msg.to)),
+                        (
+                            "payload_size".to_string(),
+                            serde_json::json!(msg.payload.len() as u64),
+                        ),
+                    ]),
+                });
+                self.events.push(TraceEvent {
+                    time_ms: self.clock.now_ms(),
+                    name: "capability_net".to_string(),
+                    fields: serde_json::Map::from_iter([
+                        ("op".to_string(), serde_json::json!("deliver")),
+                        (
+                            "payload_bytes".to_string(),
+                            serde_json::json!(msg.payload.len() as u64),
+                        ),
+                        ("duration_ms".to_string(), serde_json::json!(0u64)),
                     ]),
                 });
                 Ok(())

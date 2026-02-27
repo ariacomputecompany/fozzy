@@ -332,13 +332,13 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 
 #### M13.3 Mode A: Deterministic Event Tracing Profiler (Always-On Baseline)
 - ✅ Reuse existing trace/timeline capture path as baseline profiler channel (lowest overhead mode).
-- ⬜ Add engine-native performance events:
-  - ⬜ Scheduler picks/waits/starvation windows
-  - ⬜ Capability durations (`fs/http/proc/net`) and payload sizes where available
-  - ⬜ Step/span duration boundaries
-  - ⬜ Memory counters and allocation/free markers (from M12 path)
-- ⬜ Implement `fozzy profile top --io --sched --heap` without CPU sampling dependency.
-- ⬜ Ensure replay uses captured event stream deterministically with drift detection unchanged.
+- ✅ Add engine-native performance events:
+  - ✅ Scheduler picks/waits/starvation windows
+  - ✅ Capability durations (`fs/http/proc/net`) and payload sizes where available
+  - ✅ Step/span duration boundaries
+  - ✅ Memory counters and allocation/free markers (from M12 path)
+- ✅ Implement `fozzy profile top --io --sched --heap` without CPU sampling dependency.
+- ✅ Ensure replay uses captured event stream deterministically with drift detection unchanged.
 
 #### M13.4 Mode B: CPU Sampling Profiler v1 (Host-Time Domain)
 - ⬜ Linux-first collector (`perf_event_open`) with permission/capability diagnostics and in-process fallback sampling.

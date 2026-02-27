@@ -653,6 +653,21 @@ fn run_explore_inner(
 
         let deliverable = deliverable_indices(&queue, &nodes, &net);
         if deliverable.is_empty() {
+            events.push(TraceEvent {
+                time_ms,
+                name: if queue.is_empty() {
+                    "sched_wait".to_string()
+                } else {
+                    "sched_starvation".to_string()
+                },
+                fields: serde_json::Map::from_iter([
+                    ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+                    (
+                        "deliverable_len".to_string(),
+                        serde_json::json!(deliverable.len() as u64),
+                    ),
+                ]),
+            });
             break;
         }
 
@@ -665,11 +680,28 @@ fn run_explore_inner(
         );
         let idx = deliverable[pick];
         let msg = queue.remove(idx).expect("index exists");
+        let msg_id = msg.id;
         delivered += 1;
         time_ms = time_ms.saturating_add(1);
         decisions.push(crate::Decision::SchedulerPick {
             task_id: msg.id,
             label: "deliver".to_string(),
+        });
+        events.push(TraceEvent {
+            time_ms,
+            name: "sched_pick".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("task_id".to_string(), serde_json::json!(msg.id)),
+                ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+            ]),
+        });
+        events.push(TraceEvent {
+            time_ms,
+            name: "span_start".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg.id))),
+                ("task".to_string(), serde_json::json!("deliver")),
+            ]),
         });
         events.push(TraceEvent {
             time_ms,
@@ -689,6 +721,19 @@ fn run_explore_inner(
                     "key".to_string(),
                     serde_json::Value::String(msg.key.clone()),
                 ),
+                (
+                    "payload_size".to_string(),
+                    serde_json::json!(msg.value.len() as u64),
+                ),
+            ]),
+        });
+        events.push(TraceEvent {
+            time_ms,
+            name: "capability_net".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("op".to_string(), serde_json::json!("deliver")),
+                ("payload_bytes".to_string(), serde_json::json!(msg.value.len() as u64)),
+                ("duration_ms".to_string(), serde_json::json!(1u64)),
             ]),
         });
 
@@ -700,6 +745,15 @@ fn run_explore_inner(
             &mut events,
             &mut time_ms,
         )?;
+        events.push(TraceEvent {
+            time_ms,
+            name: "span_end".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg_id))),
+                ("status".to_string(), serde_json::json!("ok")),
+                ("duration_ms".to_string(), serde_json::json!(1u64)),
+            ]),
+        });
 
         if let Some(finding) = check_invariants(scenario, &nodes, InvariantPhase::Progress) {
             findings.push(finding);
@@ -782,8 +836,25 @@ fn run_explore_replay_inner(
             FozzyError::Trace(format!("replay drift: message id {msg_id} not found"))
         })?;
         let msg = queue.remove(idx).expect("position exists");
+        let msg_id = msg.id;
         delivered += 1;
         time_ms = time_ms.saturating_add(1);
+        events.push(TraceEvent {
+            time_ms,
+            name: "sched_pick".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("task_id".to_string(), serde_json::json!(msg.id)),
+                ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+            ]),
+        });
+        events.push(TraceEvent {
+            time_ms,
+            name: "span_start".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg.id))),
+                ("task".to_string(), serde_json::json!("deliver")),
+            ]),
+        });
         events.push(TraceEvent {
             time_ms,
             name: "deliver".to_string(),
@@ -802,6 +873,19 @@ fn run_explore_replay_inner(
                     "key".to_string(),
                     serde_json::Value::String(msg.key.clone()),
                 ),
+                (
+                    "payload_size".to_string(),
+                    serde_json::json!(msg.value.len() as u64),
+                ),
+            ]),
+        });
+        events.push(TraceEvent {
+            time_ms,
+            name: "capability_net".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("op".to_string(), serde_json::json!("deliver")),
+                ("payload_bytes".to_string(), serde_json::json!(msg.value.len() as u64)),
+                ("duration_ms".to_string(), serde_json::json!(1u64)),
             ]),
         });
         deliver_message(
@@ -812,6 +896,15 @@ fn run_explore_replay_inner(
             &mut events,
             &mut time_ms,
         )?;
+        events.push(TraceEvent {
+            time_ms,
+            name: "span_end".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg_id))),
+                ("status".to_string(), serde_json::json!("ok")),
+                ("duration_ms".to_string(), serde_json::json!(1u64)),
+            ]),
+        });
 
         if let Some(finding) = check_invariants(scenario, &nodes, InvariantPhase::Progress) {
             findings.push(finding);
@@ -839,7 +932,25 @@ fn run_explore_replay_inner(
             &mut seen_strategy_edges,
         )];
         let msg = queue.remove(idx).expect("index exists");
+        let msg_id = msg.id;
         delivered += 1;
+        time_ms = time_ms.saturating_add(1);
+        events.push(TraceEvent {
+            time_ms,
+            name: "sched_pick".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("task_id".to_string(), serde_json::json!(msg.id)),
+                ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+            ]),
+        });
+        events.push(TraceEvent {
+            time_ms,
+            name: "span_start".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg.id))),
+                ("task".to_string(), serde_json::json!("deliver")),
+            ]),
+        });
         deliver_message(
             msg,
             &mut nodes,
@@ -848,6 +959,28 @@ fn run_explore_replay_inner(
             &mut events,
             &mut time_ms,
         )?;
+        events.push(TraceEvent {
+            time_ms,
+            name: "span_end".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg_id))),
+                ("status".to_string(), serde_json::json!("ok")),
+                ("duration_ms".to_string(), serde_json::json!(1u64)),
+            ]),
+        });
+    } else {
+        events.push(TraceEvent {
+            time_ms,
+            name: if queue.is_empty() {
+                "sched_wait".to_string()
+            } else {
+                "sched_starvation".to_string()
+            },
+            fields: serde_json::Map::from_iter([
+                ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+                ("deliverable_len".to_string(), serde_json::json!(0u64)),
+            ]),
+        });
     }
 
     if let Some(finding) = check_invariants(scenario, &nodes, InvariantPhase::Final) {

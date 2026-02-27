@@ -1194,9 +1194,11 @@ fn map_event_kind(name: &str) -> ProfileEventKind {
         "sample" => ProfileEventKind::Sample,
         "memory_alloc" => ProfileEventKind::Alloc,
         "memory_free" => ProfileEventKind::Free,
-        "http_request" | "proc_spawn" => ProfileEventKind::Io,
-        "net_drop" | "net_deliver" => ProfileEventKind::Net,
-        "deliver" | "partition" | "heal" | "crash" | "restart" => ProfileEventKind::Sched,
+        "http_request" | "proc_spawn" | "capability_http" | "capability_proc"
+        | "capability_fs" => ProfileEventKind::Io,
+        "net_send" | "net_drop" | "net_deliver" | "capability_net" => ProfileEventKind::Net,
+        "deliver" | "partition" | "heal" | "crash" | "restart" | "sched_pick" | "sched_wait"
+        | "sched_starvation" => ProfileEventKind::Sched,
         _ => ProfileEventKind::Event,
     }
 }
