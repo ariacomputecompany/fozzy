@@ -459,10 +459,14 @@ pub struct LatencyProfile {
     #[serde(rename = "runId")]
     pub run_id: String,
     pub distribution: LatencyDistribution,
+    #[serde(rename = "dependencyGraph")]
+    pub dependency_graph: Vec<CriticalPathEdge>,
     #[serde(rename = "criticalPath")]
     pub critical_path: Vec<CriticalPathEdge>,
     #[serde(rename = "waitReasons")]
     pub wait_reasons: Vec<ReasonCount>,
+    #[serde(rename = "tailAmplificationSuspects")]
+    pub tail_amplification_suspects: Vec<TailAmplificationSuspect>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,6 +500,15 @@ pub struct CriticalPathEdge {
 pub struct ReasonCount {
     pub reason: String,
     pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TailAmplificationSuspect {
+    #[serde(rename = "spanId")]
+    pub span_id: String,
+    #[serde(rename = "durationMs")]
+    pub duration_ms: u64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -667,10 +680,8 @@ pub fn profile_command(
                 out.insert("heap".to_string(), serde_json::to_value(heap_rows)?);
             }
             if domains.iter().any(|d| d == "latency") {
-                let latency_rows = bundle
-                    .latency
-                    .as_ref()
-                    .expect("latency domain requested")
+                let latency_profile = bundle.latency.as_ref().expect("latency domain requested");
+                let latency_rows = latency_profile
                     .critical_path
                     .iter()
                     .take(*limit)
@@ -679,7 +690,16 @@ pub fn profile_command(
                 if latency_rows.is_empty() {
                     empty_domains.push(empty_domain("latency", "no latency edges in trace"));
                 }
-                out.insert("latency".to_string(), serde_json::to_value(latency_rows)?);
+                out.insert(
+                    "latency".to_string(),
+                    serde_json::json!({
+                        "distribution": latency_profile.distribution.clone(),
+                        "criticalPath": latency_rows,
+                        "dependencyGraph": latency_profile.dependency_graph.iter().take(*limit).cloned().collect::<Vec<_>>(),
+                        "waitReasons": latency_profile.wait_reasons.clone(),
+                        "tailAmplificationSuspects": latency_profile.tail_amplification_suspects.iter().take(*limit).cloned().collect::<Vec<_>>(),
+                    }),
+                );
             }
             if domains.iter().any(|d| d == "io") {
                 let io_top = top_by_tag(
@@ -1179,6 +1199,7 @@ fn build_profile_timeline(trace: &TraceFile) -> Vec<ProfileEvent> {
     let run_id = trace.summary.identity.run_id.clone();
     let seed = trace.summary.identity.seed;
     let mut out = Vec::new();
+    let mut open_spans = Vec::<String>::new();
     for (idx, event) in trace.events.iter().enumerate() {
         let kind = map_event_kind(&event.name);
         let t_next = trace.events.get(idx + 1).map(|n| n.time_ms);
@@ -1209,6 +1230,48 @@ fn build_profile_timeline(trace: &TraceFile) -> Vec<ProfileEvent> {
             .get("task")
             .and_then(|v| v.as_str())
             .map(ToString::to_string);
+        let explicit_span = event
+            .fields
+            .get("span")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
+        let mut span_id = explicit_span.unwrap_or_else(|| {
+            open_spans
+                .last()
+                .cloned()
+                .unwrap_or_else(|| format!("e-{idx}"))
+        });
+        let mut parent_span_id = event
+            .fields
+            .get("parent_span")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+            .or_else(|| {
+                if matches!(kind, ProfileEventKind::SpanStart) {
+                    open_spans.last().cloned()
+                } else {
+                    None
+                }
+            });
+        if matches!(kind, ProfileEventKind::SpanStart) {
+            if !open_spans.contains(&span_id) {
+                open_spans.push(span_id.clone());
+            }
+        } else if matches!(kind, ProfileEventKind::SpanEnd) {
+            if let Some(explicit) = event.fields.get("span").and_then(|v| v.as_str()) {
+                span_id = explicit.to_string();
+                if let Some(pos) = open_spans.iter().rposition(|s| s == explicit) {
+                    parent_span_id = if pos > 0 {
+                        open_spans.get(pos - 1).cloned()
+                    } else {
+                        None
+                    };
+                    open_spans.remove(pos);
+                }
+            }
+        } else if parent_span_id.is_none() {
+            parent_span_id = open_spans.last().cloned();
+        }
         out.push(ProfileEvent {
             t_virtual: event.time_ms,
             t_mono: Some(idx as u64),
@@ -1222,12 +1285,8 @@ fn build_profile_timeline(trace: &TraceFile) -> Vec<ProfileEvent> {
                 .unwrap_or("main")
                 .to_string(),
             task,
-            span_id: format!("e-{idx}"),
-            parent_span_id: if idx > 0 {
-                Some(format!("e-{}", idx - 1))
-            } else {
-                None
-            },
+            span_id,
+            parent_span_id,
             tags,
             cost: ProfileCost {
                 duration_ms: duration,
@@ -1543,39 +1602,76 @@ fn build_heap_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> HeapProfi
 }
 
 fn build_latency_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> LatencyProfile {
-    let mut deltas = Vec::<u64>::new();
-    let mut critical_path = Vec::<CriticalPathEdge>::new();
-    let mut reasons = BTreeMap::<String, u64>::new();
-
-    for pair in timeline.windows(2) {
-        let left = &pair[0];
-        let right = &pair[1];
-        let d = right.t_virtual.saturating_sub(left.t_virtual);
-        deltas.push(d);
-        let reason = match right.kind {
-            ProfileEventKind::Io => "io",
-            ProfileEventKind::Sched => "sched",
-            ProfileEventKind::Alloc | ProfileEventKind::Free => "heap",
-            ProfileEventKind::Net => "payload",
-            ProfileEventKind::Sample => "cpu",
-            _ => "other",
-        }
-        .to_string();
-        *reasons.entry(reason.clone()).or_insert(0) += 1;
-        critical_path.push(CriticalPathEdge {
-            from_span: left.span_id.clone(),
-            to_span: right.span_id.clone(),
-            duration_ms: d,
-            reason,
-        });
+    #[derive(Debug, Clone)]
+    struct SpanRec {
+        span_id: String,
+        parent: Option<String>,
+        start: u64,
+        duration: u64,
+        wait_reason: String,
     }
 
-    critical_path.sort_by(|a, b| {
-        b.duration_ms
-            .cmp(&a.duration_ms)
-            .then_with(|| a.from_span.cmp(&b.from_span))
-    });
+    let mut starts = HashMap::<String, (&ProfileEvent, usize)>::new();
+    let mut spans = Vec::<SpanRec>::new();
+    let mut reasons = BTreeMap::<String, u64>::new();
+    let mut io_edges = Vec::<CriticalPathEdge>::new();
+    let mut sched_edges = Vec::<CriticalPathEdge>::new();
 
+    for (idx, event) in timeline.iter().enumerate() {
+        match event.kind {
+            ProfileEventKind::SpanStart => {
+                starts.insert(event.span_id.clone(), (event, idx));
+            }
+            ProfileEventKind::SpanEnd => {
+                if let Some((start, start_idx)) = starts.remove(&event.span_id) {
+                    let duration = event.t_virtual.saturating_sub(start.t_virtual);
+                    let mut wait_reason = "other".to_string();
+                    for inner in timeline
+                        .iter()
+                        .skip(start_idx)
+                        .take(idx.saturating_sub(start_idx) + 1)
+                    {
+                        wait_reason = dominant_reason_for_event(inner).to_string();
+                        if wait_reason != "other" {
+                            break;
+                        }
+                    }
+                    *reasons.entry(wait_reason.clone()).or_insert(0) += 1;
+                    spans.push(SpanRec {
+                        span_id: event.span_id.clone(),
+                        parent: start.parent_span_id.clone(),
+                        start: start.t_virtual,
+                        duration,
+                        wait_reason,
+                    });
+                }
+            }
+            ProfileEventKind::Io | ProfileEventKind::Net => {
+                if let Some(parent) = event.parent_span_id.clone() {
+                    io_edges.push(CriticalPathEdge {
+                        from_span: parent,
+                        to_span: event.span_id.clone(),
+                        duration_ms: event.cost.duration_ms.unwrap_or(0),
+                        reason: dominant_reason_for_event(event).to_string(),
+                    });
+                }
+            }
+            ProfileEventKind::Sched => {
+                if let Some(parent) = event.parent_span_id.clone() {
+                    sched_edges.push(CriticalPathEdge {
+                        from_span: parent,
+                        to_span: event.span_id.clone(),
+                        duration_ms: event.cost.duration_ms.unwrap_or(0),
+                        reason: "sched".to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.span_id.cmp(&b.span_id)));
+    let mut deltas = spans.iter().map(|s| s.duration).collect::<Vec<_>>();
     let distribution = if deltas.is_empty() {
         LatencyDistribution {
             count: 0,
@@ -1610,17 +1706,80 @@ fn build_latency_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> Latenc
         }
     };
 
+    let span_map = spans
+        .iter()
+        .map(|s| (s.span_id.clone(), s.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut dependency_graph = Vec::<CriticalPathEdge>::new();
+    for span in &spans {
+        if let Some(parent) = &span.parent
+            && let Some(p) = span_map.get(parent)
+        {
+            dependency_graph.push(CriticalPathEdge {
+                from_span: parent.clone(),
+                to_span: span.span_id.clone(),
+                duration_ms: p.duration.saturating_add(span.duration),
+                reason: "parent_child".to_string(),
+            });
+        }
+    }
+    dependency_graph.extend(io_edges);
+    dependency_graph.extend(sched_edges);
+    dependency_graph.sort_by(|a, b| {
+        b.duration_ms
+            .cmp(&a.duration_ms)
+            .then_with(|| a.from_span.cmp(&b.from_span))
+    });
+
+    let mut critical_path = spans
+        .iter()
+        .map(|span| CriticalPathEdge {
+            from_span: span.parent.clone().unwrap_or_else(|| "root".to_string()),
+            to_span: span.span_id.clone(),
+            duration_ms: span.duration,
+            reason: span.wait_reason.clone(),
+        })
+        .collect::<Vec<_>>();
+    critical_path.sort_by(|a, b| {
+        b.duration_ms
+            .cmp(&a.duration_ms)
+            .then_with(|| a.from_span.cmp(&b.from_span))
+    });
+
     let wait_reasons = reasons
         .into_iter()
         .map(|(reason, count)| ReasonCount { reason, count })
         .collect();
+    let tail_amplification_suspects = spans
+        .iter()
+        .filter(|s| s.duration >= distribution.p95_ms.max(1))
+        .map(|s| TailAmplificationSuspect {
+            span_id: s.span_id.clone(),
+            duration_ms: s.duration,
+            reason: s.wait_reason.clone(),
+        })
+        .take(10)
+        .collect::<Vec<_>>();
 
     LatencyProfile {
         schema_version: "fozzy.profile_latency.v1".to_string(),
         run_id: trace.summary.identity.run_id.clone(),
         distribution,
+        dependency_graph,
         critical_path,
         wait_reasons,
+        tail_amplification_suspects,
+    }
+}
+
+fn dominant_reason_for_event(event: &ProfileEvent) -> &'static str {
+    match event.kind {
+        ProfileEventKind::Io => "io",
+        ProfileEventKind::Sched => "sched",
+        ProfileEventKind::Alloc | ProfileEventKind::Free => "heap",
+        ProfileEventKind::Net => "payload",
+        ProfileEventKind::Sample => "cpu",
+        _ => "other",
     }
 }
 
@@ -2052,22 +2211,35 @@ fn explain_single(
         .first()
         .map(|p| format!("{} -> {} ({}ms)", p.from_span, p.to_span, p.duration_ms))
         .unwrap_or_else(|| "no critical path edges".to_string());
+    let top_reason = latency
+        .critical_path
+        .first()
+        .map(|p| p.reason.clone())
+        .unwrap_or_else(|| "other".to_string());
 
-    let domain = if metrics.p99_latency_ms > 0 {
-        "latency"
+    let domain = if matches!(
+        top_reason.as_str(),
+        "io" | "sched" | "heap" | "payload" | "cpu"
+    ) {
+        top_reason.as_str()
     } else if metrics.alloc_bytes > 0 {
         "heap"
-    } else {
+    } else if metrics.io_ops > 0 {
         "io"
+    } else {
+        "sched"
     };
 
     ProfileExplain {
         schema_version: "fozzy.profile_explain.v1".to_string(),
         run: run.to_string(),
         regression_statement: format!(
-            "run {} shows p99={}ms, alloc_bytes={}, io_ops={}, sched_ops={}",
+            "run {} shows p50/p95/p99/max={}/{}/{}/{}ms, alloc_bytes={}, io_ops={}, sched_ops={}",
             metrics.run_id,
+            metrics.p50_latency_ms,
+            metrics.p95_latency_ms,
             metrics.p99_latency_ms,
+            metrics.max_latency_ms,
             metrics.alloc_bytes,
             metrics.io_ops,
             metrics.sched_ops
@@ -2105,13 +2277,20 @@ fn explain_from_diff(
     );
     let top = diff.regressions.first();
     let (statement, path, domain) = if let Some(top) = top {
+        let cause_domain = if top.metric.contains("latency") {
+            "latency".to_string()
+        } else if top.metric.contains("alloc") || top.metric.contains("in_use") {
+            "heap".to_string()
+        } else {
+            top.domain.clone()
+        };
         (
             format!(
                 "{} {} changed from {:.2} to {:.2} ({:+.2}%)",
                 top.domain, top.metric, top.left_value, top.right_value, top.delta_pct
             ),
             format!("metric::{}", top.metric),
-            top.domain.clone(),
+            cause_domain,
         )
     } else {
         (

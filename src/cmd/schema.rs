@@ -563,16 +563,20 @@ pub fn schema_doc() -> SchemaDoc {
                 "schemaVersion",
                 "runId",
                 "distribution",
+                "dependencyGraph",
                 "criticalPath",
                 "waitReasons",
+                "tailAmplificationSuspects",
             ],
             optional_fields: vec![],
             example: serde_json::json!({
                 "schemaVersion":"fozzy.profile_latency.v1",
                 "runId":"run-id",
                 "distribution":{"count":0,"p50Ms":0,"p95Ms":0,"p99Ms":0,"maxMs":0,"variance":0.0},
+                "dependencyGraph":[],
                 "criticalPath":[],
-                "waitReasons":[]
+                "waitReasons":[],
+                "tailAmplificationSuspects":[]
             }),
             notes: "Latency profile payload; critical path rows are deterministically sorted."
                 .to_string(),

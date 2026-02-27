@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::{
-    Config, FlakeBudget, FozzyError, FozzyResult, Reporter, RunSummary, TraceFile, render_html,
-    render_junit_xml,
+    Config, FlakeBudget, FozzyError, FozzyResult, ProfileCommand, Reporter, RunSummary, TraceFile,
+    render_html, render_junit_xml,
 };
 
 #[derive(Debug, Subcommand)]
@@ -57,11 +57,12 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
     match command {
         ReportCommand::Show { run, format } => {
             let summary = load_summary(config, run)?;
+            let doc = report_doc_with_profile(config, run, &summary);
             match format {
-                Reporter::Json => Ok(serde_json::to_value(summary)?),
+                Reporter::Json => Ok(doc),
                 Reporter::Pretty => Ok(serde_json::to_value(ReportEnvelope {
                     format: *format,
-                    content: summary.pretty(),
+                    content: render_pretty_with_profile(&summary, &doc),
                 })?),
                 Reporter::Junit => Ok(serde_json::to_value(ReportEnvelope {
                     format: *format,
@@ -80,7 +81,7 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
             list_paths,
         } => {
             let summary = load_summary(config, run)?;
-            let value = serde_json::to_value(summary)?;
+            let value = report_doc_with_profile(config, run, &summary);
             if *list_paths {
                 return Ok(serde_json::json!({
                     "paths": list_query_paths(&value)
@@ -96,6 +97,60 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
         }
         ReportCommand::Flaky { runs, flake_budget } => flaky_command(config, runs, *flake_budget),
     }
+}
+
+fn report_doc_with_profile(
+    config: &Config,
+    run: &str,
+    summary: &RunSummary,
+) -> serde_json::Value {
+    let mut value = serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}));
+    let explain = crate::profile_command(
+        config,
+        &ProfileCommand::Explain {
+            run: run.to_string(),
+            diff_with: None,
+        },
+        false,
+    )
+    .ok();
+    if let Some(obj) = value.as_object_mut()
+        && let Some(explain) = explain
+    {
+        obj.insert("profileDiagnosis".to_string(), explain);
+    }
+    value
+}
+
+fn render_pretty_with_profile(summary: &RunSummary, doc: &serde_json::Value) -> String {
+    let mut content = summary.pretty();
+    if let Some(profile) = doc.get("profileDiagnosis") {
+        let statement = profile
+            .get("regressionStatement")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let path = profile
+            .get("topShiftedPath")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let cause = profile
+            .get("likelyCauseDomain")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if !statement.is_empty() || !path.is_empty() || !cause.is_empty() {
+            content.push_str("\nprofile:\n");
+            if !statement.is_empty() {
+                content.push_str(&format!("- regression_statement: {statement}\n"));
+            }
+            if !path.is_empty() {
+                content.push_str(&format!("- top_shifted_path: {path}\n"));
+            }
+            if !cause.is_empty() {
+                content.push_str(&format!("- likely_cause_domain: {cause}\n"));
+            }
+        }
+    }
+    content.trim_end().to_string()
 }
 
 fn flaky_command(

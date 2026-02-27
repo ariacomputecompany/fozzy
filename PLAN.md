@@ -362,15 +362,15 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ Wire heap profiler findings into `report.json` finding taxonomy and strict budget semantics where configured.
 
 #### M13.6 Mode D: Latency/Critical-Path Profiler v1 (Causal Diagnostics)
-- ⬜ Compute per-span latency distributions (p50/p95/p99/max) and variance summaries.
-- ⬜ Build dependency graph from span parentage + wait reasons + scheduler/IO edges.
-- ⬜ Extract critical path and tail amplification suspects.
-- ⬜ Implement `fozzy profile top --latency`, `fozzy profile diff --latency`, and `fozzy profile explain`.
-- ⬜ Emit concise automated diagnosis in report surfaces:
-  - ⬜ regression statement
-  - ⬜ top shifted path
-  - ⬜ likely cause domain (`io|sched|cpu|heap|payload`)
-  - ⬜ evidence pointers (artifact + span/callsite ids)
+- ✅ Compute per-span latency distributions (p50/p95/p99/max) and variance summaries.
+- ✅ Build dependency graph from span parentage + wait reasons + scheduler/IO edges.
+- ✅ Extract critical path and tail amplification suspects.
+- ✅ Implement `fozzy profile top --latency`, `fozzy profile diff --latency`, and `fozzy profile explain`.
+- ✅ Emit concise automated diagnosis in report surfaces:
+  - ✅ regression statement
+  - ✅ top shifted path
+  - ✅ likely cause domain (`io|sched|cpu|heap|payload`)
+  - ✅ evidence pointers (artifact + span/callsite ids)
 
 #### M13.7 Determinism Contract: Dual Time Domains
 - ⬜ Formalize two time domains in docs + schemas:
