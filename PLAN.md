@@ -398,20 +398,20 @@ Fozzy is a deterministic full-stack testing platform built from first principles
 - ✅ SDK-TS parity for profiler command wrappers and typed JSON outputs.
 
 #### M13.10 Production Gate Sequence (Profiler Shipping Contract)
-- ⬜ Deterministic baseline gate (scenario-level):
-  - ⬜ `fozzy doctor --deep --scenario <prof_scenario> --runs 5 --seed <seed> --json`
-  - ⬜ `fozzy test --det --strict <prof_scenarios...> --json`
-- ⬜ Trace+replay gate for profiler artifacts:
-  - ⬜ `fozzy run <prof_scenario> --det --record <trace.fozzy> --json`
-  - ⬜ `fozzy trace verify <trace.fozzy> --strict --json`
-  - ⬜ `fozzy replay <trace.fozzy> --json`
-  - ⬜ `fozzy ci <trace.fozzy> --json`
-- ⬜ Host-backed runtime confidence checks for real-system perf behavior where feasible:
-  - ⬜ `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
-- ⬜ Profiler command gate:
-  - ⬜ `fozzy profile top <run|trace> --cpu --heap --latency --json`
-  - ⬜ `fozzy profile diff <left> <right> --cpu --heap --latency --json`
-  - ⬜ `fozzy profile explain <run|trace> --json`
+- ✅ Deterministic baseline gate (scenario-level):
+  - ✅ `fozzy doctor --deep --scenario <prof_scenario> --runs 5 --seed <seed> --json`
+  - ✅ `fozzy test --det --strict <prof_scenarios...> --json`
+- ✅ Trace+replay gate for profiler artifacts:
+  - ✅ `fozzy run <prof_scenario> --det --record <trace.fozzy> --json`
+  - ✅ `fozzy trace verify <trace.fozzy> --strict --json`
+  - ✅ `fozzy replay <trace.fozzy> --json`
+  - ✅ `fozzy ci <trace.fozzy> --json`
+- ✅ Host-backed runtime confidence checks for real-system perf behavior where feasible:
+  - ✅ `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
+- ✅ Profiler command gate:
+  - ✅ `fozzy profile top <run|trace> --cpu --heap --latency --json`
+  - ✅ `fozzy profile diff <left> <right> --cpu --heap --latency --json`
+  - ✅ `fozzy profile explain <run|trace> --json`
 
 #### M13.11 Test Matrix + Hardening Requirements
 - ⬜ Unit tests:

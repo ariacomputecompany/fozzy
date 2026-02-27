@@ -2098,14 +2098,21 @@ fn run_full_command(
                 memory: memory.clone(),
             },
         ) {
-            Ok(test) => push(
-                "test_det",
-                FullStepStatus::Passed,
-                format!(
-                    "status={:?} run_id={}",
-                    test.summary.status, test.summary.identity.run_id
-                ),
-            ),
+            Ok(test) => {
+                let strict_ok = enforce_strict_summary(strict, &test.summary).is_ok();
+                push(
+                    "test_det",
+                    if strict_ok {
+                        FullStepStatus::Passed
+                    } else {
+                        FullStepStatus::Failed
+                    },
+                    format!(
+                        "status={:?} strict_ok={} run_id={}",
+                        test.summary.status, strict_ok, test.summary.identity.run_id
+                    ),
+                )
+            }
             Err(err) => push("test_det", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -2134,19 +2141,21 @@ fn run_full_command(
         ) {
             Ok(run) => {
                 primary_status = Some(run.summary.status);
+                let strict_ok = enforce_strict_summary(strict, &run.summary).is_ok();
                 if run.summary.identity.trace_path.is_some() {
                     primary_trace = Some(trace_path.clone());
                 }
                 push(
                     "run_record_trace",
-                    if run.summary.identity.trace_path.is_some() {
+                    if run.summary.identity.trace_path.is_some() && strict_ok {
                         FullStepStatus::Passed
                     } else {
                         FullStepStatus::Failed
                     },
                     format!(
-                        "status={:?} trace={}",
+                        "status={:?} strict_ok={} trace={}",
                         run.summary.status,
+                        strict_ok,
                         trace_path.display()
                     ),
                 );
@@ -2200,16 +2209,17 @@ fn run_full_command(
                 let replay_ok = primary_status
                     .map(|s| (s == ExitStatus::Pass) == (replay.summary.status == ExitStatus::Pass))
                     .unwrap_or(false);
+                let strict_ok = enforce_strict_summary(strict, &replay.summary).is_ok();
                 push(
                     "replay",
-                    if replay_ok {
+                    if replay_ok && strict_ok {
                         FullStepStatus::Passed
                     } else {
                         FullStepStatus::Failed
                     },
                     format!(
-                        "status={:?} run_id={}",
-                        replay.summary.status, replay.summary.identity.run_id
+                        "status={:?} strict_ok={} run_id={}",
+                        replay.summary.status, strict_ok, replay.summary.identity.run_id
                     ),
                 );
             }
