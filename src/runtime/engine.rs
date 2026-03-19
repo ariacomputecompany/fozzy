@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 
 use crate::{
     Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, MemoryOptions,
-    MemoryRunReport, MemoryState, Reporter, RunIdentity, RunMode, RunSummary, Scenario, ScenarioPath,
-    ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc, write_memory_artifacts,
-    write_memory_delta_artifact, write_profile_artifacts_from_trace, write_trace_with_policy,
+    MemoryRunReport, MemoryState, Reporter, RunIdentity, RunMode, RunSummary, Scenario,
+    ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc,
+    write_memory_artifacts, write_memory_delta_artifact, write_profile_artifacts_from_trace,
+    write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -509,7 +510,7 @@ fn init_guide_markdown(selected: &[InitTestType]) -> String {
         lines.push("- Run fuzzing: `fozzy fuzz fn:kv --mode coverage --time 10s --corpus .fozzy/corpora/fn-kv --json`".to_string());
     }
     if selected.contains(&InitTestType::Host) {
-        lines.push("- Run host-backed checks: `fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`".to_string());
+        lines.push("- Run host-backed checks: `fozzy run tests/host.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`".to_string());
     }
     lines.push("".to_string());
     lines.push(
@@ -589,15 +590,18 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
                     findings.extend(run.findings.clone());
                     if let Some(mem) = run.memory.as_ref() {
                         has_memory = true;
-                        memory_summary.alloc_count =
-                            memory_summary.alloc_count.saturating_add(mem.summary.alloc_count);
-                        memory_summary.free_count =
-                            memory_summary.free_count.saturating_add(mem.summary.free_count);
+                        memory_summary.alloc_count = memory_summary
+                            .alloc_count
+                            .saturating_add(mem.summary.alloc_count);
+                        memory_summary.free_count = memory_summary
+                            .free_count
+                            .saturating_add(mem.summary.free_count);
                         memory_summary.failed_alloc_count = memory_summary
                             .failed_alloc_count
                             .saturating_add(mem.summary.failed_alloc_count);
-                        memory_summary.in_use_bytes =
-                            memory_summary.in_use_bytes.saturating_add(mem.summary.in_use_bytes);
+                        memory_summary.in_use_bytes = memory_summary
+                            .in_use_bytes
+                            .saturating_add(mem.summary.in_use_bytes);
                         memory_summary.peak_bytes =
                             memory_summary.peak_bytes.max(mem.summary.peak_bytes);
                         memory_summary.leaked_bytes = memory_summary
@@ -618,15 +622,18 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
             }
             if let Some(mem) = run.memory.as_ref() {
                 has_memory = true;
-                memory_summary.alloc_count =
-                    memory_summary.alloc_count.saturating_add(mem.summary.alloc_count);
-                memory_summary.free_count =
-                    memory_summary.free_count.saturating_add(mem.summary.free_count);
+                memory_summary.alloc_count = memory_summary
+                    .alloc_count
+                    .saturating_add(mem.summary.alloc_count);
+                memory_summary.free_count = memory_summary
+                    .free_count
+                    .saturating_add(mem.summary.free_count);
                 memory_summary.failed_alloc_count = memory_summary
                     .failed_alloc_count
                     .saturating_add(mem.summary.failed_alloc_count);
-                memory_summary.in_use_bytes =
-                    memory_summary.in_use_bytes.saturating_add(mem.summary.in_use_bytes);
+                memory_summary.in_use_bytes = memory_summary
+                    .in_use_bytes
+                    .saturating_add(mem.summary.in_use_bytes);
                 memory_summary.peak_bytes = memory_summary.peak_bytes.max(mem.summary.peak_bytes);
                 memory_summary.leaked_bytes = memory_summary
                     .leaked_bytes
@@ -949,7 +956,8 @@ pub fn run_scenario(
         report_summary.clone(),
     );
     profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    let heap_findings =
+        heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
     if !heap_findings.is_empty() {
         report_summary.findings.extend(heap_findings);
         report_summary.findings = crate::collapse_findings(report_summary.findings.clone());
@@ -959,7 +967,8 @@ pub fn run_scenario(
     let explicit_capture = opt.record_trace_to.is_some();
     let emit_heavy = should_emit_heavy_artifacts(run.status, explicit_capture)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
-    let emit_profile = should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
+    let emit_profile =
+        should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
     if emit_heavy {
         std::fs::write(
             artifacts_dir.join("events.json"),
@@ -1127,7 +1136,8 @@ pub fn replay_trace(
         summary.clone(),
     );
     profile_trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    let heap_findings =
+        heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
     if !heap_findings.is_empty() {
         summary.findings.extend(heap_findings);
         summary.findings = crate::collapse_findings(summary.findings.clone());
@@ -1137,7 +1147,8 @@ pub fn replay_trace(
     let explicit_capture = opt.dump_events || opt.step;
     let emit_heavy = should_emit_heavy_artifacts(run.status, explicit_capture)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
-    let emit_profile = should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
+    let emit_profile =
+        should_emit_profile_artifacts(opt.profile_capture, run.status, explicit_capture);
     if emit_heavy {
         std::fs::write(
             artifacts_dir.join("events.json"),
@@ -1365,7 +1376,11 @@ fn shrink_trace_inner(
     })
 }
 
-fn build_shrink_preview_trace(scenario: &ScenarioV1Steps, seed: u64, run: &ScenarioRun) -> TraceFile {
+fn build_shrink_preview_trace(
+    scenario: &ScenarioV1Steps,
+    seed: u64,
+    run: &ScenarioRun,
+) -> TraceFile {
     let summary = RunSummary {
         status: run.status,
         mode: RunMode::Run,
@@ -1570,24 +1585,6 @@ fn run_scenario_inner(
     http_backend: HttpBackend,
     memory: MemoryOptions,
 ) -> FozzyResult<ScenarioRun> {
-    if det && matches!(proc_backend, ProcBackend::Host) {
-        return Err(FozzyError::InvalidArgument(
-            "host proc backend is not supported in deterministic mode; use --proc-backend scripted or disable --det"
-                .to_string(),
-        ));
-    }
-    if det && matches!(fs_backend, FsBackend::Host) {
-        return Err(FozzyError::InvalidArgument(
-            "host fs backend is not supported in deterministic mode; use --fs-backend virtual or disable --det"
-                .to_string(),
-        ));
-    }
-    if det && matches!(http_backend, HttpBackend::Host) {
-        return Err(FozzyError::InvalidArgument(
-            "host http backend is not supported in deterministic mode; use --http-backend scripted or disable --det"
-                .to_string(),
-        ));
-    }
     let loaded = Scenario::load(&scenario_path)?;
     loaded.validate()?;
 
@@ -1657,7 +1654,10 @@ fn run_embedded_scenario_inner(
             fields: serde_json::Map::from_iter([
                 ("task_id".to_string(), serde_json::json!(item.id)),
                 ("step_index".to_string(), serde_json::json!(idx as u64)),
-                ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                (
+                    "step_kind".to_string(),
+                    serde_json::json!(step_kind.clone()),
+                ),
             ]),
         });
         ctx.events.push(TraceEvent {
@@ -1667,7 +1667,10 @@ fn run_embedded_scenario_inner(
                 ("span".to_string(), serde_json::json!(span_id.clone())),
                 ("task".to_string(), serde_json::json!("step")),
                 ("step_index".to_string(), serde_json::json!(idx as u64)),
-                ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                (
+                    "step_kind".to_string(),
+                    serde_json::json!(step_kind.clone()),
+                ),
             ]),
         });
         if let Err(finding) = ctx.exec_step(step) {
@@ -1827,7 +1830,10 @@ fn run_scenario_replay_inner<'a>(
                 fields: serde_json::Map::from_iter([
                     ("task_id".to_string(), serde_json::json!(item.id)),
                     ("step_index".to_string(), serde_json::json!(idx as u64)),
-                    ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                    (
+                        "step_kind".to_string(),
+                        serde_json::json!(step_kind.clone()),
+                    ),
                 ]),
             });
             ctx.events.push(TraceEvent {
@@ -1837,7 +1843,10 @@ fn run_scenario_replay_inner<'a>(
                     ("span".to_string(), serde_json::json!(span_id.clone())),
                     ("task".to_string(), serde_json::json!("step")),
                     ("step_index".to_string(), serde_json::json!(idx as u64)),
-                    ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                    (
+                        "step_kind".to_string(),
+                        serde_json::json!(step_kind.clone()),
+                    ),
                 ]),
             });
             if let Err(finding) = ctx.exec_step(step_def) {
@@ -1907,7 +1916,10 @@ fn run_scenario_replay_inner<'a>(
                 fields: serde_json::Map::from_iter([
                     ("task_id".to_string(), serde_json::json!(idx as u64 + 1)),
                     ("step_index".to_string(), serde_json::json!(idx as u64)),
-                    ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                    (
+                        "step_kind".to_string(),
+                        serde_json::json!(step_kind.clone()),
+                    ),
                 ]),
             });
             ctx.events.push(TraceEvent {
@@ -1917,7 +1929,10 @@ fn run_scenario_replay_inner<'a>(
                     ("span".to_string(), serde_json::json!(span_id.clone())),
                     ("task".to_string(), serde_json::json!("step")),
                     ("step_index".to_string(), serde_json::json!(idx as u64)),
-                    ("step_kind".to_string(), serde_json::json!(step_kind.clone())),
+                    (
+                        "step_kind".to_string(),
+                        serde_json::json!(step_kind.clone()),
+                    ),
                 ]),
             });
             if let Err(finding) = ctx.exec_step(step_def) {
@@ -1995,6 +2010,8 @@ struct ExecCtx<'a> {
     kv: BTreeMap<String, String>,
     fs: BTreeMap<String, String>,
     fs_snapshots: BTreeMap<String, BTreeMap<String, String>>,
+    replay_host_fs: BTreeMap<String, Vec<u8>>,
+    replay_host_fs_snapshots: BTreeMap<String, BTreeMap<String, Option<Vec<u8>>>>,
     host_fs_touched: BTreeSet<PathBuf>,
     host_fs_snapshots: BTreeMap<String, BTreeMap<PathBuf, Option<Vec<u8>>>>,
     http_rules: Vec<HttpRule>,
@@ -2036,6 +2053,8 @@ impl<'a> ExecCtx<'a> {
             kv: BTreeMap::new(),
             fs: BTreeMap::new(),
             fs_snapshots: BTreeMap::new(),
+            replay_host_fs: BTreeMap::new(),
+            replay_host_fs_snapshots: BTreeMap::new(),
             host_fs_touched: BTreeSet::new(),
             host_fs_snapshots: BTreeMap::new(),
             http_rules: Vec::new(),
@@ -2157,6 +2176,95 @@ impl<'a> ExecCtx<'a> {
         } else {
             None
         }
+    }
+
+    fn replay_host_fs_write(&mut self, path: &str, data: &[u8]) {
+        self.replay_host_fs.insert(path.to_string(), data.to_vec());
+    }
+
+    fn replay_host_fs_read_assert(&mut self, path: &str, expected: &str) -> Result<(), Finding> {
+        let Some(bytes) = self.replay_host_fs.get(path) else {
+            return Err(Finding {
+                kind: FindingKind::Assertion,
+                title: "fs_read_assert".to_string(),
+                message: format!(
+                    "expected host fs replay data for {path:?}, but none was recorded"
+                ),
+                location: None,
+            });
+        };
+        let got = String::from_utf8(bytes.clone()).map_err(|_| Finding {
+            kind: FindingKind::Assertion,
+            title: "fs_read_assert".to_string(),
+            message: format!("recorded host fs bytes for {path:?} are not valid utf-8"),
+            location: None,
+        })?;
+        if got != expected {
+            return Err(Finding {
+                kind: FindingKind::Assertion,
+                title: "fs_read_assert".to_string(),
+                message: format!("expected {path:?} == {expected:?}, got {got:?}"),
+                location: None,
+            });
+        }
+        Ok(())
+    }
+
+    fn apply_replay_host_fs_snapshot(
+        &mut self,
+        name: &str,
+        entries: &BTreeMap<String, Option<String>>,
+    ) -> Result<(), Finding> {
+        let mut decoded = BTreeMap::new();
+        for (path, value) in entries {
+            let bytes = match value {
+                Some(hex) => Some(decode_hex(hex).map_err(|message| Finding {
+                    kind: FindingKind::Checker,
+                    title: "replay_fs_snapshot".to_string(),
+                    message: format!(
+                        "invalid recorded host fs snapshot bytes for {name:?} {path:?}: {message}"
+                    ),
+                    location: None,
+                })?),
+                None => None,
+            };
+            decoded.insert(path.clone(), bytes.clone());
+            match bytes {
+                Some(bytes) => {
+                    self.replay_host_fs.insert(path.clone(), bytes);
+                }
+                None => {
+                    self.replay_host_fs.remove(path);
+                }
+            }
+        }
+        self.replay_host_fs_snapshots
+            .insert(name.to_string(), decoded);
+        Ok(())
+    }
+
+    fn apply_replay_host_fs_restore(&mut self, name: &str) -> Result<(), Finding> {
+        let Some(snapshot) = self.replay_host_fs_snapshots.get(name).cloned() else {
+            return Err(Finding {
+                kind: FindingKind::Checker,
+                title: "fs_restore_missing_snapshot".to_string(),
+                message: format!("missing replay host fs snapshot {name:?}"),
+                location: None,
+            });
+        };
+        self.replay_host_fs
+            .retain(|path, _| snapshot.contains_key(path));
+        for (path, value) in snapshot {
+            match value {
+                Some(bytes) => {
+                    self.replay_host_fs.insert(path, bytes);
+                }
+                None => {
+                    self.replay_host_fs.remove(&path);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn resolve_host_fs_path(&self, raw: &str) -> Result<PathBuf, Finding> {
@@ -2551,8 +2659,47 @@ impl<'a> ExecCtx<'a> {
 
             crate::Step::FsWrite { path, data } => {
                 let start_ms = self.clock.now_ms();
-                if matches!(self.fs_backend, FsBackend::Host) {
+                if let Some(Decision::FsWrite {
+                    path: replay_path,
+                    data_hex,
+                }) = self.replay_peek().cloned()
+                {
+                    if replay_path != *path {
+                        return Err(Finding {
+                            kind: FindingKind::Checker,
+                            title: "replay_drift".to_string(),
+                            message: format!(
+                                "replay fs write drift: expected path {replay_path:?}, got {path:?}"
+                            ),
+                            location: None,
+                        });
+                    }
+                    let expected = decode_hex(&data_hex).map_err(|message| Finding {
+                        kind: FindingKind::Checker,
+                        title: "replay_drift".to_string(),
+                        message: format!(
+                            "replay fs write drift: invalid recorded bytes for {path:?}: {message}"
+                        ),
+                        location: None,
+                    })?;
+                    if expected != data.as_bytes() {
+                        return Err(Finding {
+                            kind: FindingKind::Checker,
+                            title: "replay_drift".to_string(),
+                            message: format!(
+                                "replay fs write drift: expected payload for {path:?} to match recorded host bytes"
+                            ),
+                            location: None,
+                        });
+                    }
+                    let _ = self.replay_take_if(|d| matches!(d, Decision::FsWrite { .. }));
+                    self.replay_host_fs_write(path, data.as_bytes());
+                } else if matches!(self.fs_backend, FsBackend::Host) {
                     self.host_fs_write(path, data)?;
+                    self.decisions.push(Decision::FsWrite {
+                        path: path.clone(),
+                        data_hex: encode_hex(data.as_bytes()),
+                    });
                 } else {
                     self.fs.insert(path.clone(), data.clone());
                 }
@@ -2569,7 +2716,10 @@ impl<'a> ExecCtx<'a> {
                                 FsBackend::Host => "host",
                             }),
                         ),
-                        ("payload_bytes".to_string(), serde_json::json!(data.len() as u64)),
+                        (
+                            "payload_bytes".to_string(),
+                            serde_json::json!(data.len() as u64),
+                        ),
                         (
                             "duration_ms".to_string(),
                             serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
@@ -2581,8 +2731,38 @@ impl<'a> ExecCtx<'a> {
 
             crate::Step::FsReadAssert { path, equals } => {
                 let start_ms = self.clock.now_ms();
-                if matches!(self.fs_backend, FsBackend::Host) {
+                if let Some(Decision::FsReadAssert {
+                    path: replay_path,
+                    data_hex,
+                }) = self.replay_peek().cloned()
+                {
+                    if replay_path != *path {
+                        return Err(Finding {
+                            kind: FindingKind::Checker,
+                            title: "replay_drift".to_string(),
+                            message: format!(
+                                "replay fs read drift: expected path {replay_path:?}, got {path:?}"
+                            ),
+                            location: None,
+                        });
+                    }
+                    let bytes = decode_hex(&data_hex).map_err(|message| Finding {
+                        kind: FindingKind::Checker,
+                        title: "replay_drift".to_string(),
+                        message: format!(
+                            "replay fs read drift: invalid recorded bytes for {path:?}: {message}"
+                        ),
+                        location: None,
+                    })?;
+                    let _ = self.replay_take_if(|d| matches!(d, Decision::FsReadAssert { .. }));
+                    self.replay_host_fs_write(path, &bytes);
+                    self.replay_host_fs_read_assert(path, equals)?;
+                } else if matches!(self.fs_backend, FsBackend::Host) {
                     self.host_fs_read_assert(path, equals)?;
+                    self.decisions.push(Decision::FsReadAssert {
+                        path: path.clone(),
+                        data_hex: encode_hex(equals.as_bytes()),
+                    });
                 } else {
                     let got = self.fs.get(path).cloned();
                     if got.as_deref() != Some(equals.as_str()) {
@@ -2622,8 +2802,42 @@ impl<'a> ExecCtx<'a> {
 
             crate::Step::FsSnapshot { name } => {
                 let start_ms = self.clock.now_ms();
-                if matches!(self.fs_backend, FsBackend::Host) {
+                if let Some(Decision::FsSnapshot {
+                    name: replay_name,
+                    entries,
+                }) = self.replay_peek().cloned()
+                {
+                    if replay_name != *name {
+                        return Err(Finding {
+                            kind: FindingKind::Checker,
+                            title: "replay_drift".to_string(),
+                            message: format!(
+                                "replay fs snapshot drift: expected snapshot {replay_name:?}, got {name:?}"
+                            ),
+                            location: None,
+                        });
+                    }
+                    let _ = self.replay_take_if(|d| matches!(d, Decision::FsSnapshot { .. }));
+                    self.apply_replay_host_fs_snapshot(name, &entries)?;
+                } else if matches!(self.fs_backend, FsBackend::Host) {
                     self.host_fs_snapshot(name)?;
+                    let entries = self
+                        .host_fs_snapshots
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(path, value)| {
+                            (
+                                path.to_string_lossy().to_string(),
+                                value.map(|bytes| encode_hex(&bytes)),
+                            )
+                        })
+                        .collect();
+                    self.decisions.push(Decision::FsSnapshot {
+                        name: name.clone(),
+                        entries,
+                    });
                 } else {
                     self.fs_snapshots.insert(name.clone(), self.fs.clone());
                 }
@@ -2651,8 +2865,24 @@ impl<'a> ExecCtx<'a> {
 
             crate::Step::FsRestore { name } => {
                 let start_ms = self.clock.now_ms();
-                if matches!(self.fs_backend, FsBackend::Host) {
+                if let Some(Decision::FsRestore { name: replay_name }) = self.replay_peek().cloned()
+                {
+                    if replay_name != *name {
+                        return Err(Finding {
+                            kind: FindingKind::Checker,
+                            title: "replay_drift".to_string(),
+                            message: format!(
+                                "replay fs restore drift: expected snapshot {replay_name:?}, got {name:?}"
+                            ),
+                            location: None,
+                        });
+                    }
+                    let _ = self.replay_take_if(|d| matches!(d, Decision::FsRestore { .. }));
+                    self.apply_replay_host_fs_restore(name)?;
+                } else if matches!(self.fs_backend, FsBackend::Host) {
                     self.host_fs_restore(name)?;
+                    self.decisions
+                        .push(Decision::FsRestore { name: name.clone() });
                 } else {
                     let Some(snapshot) = self.fs_snapshots.get(name).cloned() else {
                         return Err(Finding {
@@ -3287,7 +3517,10 @@ impl<'a> ExecCtx<'a> {
                         ("id".to_string(), serde_json::json!(id)),
                         ("from".to_string(), serde_json::json!(from)),
                         ("to".to_string(), serde_json::json!(to)),
-                        ("payload_size".to_string(), serde_json::json!(payload.len() as u64)),
+                        (
+                            "payload_size".to_string(),
+                            serde_json::json!(payload.len() as u64),
+                        ),
                     ]),
                 });
                 self.events.push(TraceEvent {
@@ -3295,7 +3528,10 @@ impl<'a> ExecCtx<'a> {
                     name: "capability_net".to_string(),
                     fields: serde_json::Map::from_iter([
                         ("op".to_string(), serde_json::json!("send")),
-                        ("payload_bytes".to_string(), serde_json::json!(payload.len() as u64)),
+                        (
+                            "payload_bytes".to_string(),
+                            serde_json::json!(payload.len() as u64),
+                        ),
                         ("duration_ms".to_string(), serde_json::json!(0u64)),
                     ]),
                 });
@@ -3844,6 +4080,8 @@ impl<'a> ExecCtx<'a> {
             kv: self.kv.clone(),
             fs: self.fs.clone(),
             fs_snapshots: self.fs_snapshots.clone(),
+            replay_host_fs: self.replay_host_fs.clone(),
+            replay_host_fs_snapshots: self.replay_host_fs_snapshots.clone(),
             host_fs_touched: self.host_fs_touched.clone(),
             host_fs_snapshots: self.host_fs_snapshots.clone(),
             http_rules: self.http_rules.clone(),
@@ -3864,6 +4102,8 @@ impl<'a> ExecCtx<'a> {
         self.kv = checkpoint.kv;
         self.fs = checkpoint.fs;
         self.fs_snapshots = checkpoint.fs_snapshots;
+        self.replay_host_fs = checkpoint.replay_host_fs;
+        self.replay_host_fs_snapshots = checkpoint.replay_host_fs_snapshots;
         self.host_fs_touched = checkpoint.host_fs_touched;
         self.host_fs_snapshots = checkpoint.host_fs_snapshots;
         self.http_rules = checkpoint.http_rules;
@@ -3885,6 +4125,8 @@ struct ExecCheckpoint {
     kv: BTreeMap<String, String>,
     fs: BTreeMap<String, String>,
     fs_snapshots: BTreeMap<String, BTreeMap<String, String>>,
+    replay_host_fs: BTreeMap<String, Vec<u8>>,
+    replay_host_fs_snapshots: BTreeMap<String, BTreeMap<String, Option<Vec<u8>>>>,
     host_fs_touched: BTreeSet<PathBuf>,
     host_fs_snapshots: BTreeMap<String, BTreeMap<PathBuf, Option<Vec<u8>>>>,
     http_rules: Vec<HttpRule>,
@@ -4157,6 +4399,43 @@ impl<'a> ReplayCursor<'a> {
 
 fn duration_to_ms(d: Duration) -> u64 {
     d.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for b in bytes {
+        out.push(TABLE[(b >> 4) as usize] as char);
+        out.push(TABLE[(b & 0x0F) as usize] as char);
+    }
+    out
+}
+
+fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
+    if !hex.len().is_multiple_of(2) {
+        return Err("hex payload must contain an even number of characters".to_string());
+    }
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    let bytes = hex.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let hi = decode_hex_nibble(bytes[i])
+            .ok_or_else(|| format!("invalid hex character {:?}", bytes[i] as char))?;
+        let lo = decode_hex_nibble(bytes[i + 1])
+            .ok_or_else(|| format!("invalid hex character {:?}", bytes[i + 1] as char))?;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Ok(out)
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 const HOST_PROC_MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;

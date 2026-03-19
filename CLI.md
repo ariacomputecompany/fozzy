@@ -107,7 +107,9 @@ fozzy test [globs...] [--det] [--seed <n>] [--jobs <n>] [--timeout <dur>] \
 ```
 
 `fozzy test` executes Fozzy scenario files. It does not directly launch arbitrary host test commands.
-For host execution, use `--proc-backend host`, `--fs-backend host`, and/or `--http-backend host` (non-deterministic mode only). Host-process and host-http responses are captured as replay decisions so `fozzy replay` remains deterministic.
+For host execution, use `--proc-backend host`, `--fs-backend host`, and/or `--http-backend host`.
+These backends are allowed in `--det` mode: scheduler/RNG/virtual-time behavior stays deterministic, and live host proc/fs/http observations are recorded into the trace so `fozzy replay` can reconstruct the run deterministically.
+Repeated live `--det` runs can still differ if the host environment itself changes.
 `http_request` supports request `headers` and response `expect_headers` assertions.
 `http_when` is supported in host mode as a response assertion rule when `path` is an absolute URL or a `/path` matcher.
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.

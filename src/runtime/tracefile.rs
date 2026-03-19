@@ -10,7 +10,7 @@ use crate::{
     RunMode, RunSummary, ScenarioV1Steps, VersionInfo,
 };
 
-pub const CURRENT_TRACE_VERSION: u32 = 3;
+pub const CURRENT_TRACE_VERSION: u32 = 4;
 pub const TRACE_FORMAT: &str = "fozzy-trace";
 
 #[derive(Debug, Clone)]
@@ -287,6 +287,22 @@ pub fn write_trace_with_policy(
 }
 
 pub fn trace_replay_warnings(trace: &TraceFile) -> Vec<String> {
+    let used_host_fs = trace.events.iter().any(|e| {
+        e.name == "capability_fs"
+            && e.fields
+                .get("backend")
+                .and_then(|v| v.as_str())
+                .is_some_and(|backend| backend == "host")
+    });
+    let has_fs_decisions = trace.decisions.iter().any(|d| {
+        matches!(
+            d,
+            Decision::FsWrite { .. }
+                | Decision::FsReadAssert { .. }
+                | Decision::FsSnapshot { .. }
+                | Decision::FsRestore { .. }
+        )
+    });
     let used_host_proc = trace.events.iter().any(|e| {
         e.name == "proc_spawn"
             && e.fields
@@ -311,6 +327,12 @@ pub fn trace_replay_warnings(trace: &TraceFile) -> Vec<String> {
         .any(|d| matches!(d, Decision::HttpRequest { .. }));
 
     let mut warnings = Vec::new();
+    if used_host_fs && !has_fs_decisions {
+        warnings.push(
+            "trace used host fs backend but does not include fs decisions; replay may drift"
+                .to_string(),
+        );
+    }
     if used_host_proc && !has_proc_decisions {
         warnings.push(
             "trace used host proc backend but does not include proc decisions; replay may drift"
@@ -763,6 +785,39 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|w| w.contains("host proc backend") && w.contains("replay may drift"))
+        );
+    }
+
+    #[test]
+    fn verify_warns_on_legacy_host_fs_trace_without_fs_decisions() {
+        let path = temp_file("legacy-host-fs.fozzy");
+        let trace = TraceFile::new(
+            RunMode::Run,
+            None,
+            Some(ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            Vec::new(),
+            vec![TraceEvent {
+                time_ms: 0,
+                name: "capability_fs".to_string(),
+                fields: serde_json::Map::from_iter([(
+                    "backend".to_string(),
+                    serde_json::Value::String("host".to_string()),
+                )]),
+            }],
+            sample_summary(None),
+        );
+        trace.write_json(&path).expect("write");
+
+        let verify = verify_trace_file(&path).expect("verify");
+        assert!(
+            verify
+                .warnings
+                .iter()
+                .any(|w| w.contains("host fs backend") && w.contains("replay may drift"))
         );
     }
 }

@@ -825,7 +825,7 @@ fn host_proc_backend_executes_real_proc_spawn_for_run() {
 
 #[cfg(unix)]
 #[test]
-fn host_proc_backend_is_rejected_in_deterministic_mode() {
+fn host_proc_backend_executes_in_deterministic_mode() {
     let ws = temp_workspace("host-proc-det");
     let scenario = ws.join("host-proc-det.fozzy.json");
     let raw = r#"{
@@ -845,15 +845,9 @@ fn host_proc_backend_is_rejected_in_deterministic_mode() {
         "--det".into(),
         "--json".into(),
     ]);
-    assert_eq!(out.status.code(), Some(2), "det + host proc should fail");
+    assert_eq!(out.status.code(), Some(0), "det + host proc should pass");
     let doc = parse_json_stdout(&out);
-    assert_eq!(doc.get("code").and_then(|v| v.as_str()), Some("error"));
-    assert!(
-        doc.get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .contains("host proc backend is not supported in deterministic mode")
-    );
+    assert_eq!(doc.get("status").and_then(|v| v.as_str()), Some("pass"));
 }
 
 #[cfg(unix)]
@@ -876,6 +870,7 @@ fn replay_uses_recorded_proc_decisions_from_host_backend_trace() {
         "host".into(),
         "run".into(),
         scenario.to_string_lossy().to_string(),
+        "--det".into(),
         "--record".into(),
         trace.to_string_lossy().to_string(),
         "--json".into(),
@@ -1017,13 +1012,16 @@ fn host_fs_backend_rejects_path_escape() {
 }
 
 #[test]
-fn host_fs_backend_is_rejected_in_deterministic_mode() {
+fn host_fs_backend_executes_in_deterministic_mode() {
     let ws = temp_workspace("host-fs-det");
     let scenario = ws.join("host-fs-det.fozzy.json");
     let raw = r#"{
       "version":1,
       "name":"host-fs-det",
-      "steps":[{"type":"fs_write","path":"x.txt","data":"x"}]
+      "steps":[
+        {"type":"fs_write","path":"x.txt","data":"x"},
+        {"type":"fs_read_assert","path":"x.txt","equals":"x"}
+      ]
     }"#;
     std::fs::write(&scenario, raw).expect("write scenario");
     let out = run_cli(&[
@@ -1034,7 +1032,74 @@ fn host_fs_backend_is_rejected_in_deterministic_mode() {
         "--det".into(),
         "--json".into(),
     ]);
-    assert_eq!(out.status.code(), Some(2), "det + host fs should fail");
+    assert_eq!(out.status.code(), Some(0), "det + host fs should pass");
+}
+
+#[test]
+fn host_fs_backend_replays_from_recorded_deterministic_trace() {
+    let ws = temp_workspace("host-fs-replay-det");
+    let scenario = ws.join("host-fs-replay-det.fozzy.json");
+    let trace = ws.join("host-fs-replay-det.fozzy");
+    let raw = r#"{
+      "version":1,
+      "name":"host-fs-replay-det",
+      "steps":[
+        {"type":"fs_write","path":"tmp/host-fs.txt","data":"hello"},
+        {"type":"fs_snapshot","name":"before"},
+        {"type":"fs_read_assert","path":"tmp/host-fs.txt","equals":"hello"},
+        {"type":"fs_write","path":"tmp/host-fs.txt","data":"changed"},
+        {"type":"fs_restore","name":"before"},
+        {"type":"fs_read_assert","path":"tmp/host-fs.txt","equals":"hello"}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--fs-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--cwd".into(),
+        ws.to_string_lossy().to_string(),
+        "--det".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "det + host fs record should pass: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let verify = run_cli(&[
+        "trace".into(),
+        "verify".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(verify.status.code(), Some(0), "trace verify should pass");
+    let verify_doc = parse_json_stdout(&verify);
+    assert!(
+        verify_doc
+            .get("warnings")
+            .and_then(|v| v.as_array())
+            .is_none_or(|warnings| warnings.is_empty()),
+        "host fs trace should include replay decisions"
+    );
+
+    let replay = run_cli(&[
+        "replay".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        replay.status.code(),
+        Some(0),
+        "replay should pass from recorded fs decisions: {}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
 }
 
 #[test]
@@ -1058,6 +1123,7 @@ fn host_http_backend_executes_and_replays_from_decisions() {
         "host".into(),
         "run".into(),
         scenario.to_string_lossy().to_string(),
+        "--det".into(),
         "--record".into(),
         trace.to_string_lossy().to_string(),
         "--json".into(),
@@ -1118,7 +1184,7 @@ fn http_request_supports_headers_and_response_header_assertions() {
 }
 
 #[test]
-fn host_http_backend_is_rejected_in_deterministic_mode() {
+fn host_http_backend_executes_in_deterministic_mode() {
     let ws = temp_workspace("host-http-det");
     let scenario = ws.join("host-http-det.fozzy.json");
     let raw = r#"{
@@ -1135,7 +1201,11 @@ fn host_http_backend_is_rejected_in_deterministic_mode() {
         "--det".into(),
         "--json".into(),
     ]);
-    assert_eq!(out.status.code(), Some(2), "det + host http should fail");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "det + host http should reach live backend"
+    );
 }
 
 #[test]
@@ -2169,7 +2239,11 @@ fn profile_record_replay_diff_explain_and_artifact_parity_flow() {
     for (sub, out, target) in [
         ("export", &export_zip, left_run_id.clone()),
         ("pack", &pack_zip, left_run_id.clone()),
-        ("bundle", &bundle_zip, left_trace.to_string_lossy().to_string()),
+        (
+            "bundle",
+            &bundle_zip,
+            left_trace.to_string_lossy().to_string(),
+        ),
     ] {
         let out_cmd = run_cli_in(
             &ws,
@@ -2321,9 +2395,14 @@ fn profile_strict_and_unsafe_legacy_behavior_and_capture_mode_budgets() {
             "profile artifact policy mismatch for {level}"
         );
         if expect_profile {
-            let size = std::fs::metadata(&metrics_path).expect("metrics metadata").len();
+            let size = std::fs::metadata(&metrics_path)
+                .expect("metrics metadata")
+                .len();
             assert!(size > 0, "metrics artifact should be non-empty");
-            assert!(size < 2 * 1024 * 1024, "metrics artifact should stay bounded");
+            assert!(
+                size < 2 * 1024 * 1024,
+                "metrics artifact should stay bounded"
+            );
         }
     }
 }

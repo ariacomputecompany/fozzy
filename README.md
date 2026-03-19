@@ -40,8 +40,10 @@ Fozzy uses deterministic-first capability backends, with host execution availabl
 `http_when` can also be used with host backend as a response assertion rule (match by absolute URL or request path like `/v1/me`).
 Host HTTP backend supports both `http://` and `https://` endpoints.
 
-Host backends are non-deterministic execution modes and are rejected with `--det`.
-Host proc/http outcomes are captured as replay decisions so `fozzy replay` remains deterministic.
+Host backends are allowed with `--det`.
+In `--det` mode, RNG, scheduling, and virtual time remain deterministic while live host proc/fs/http observations are captured into the trace as replay decisions.
+That means `fozzy replay` remains deterministic, while repeated live `--det` runs against a changing host environment can still observe different host-side results.
+`fozzy env --json` continues to report host capability backends as non-deterministic substrates.
 
 Inspect active runtime capabilities with:
 

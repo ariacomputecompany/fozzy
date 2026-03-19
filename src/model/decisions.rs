@@ -1,6 +1,7 @@
 //! Decision logging for deterministic replay.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -16,6 +17,21 @@ pub enum Decision {
     },
     TimeAdvanceMs {
         ms: u64,
+    },
+    FsWrite {
+        path: String,
+        data_hex: String,
+    },
+    FsReadAssert {
+        path: String,
+        data_hex: String,
+    },
+    FsSnapshot {
+        name: String,
+        entries: BTreeMap<String, Option<String>>,
+    },
+    FsRestore {
+        name: String,
     },
     HttpRequest {
         method: String,
