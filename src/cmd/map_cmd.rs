@@ -564,10 +564,7 @@ fn covered_suites_for_hotspot(
     index: &ScenarioCoverageIndex,
     max_matched_scenarios: usize,
 ) -> Vec<SuiteCoverageEvidence> {
-    let hint_tokens = hints
-        .iter()
-        .flat_map(|h| tokenize(h).into_iter())
-        .collect::<BTreeSet<_>>();
+    let attribution_hints = AttributionHints::from_hotspot_hints(hints);
 
     let mut out = Vec::new();
     for suite in required {
@@ -575,7 +572,7 @@ fn covered_suites_for_hotspot(
             .candidates(suite)
             .into_iter()
             .filter_map(|idx| scenarios.get(*idx))
-            .filter(|s| suite_allows_attribution_match(suite, &hint_tokens, &s.tokens))
+            .filter(|s| suite_allows_attribution_match(suite, &attribution_hints, &s.tokens))
             .collect::<Vec<_>>();
         if matches.is_empty() {
             continue;
@@ -594,7 +591,7 @@ fn covered_suites_for_hotspot(
         }
         let shared = matches
             .iter()
-            .flat_map(|s| hint_tokens.intersection(&s.tokens).cloned())
+            .flat_map(|s| attribution_hints.tokens.intersection(&s.tokens).cloned())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .take(6)
@@ -614,6 +611,27 @@ fn covered_suites_for_hotspot(
         });
     }
     out
+}
+
+#[derive(Debug, Clone, Default)]
+struct AttributionHints {
+    tokens: BTreeSet<String>,
+    exact_stems: BTreeSet<String>,
+}
+
+impl AttributionHints {
+    fn from_hotspot_hints(hints: &[String]) -> Self {
+        let tokens = hints
+            .iter()
+            .flat_map(|hint| tokenize(hint).into_iter())
+            .collect::<BTreeSet<_>>();
+        let exact_stems = hints
+            .iter()
+            .filter(|hint| hint.chars().all(|c| c.is_ascii_alphanumeric()))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        Self { tokens, exact_stems }
+    }
 }
 
 struct ScenarioCoverageIndex {
@@ -848,27 +866,40 @@ fn hotspot_hints(h: &MapHotspot) -> Vec<String> {
 
 fn suite_allows_attribution_match(
     suite: &str,
-    hint_tokens: &BTreeSet<String>,
+    hints: &AttributionHints,
     scenario_tokens: &BTreeSet<String>,
 ) -> bool {
     if suite == SUITE_TEST_DET || suite == SUITE_RUN_REPLAY_CI {
         return true;
     }
 
-    let shared = hint_tokens
+    let shared = hints
+        .tokens
         .intersection(scenario_tokens)
         .collect::<Vec<_>>();
     if shared.len() >= 2 {
         return true;
     }
 
-    shared
+    if shared
         .into_iter()
         .any(|token| is_strong_attribution_token(token))
+    {
+        return true;
+    }
+
+    hints
+        .exact_stems
+        .iter()
+        .any(|stem| is_exact_hotspot_stem(stem) && scenario_tokens.contains(stem))
 }
 
 fn is_strong_attribution_token(token: &str) -> bool {
     token.len() >= 4 && !is_generic_attribution_token(token)
+}
+
+fn is_exact_hotspot_stem(token: &str) -> bool {
+    token.len() == 3 && !is_generic_attribution_token(token)
 }
 
 fn is_generic_attribution_token(token: &str) -> bool {
@@ -1367,7 +1398,7 @@ mod tests {
 
     #[test]
     fn suite_specific_attribution_ignores_generic_token_only_overlap() {
-        let hint_tokens = hotspot_hints(&MapHotspot {
+        let hints = AttributionHints::from_hotspot_hints(&hotspot_hints(&MapHotspot {
             id: "src:src/runtime/memory.rs".to_string(),
             component: "src".to_string(),
             path: "src/runtime/memory.rs".to_string(),
@@ -1378,16 +1409,166 @@ mod tests {
                 ..HotspotSignals::default()
             },
             recommended_suites: vec![SUITE_MEMORY.to_string()],
-        })
-        .into_iter()
-        .flat_map(|hint| tokenize(&hint).into_iter())
-        .collect::<BTreeSet<_>>();
+        }));
         let scenario_tokens =
             tokenize("tests/memory.pass.fozzy.json memory-pass memory_alloc memory_free");
 
         assert!(
-            !suite_allows_attribution_match(SUITE_MEMORY, &hint_tokens, &scenario_tokens),
+            !suite_allows_attribution_match(SUITE_MEMORY, &hints, &scenario_tokens),
             "generic suite words alone should not count as hotspot attribution"
         );
+    }
+
+    #[test]
+    fn suite_specific_attribution_accepts_exact_three_letter_stem_matches() {
+        let hints = AttributionHints::from_hotspot_hints(&hotspot_hints(&MapHotspot {
+            id: "cli:crates/cli/src/cmd/tag.rs".to_string(),
+            component: "cli".to_string(),
+            path: "crates/cli/src/cmd/tag.rs".to_string(),
+            risk_score: 10,
+            reasons: Vec::new(),
+            signals: HotspotSignals {
+                branch_signals: 10,
+                ..HotspotSignals::default()
+            },
+            recommended_suites: vec![SUITE_FUZZ.to_string()],
+        }));
+
+        assert!(suite_allows_attribution_match(
+            SUITE_FUZZ,
+            &hints,
+            &tokenize("tests/tag.fuzz.fozzy.json name=tag-fuzz")
+        ));
+        assert!(suite_allows_attribution_match(
+            SUITE_EXPLORE,
+            &hints,
+            &tokenize("tests/tag.explore.fozzy.json name=tag-explore")
+        ));
+        assert!(suite_allows_attribution_match(
+            SUITE_SHRINK_EXERCISED,
+            &hints,
+            &tokenize("tests/tag.shrink.fozzy.json name=tag-shrink")
+        ));
+    }
+
+    #[test]
+    fn map_suites_credits_short_natural_hotspot_names() {
+        let root = temp_dir("short-natural-hotspot-credit");
+        let src_cmd = root.join("crates/cli/src/cmd");
+        let src_cli = root.join("crates/cli/src");
+        let tests = root.join("tests");
+        std::fs::create_dir_all(&src_cmd).expect("src cmd");
+        std::fs::create_dir_all(&src_cli).expect("src cli");
+        std::fs::create_dir_all(&tests).expect("tests");
+
+        std::fs::write(
+            src_cmd.join("tag.rs"),
+            r#"
+            pub fn tag() {
+                if true {}
+                if true {}
+                if true {}
+                if true {}
+                if true {}
+                if true {}
+                if true {}
+                if true {}
+                if std::env::var("FOZZY_FAIL").is_err() { panic!("tag failure"); }
+                if "retry".contains("retry") { let _ = "error"; }
+                if "timeout".contains("timeout") { let _ = "fail"; }
+                if "backoff".contains("backoff") { let _ = "error"; }
+            }
+            "#,
+        )
+        .expect("write tag source");
+        std::fs::write(
+            src_cli.join("ipc.rs"),
+            r#"
+            pub fn ipc() {
+                std::thread::spawn(|| {
+                    if true {
+                        let _ = 1 + 1;
+                    }
+                });
+            }
+            "#,
+        )
+        .expect("write ipc source");
+        std::fs::write(
+            src_cmd.join("log.rs"),
+            r#"
+            pub fn log_output() {
+                let first_error = std::env::var("FOZZY_FAIL").is_err();
+                if first_error { panic!("boom"); }
+                if "retry".contains("retry") { let _ = "error"; }
+                if "timeout".contains("timeout") { let _ = "fail"; }
+                if "backoff".contains("backoff") { let _ = "error"; }
+            }
+            "#,
+        )
+        .expect("write log source");
+
+        std::fs::write(
+            tests.join("tag.explore.fozzy.json"),
+            r#"{ "version": 1, "name": "tag-explore", "distributed": true }"#,
+        )
+        .expect("write tag explore");
+        std::fs::write(
+            tests.join("tag.fuzz.fozzy.json"),
+            r#"{ "version": 1, "name": "tag-fuzz", "mode": "fuzz" }"#,
+        )
+        .expect("write tag fuzz");
+        std::fs::write(
+            tests.join("tag.shrink.fozzy.json"),
+            r#"{ "version": 1, "name": "tag-shrink", "shrink_trace": true }"#,
+        )
+        .expect("write tag shrink");
+        std::fs::write(
+            tests.join("ipc.explore.fozzy.json"),
+            r#"{ "version": 1, "name": "ipc-explore", "distributed": true }"#,
+        )
+        .expect("write ipc explore");
+        std::fs::write(
+            tests.join("log.explore.fozzy.json"),
+            r#"{ "version": 1, "name": "log-explore", "distributed": true }"#,
+        )
+        .expect("write log explore");
+
+        let report = map_suites(&MapSuitesOptions {
+            root: root.clone(),
+            scenario_root: tests,
+            min_risk: 1,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::ExercisedOk,
+            limit: 50,
+            offset: 0,
+            max_matched_scenarios: 25,
+        })
+        .expect("map suites");
+
+        let by_path = report
+            .suites
+            .iter()
+            .map(|suite| (suite.path.as_str(), suite))
+            .collect::<BTreeMap<_, _>>();
+
+        let tag = by_path
+            .get("crates/cli/src/cmd/tag.rs")
+            .expect("tag suite");
+        assert!(tag.covered_suites.iter().any(|suite| suite == SUITE_EXPLORE));
+        assert!(tag.covered_suites.iter().any(|suite| suite == SUITE_FUZZ));
+        assert!(
+            tag.covered_suites
+                .iter()
+                .any(|suite| suite == SUITE_SHRINK_EXERCISED)
+        );
+
+        let ipc = by_path.get("crates/cli/src/ipc.rs").expect("ipc suite");
+        assert!(ipc.covered_suites.iter().any(|suite| suite == SUITE_EXPLORE));
+
+        let log = by_path
+            .get("crates/cli/src/cmd/log.rs")
+            .expect("log suite");
+        assert!(log.covered_suites.iter().any(|suite| suite == SUITE_EXPLORE));
     }
 }
