@@ -271,10 +271,7 @@ fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<Pa
         } else {
             None
         };
-        let has_memory = summary
-            .as_ref()
-            .and_then(|s| s.memory.as_ref())
-            .is_some()
+        let has_memory = summary.as_ref().and_then(|s| s.memory.as_ref()).is_some()
             || dir.join("memory.leaks.json").exists()
             || dir.join("memory.timeline.json").exists()
             || dir.join("memory.graph.json").exists()
@@ -285,7 +282,10 @@ fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<Pa
         if key == "latest" {
             return Ok(Some(dir));
         }
-        let status = summary.as_ref().map(|s| s.status).unwrap_or(ExitStatus::Fail);
+        let status = summary
+            .as_ref()
+            .map(|s| s.status)
+            .unwrap_or(ExitStatus::Fail);
         if (key == "last-pass" && status == ExitStatus::Pass)
             || (key == "last-fail" && status != ExitStatus::Pass)
         {

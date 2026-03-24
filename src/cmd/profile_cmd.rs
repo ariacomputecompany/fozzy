@@ -585,7 +585,10 @@ pub struct DiffSummary {
     pub improvement_count: usize,
     #[serde(rename = "significantRegressionCount")]
     pub significant_regression_count: usize,
-    #[serde(rename = "topRegressionMetric", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "topRegressionMetric",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub top_regression_metric: Option<String>,
 }
 
@@ -1336,9 +1339,9 @@ fn load_profile_bundle_group(
 fn aggregate_metric_bundle(
     bundles: &[ProfileBundle],
 ) -> FozzyResult<(ProfileMetrics, HashMap<String, MetricStats>)> {
-    let first = bundles
-        .first()
-        .ok_or_else(|| FozzyError::InvalidArgument("diff requires at least one sample".to_string()))?;
+    let first = bundles.first().ok_or_else(|| {
+        FozzyError::InvalidArgument("diff requires at least one sample".to_string())
+    })?;
     let values_for = |field: fn(&ProfileMetrics) -> f64| {
         bundles
             .iter()
@@ -1515,8 +1518,9 @@ fn map_event_kind(name: &str) -> ProfileEventKind {
         "sample" => ProfileEventKind::Sample,
         "memory_alloc" => ProfileEventKind::Alloc,
         "memory_free" => ProfileEventKind::Free,
-        "http_request" | "proc_spawn" | "capability_http" | "capability_proc"
-        | "capability_fs" => ProfileEventKind::Io,
+        "http_request" | "proc_spawn" | "capability_http" | "capability_proc" | "capability_fs" => {
+            ProfileEventKind::Io
+        }
         "net_send" | "net_drop" | "net_deliver" | "capability_net" => ProfileEventKind::Net,
         "deliver" | "partition" | "heal" | "crash" | "restart" | "sched_pick" | "sched_wait"
         | "sched_starvation" => ProfileEventKind::Sched,
@@ -1598,12 +1602,7 @@ fn build_cpu_samples(timeline: &[ProfileEvent], sample_period_ms: u64) -> Vec<Cp
                     .collect::<Vec<_>>()
             })
             .filter(|frames| !frames.is_empty())
-            .unwrap_or_else(|| {
-                vec![
-                    "fozzy::runtime".to_string(),
-                    "sample::unknown".to_string(),
-                ]
-            });
+            .unwrap_or_else(|| vec!["fozzy::runtime".to_string(), "sample::unknown".to_string()]);
         let weight = event
             .tags
             .get("weight_ms")
@@ -1880,7 +1879,11 @@ fn build_latency_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> Latenc
         }
     }
 
-    spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.span_id.cmp(&b.span_id)));
+    spans.sort_by(|a, b| {
+        a.start
+            .cmp(&b.start)
+            .then_with(|| a.span_id.cmp(&b.span_id))
+    });
     let mut deltas = spans.iter().map(|s| s.duration).collect::<Vec<_>>();
     let distribution = if deltas.is_empty() {
         LatencyDistribution {
@@ -2351,10 +2354,7 @@ fn compute_diff(
             && let (Some(left_heap), Some(right_heap)) = (l_heap, r_heap)
         {
             regressions.extend(heap_callsite_regressions(
-                left_heap,
-                right_heap,
-                l_stats,
-                r_stats,
+                left_heap, right_heap, l_stats, r_stats,
             ));
         }
     }
@@ -2502,9 +2502,8 @@ fn confidence_meta(
 ) -> ConfidenceMeta {
     let l = l_stats.get(metric).cloned().unwrap_or_default();
     let r = r_stats.get(metric).cloned().unwrap_or_default();
-    let pooled_std_err = ((l.std_dev.powi(2) / l.n.max(1) as f64)
-        + (r.std_dev.powi(2) / r.n.max(1) as f64))
-        .sqrt();
+    let pooled_std_err =
+        ((l.std_dev.powi(2) / l.n.max(1) as f64) + (r.std_dev.powi(2) / r.n.max(1) as f64)).sqrt();
     ConfidenceMeta {
         method: if metric_time_domain(metric) == "host_monotonic_time" {
             "effect_size_over_pooled_stderr".to_string()
@@ -2733,7 +2732,9 @@ fn explain_from_diff(
 fn metric_value(metric: ProfileMetric, trace: &TraceFile) -> FozzyResult<f64> {
     let timeline = build_profile_timeline(trace);
     let value = match metric {
-        ProfileMetric::P99Latency => build_latency_profile(trace, &timeline).distribution.p99_ms as f64,
+        ProfileMetric::P99Latency => {
+            build_latency_profile(trace, &timeline).distribution.p99_ms as f64
+        }
         ProfileMetric::CpuTime => build_cpu_profile(trace, &timeline)
             .folded_stacks
             .iter()
@@ -3002,8 +3003,10 @@ fn profile_doctor(
                 ) {
                     Ok(s) => {
                         let shrunk_trace = TraceFile::read_json(Path::new(&s.out_trace_path))?;
-                        let baseline =
-                            metric_value(ProfileMetric::CpuTime, &TraceFile::read_json(&trace_path)?)?;
+                        let baseline = metric_value(
+                            ProfileMetric::CpuTime,
+                            &TraceFile::read_json(&trace_path)?,
+                        )?;
                         let after = metric_value(ProfileMetric::CpuTime, &shrunk_trace)?;
                         let preserved = after >= baseline;
                         serde_json::json!({
@@ -3183,9 +3186,7 @@ fn detect_cpu_collector_capability() -> CpuCollectorCapability {
     if cfg!(target_os = "linux") {
         let mut diagnostics = Vec::<String>::new();
         let perf_device_present = Path::new("/sys/bus/event_source/devices/cpu/type").exists();
-        diagnostics.push(format!(
-            "perf_event_device_present={perf_device_present}"
-        ));
+        diagnostics.push(format!("perf_event_device_present={perf_device_present}"));
 
         let paranoid = read_proc_int("/proc/sys/kernel/perf_event_paranoid");
         if let Some(v) = paranoid {
@@ -3523,7 +3524,10 @@ mod tests {
                 time_ms: 1,
                 name: "sample".to_string(),
                 fields: serde_json::Map::from_iter([
-                    ("stack".to_string(), serde_json::json!("fozzy::runtime;step::a")),
+                    (
+                        "stack".to_string(),
+                        serde_json::json!("fozzy::runtime;step::a"),
+                    ),
                     ("weight_ms".to_string(), serde_json::json!(3)),
                 ]),
             },
@@ -3531,7 +3535,10 @@ mod tests {
                 time_ms: 2,
                 name: "sample".to_string(),
                 fields: serde_json::Map::from_iter([
-                    ("stack".to_string(), serde_json::json!("fozzy::runtime;step::a")),
+                    (
+                        "stack".to_string(),
+                        serde_json::json!("fozzy::runtime;step::a"),
+                    ),
                     ("weight_ms".to_string(), serde_json::json!(2)),
                 ]),
             },
@@ -3539,7 +3546,10 @@ mod tests {
                 time_ms: 3,
                 name: "sample".to_string(),
                 fields: serde_json::Map::from_iter([
-                    ("stack".to_string(), serde_json::json!("fozzy::runtime;step::b")),
+                    (
+                        "stack".to_string(),
+                        serde_json::json!("fozzy::runtime;step::b"),
+                    ),
                     ("weight_ms".to_string(), serde_json::json!(5)),
                 ]),
             },
@@ -3560,7 +3570,10 @@ mod tests {
             TraceEvent {
                 time_ms: 0,
                 name: "span_start".to_string(),
-                fields: serde_json::Map::from_iter([("span".to_string(), serde_json::json!("root"))]),
+                fields: serde_json::Map::from_iter([(
+                    "span".to_string(),
+                    serde_json::json!("root"),
+                )]),
             },
             TraceEvent {
                 time_ms: 1,
@@ -3586,7 +3599,10 @@ mod tests {
             TraceEvent {
                 time_ms: 10,
                 name: "span_end".to_string(),
-                fields: serde_json::Map::from_iter([("span".to_string(), serde_json::json!("root"))]),
+                fields: serde_json::Map::from_iter([(
+                    "span".to_string(),
+                    serde_json::json!("root"),
+                )]),
             },
         ];
         let timeline = build_profile_timeline(&trace);
@@ -3665,14 +3681,16 @@ mod tests {
         assert_eq!(cs_a.in_use_bytes, 0);
         assert_eq!(cs_b.alloc_count, 1);
         assert_eq!(cs_b.in_use_bytes, 16);
-        assert!(heap
-            .lifetime_histogram
-            .iter()
-            .any(|b| b.bucket == "2-10ms" && b.count == 1));
-        assert!(heap
-            .lifetime_histogram
-            .iter()
-            .any(|b| b.bucket == "11-100ms" && b.count == 1));
+        assert!(
+            heap.lifetime_histogram
+                .iter()
+                .any(|b| b.bucket == "2-10ms" && b.count == 1)
+        );
+        assert!(
+            heap.lifetime_histogram
+                .iter()
+                .any(|b| b.bucket == "11-100ms" && b.count == 1)
+        );
     }
 
     #[test]
@@ -3942,7 +3960,10 @@ mod tests {
             limit: 5,
         };
         let out = profile_command(&cfg, &cmd, true).expect("top");
-        assert!(out.get("cpu").is_some(), "cpu domain should be available in strict mode");
+        assert!(
+            out.get("cpu").is_some(),
+            "cpu domain should be available in strict mode"
+        );
     }
 
     #[test]

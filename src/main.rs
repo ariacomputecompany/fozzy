@@ -1036,7 +1036,8 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
                     reporter: *reporter,
                 },
             )?;
-            if let (Some(format), Some(out)) = (profile_export_format, profile_export_out.as_ref()) {
+            if let (Some(format), Some(out)) = (profile_export_format, profile_export_out.as_ref())
+            {
                 let export = fozzy::profile_command(
                     config,
                     &ProfileCommand::Export {

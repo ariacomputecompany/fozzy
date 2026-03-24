@@ -17,8 +17,7 @@ use crate::{
     Config, ExitStatus, Finding, FindingKind, MemoryOptions, MemoryState, ProfileCaptureLevel,
     RecordCollisionPolicy, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
     TraceEvent, TraceFile, should_emit_profile_artifacts, wall_time_iso_utc,
-    write_memory_artifacts, write_profile_artifacts_from_trace,
-    write_trace_with_policy,
+    write_memory_artifacts, write_profile_artifacts_from_trace, write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -290,7 +289,9 @@ pub fn fuzz(
                 exec.events.clone(),
                 summary.clone(),
             );
-            budget_trace.memory = memory_state.as_ref().map(|m| m.clone().finalize().to_trace());
+            budget_trace.memory = memory_state
+                .as_ref()
+                .map(|m| m.clone().finalize().to_trace());
             let heap_findings =
                 heap_budget_findings_from_trace(&budget_trace, &heap_budget_policy(config));
             if !heap_findings.is_empty() {
@@ -333,7 +334,10 @@ pub fn fuzz(
             let emit_heavy = should_emit_heavy_artifacts(exec.status, true)
                 || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
             if emit_heavy {
-                std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&exec.events)?)?;
+                std::fs::write(
+                    artifacts_dir.join("events.json"),
+                    serde_json::to_vec(&exec.events)?,
+                )?;
                 crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
             }
             if should_emit_profile_artifacts(opt.profile_capture, exec.status, true) {
@@ -400,7 +404,8 @@ pub fn fuzz(
         profile_summary,
     );
     profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
-    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    let heap_findings =
+        heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
     if !heap_findings.is_empty() {
         summary.findings.extend(heap_findings);
         summary.findings = crate::collapse_findings(summary.findings.clone());
@@ -516,7 +521,8 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         summary.clone(),
     );
     profile_trace.memory = trace.memory.clone();
-    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    let heap_findings =
+        heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
     if !heap_findings.is_empty() {
         summary.findings.extend(heap_findings);
         summary.findings = crate::collapse_findings(summary.findings.clone());
@@ -524,7 +530,10 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
 
     std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
     if should_emit_heavy_artifacts(exec.status, true) {
-        std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&exec.events)?)?;
+        std::fs::write(
+            artifacts_dir.join("events.json"),
+            serde_json::to_vec(&exec.events)?,
+        )?;
         crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;

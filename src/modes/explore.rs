@@ -14,8 +14,7 @@ use crate::{
     MemoryRunReport, MemoryState, ProfileCaptureLevel, RecordCollisionPolicy, Reporter,
     RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath, ScenarioV1Distributed,
     TraceEvent, TraceFile, should_emit_profile_artifacts, wall_time_iso_utc,
-    write_memory_artifacts, write_profile_artifacts_from_trace,
-    write_trace_with_policy,
+    write_memory_artifacts, write_profile_artifacts_from_trace, write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -204,7 +203,8 @@ pub fn explore(
         summary.clone(),
     );
     profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
-    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    let heap_findings =
+        heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
     if !heap_findings.is_empty() {
         summary.findings.extend(heap_findings);
         summary.findings = crate::collapse_findings(summary.findings.clone());
@@ -249,7 +249,10 @@ pub fn explore(
     let emit_heavy = should_emit_heavy_artifacts(status, should_record)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
     if emit_heavy {
-        std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&events)?)?;
+        std::fs::write(
+            artifacts_dir.join("events.json"),
+            serde_json::to_vec(&events)?,
+        )?;
         crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
         if let Some(mem) = memory_report.as_ref()
             && mem.options.artifacts
@@ -325,7 +328,8 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         summary.clone(),
     );
     profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
-    let heap_findings = heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
+    let heap_findings =
+        heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
     if !heap_findings.is_empty() {
         summary.findings.extend(heap_findings);
         summary.findings = crate::collapse_findings(summary.findings.clone());
@@ -333,7 +337,10 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
 
     std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
     if should_emit_heavy_artifacts(status, true) {
-        std::fs::write(artifacts_dir.join("events.json"), serde_json::to_vec(&events)?)?;
+        std::fs::write(
+            artifacts_dir.join("events.json"),
+            serde_json::to_vec(&events)?,
+        )?;
         crate::write_timeline(&events, &artifacts_dir.join("timeline.json"))?;
         if let Some(mem) = memory_report.as_ref()
             && mem.options.artifacts
@@ -687,7 +694,10 @@ fn run_explore_inner(
                     "sched_starvation".to_string()
                 },
                 fields: serde_json::Map::from_iter([
-                    ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+                    (
+                        "queue_len".to_string(),
+                        serde_json::json!(queue.len() as u64),
+                    ),
                     (
                         "deliverable_len".to_string(),
                         serde_json::json!(deliverable.len() as u64),
@@ -718,14 +728,20 @@ fn run_explore_inner(
             name: "sched_pick".to_string(),
             fields: serde_json::Map::from_iter([
                 ("task_id".to_string(), serde_json::json!(msg.id)),
-                ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+                (
+                    "queue_len".to_string(),
+                    serde_json::json!(queue.len() as u64),
+                ),
             ]),
         });
         events.push(TraceEvent {
             time_ms,
             name: "span_start".to_string(),
             fields: serde_json::Map::from_iter([
-                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg.id))),
+                (
+                    "span".to_string(),
+                    serde_json::json!(format!("deliver-{}", msg.id)),
+                ),
                 ("task".to_string(), serde_json::json!("deliver")),
             ]),
         });
@@ -758,7 +774,10 @@ fn run_explore_inner(
             name: "capability_net".to_string(),
             fields: serde_json::Map::from_iter([
                 ("op".to_string(), serde_json::json!("deliver")),
-                ("payload_bytes".to_string(), serde_json::json!(msg.value.len() as u64)),
+                (
+                    "payload_bytes".to_string(),
+                    serde_json::json!(msg.value.len() as u64),
+                ),
                 ("duration_ms".to_string(), serde_json::json!(1u64)),
             ]),
         });
@@ -775,7 +794,10 @@ fn run_explore_inner(
             time_ms,
             name: "span_end".to_string(),
             fields: serde_json::Map::from_iter([
-                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg_id))),
+                (
+                    "span".to_string(),
+                    serde_json::json!(format!("deliver-{}", msg_id)),
+                ),
                 ("status".to_string(), serde_json::json!("ok")),
                 ("duration_ms".to_string(), serde_json::json!(1u64)),
             ]),
@@ -870,14 +892,20 @@ fn run_explore_replay_inner(
             name: "sched_pick".to_string(),
             fields: serde_json::Map::from_iter([
                 ("task_id".to_string(), serde_json::json!(msg.id)),
-                ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+                (
+                    "queue_len".to_string(),
+                    serde_json::json!(queue.len() as u64),
+                ),
             ]),
         });
         events.push(TraceEvent {
             time_ms,
             name: "span_start".to_string(),
             fields: serde_json::Map::from_iter([
-                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg.id))),
+                (
+                    "span".to_string(),
+                    serde_json::json!(format!("deliver-{}", msg.id)),
+                ),
                 ("task".to_string(), serde_json::json!("deliver")),
             ]),
         });
@@ -910,7 +938,10 @@ fn run_explore_replay_inner(
             name: "capability_net".to_string(),
             fields: serde_json::Map::from_iter([
                 ("op".to_string(), serde_json::json!("deliver")),
-                ("payload_bytes".to_string(), serde_json::json!(msg.value.len() as u64)),
+                (
+                    "payload_bytes".to_string(),
+                    serde_json::json!(msg.value.len() as u64),
+                ),
                 ("duration_ms".to_string(), serde_json::json!(1u64)),
             ]),
         });
@@ -926,7 +957,10 @@ fn run_explore_replay_inner(
             time_ms,
             name: "span_end".to_string(),
             fields: serde_json::Map::from_iter([
-                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg_id))),
+                (
+                    "span".to_string(),
+                    serde_json::json!(format!("deliver-{}", msg_id)),
+                ),
                 ("status".to_string(), serde_json::json!("ok")),
                 ("duration_ms".to_string(), serde_json::json!(1u64)),
             ]),
@@ -966,14 +1000,20 @@ fn run_explore_replay_inner(
             name: "sched_pick".to_string(),
             fields: serde_json::Map::from_iter([
                 ("task_id".to_string(), serde_json::json!(msg.id)),
-                ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+                (
+                    "queue_len".to_string(),
+                    serde_json::json!(queue.len() as u64),
+                ),
             ]),
         });
         events.push(TraceEvent {
             time_ms,
             name: "span_start".to_string(),
             fields: serde_json::Map::from_iter([
-                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg.id))),
+                (
+                    "span".to_string(),
+                    serde_json::json!(format!("deliver-{}", msg.id)),
+                ),
                 ("task".to_string(), serde_json::json!("deliver")),
             ]),
         });
@@ -989,7 +1029,10 @@ fn run_explore_replay_inner(
             time_ms,
             name: "span_end".to_string(),
             fields: serde_json::Map::from_iter([
-                ("span".to_string(), serde_json::json!(format!("deliver-{}", msg_id))),
+                (
+                    "span".to_string(),
+                    serde_json::json!(format!("deliver-{}", msg_id)),
+                ),
                 ("status".to_string(), serde_json::json!("ok")),
                 ("duration_ms".to_string(), serde_json::json!(1u64)),
             ]),
@@ -1003,7 +1046,10 @@ fn run_explore_replay_inner(
                 "sched_starvation".to_string()
             },
             fields: serde_json::Map::from_iter([
-                ("queue_len".to_string(), serde_json::json!(queue.len() as u64)),
+                (
+                    "queue_len".to_string(),
+                    serde_json::json!(queue.len() as u64),
+                ),
                 ("deliverable_len".to_string(), serde_json::json!(0u64)),
             ]),
         });

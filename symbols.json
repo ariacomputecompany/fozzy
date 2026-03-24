@@ -1,0 +1,1 @@
+{"schemaVersion":"fozzy.profile_symbols.v1","runId":"bf62e752-fc40-4626-9048-dbb571868876","modules":[{"name":"fozzy-runtime","buildId":"0.1.0-bc10a9ad2e9c","symbols":["fozzy::runtime","sched_pick","span_end","span_start","step::assert_eq_int"]},{"name":"fozzy","buildId":"bc10a9ad2e9c","symbols":["main","fozzy::runtime"]}]}

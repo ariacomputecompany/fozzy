@@ -1,7 +1,7 @@
 //! Timeline artifact generation from trace events.
 
-use serde::{Deserialize, Serialize};
 use serde::ser::Serializer as _;
+use serde::{Deserialize, Serialize};
 
 use std::path::Path;
 

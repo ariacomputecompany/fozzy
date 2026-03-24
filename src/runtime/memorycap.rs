@@ -274,8 +274,8 @@ impl MemoryState {
         let mut scaled = if self.pressure_wave_multipliers.is_empty() {
             requested
         } else {
-            let idx =
-                ((self.alloc_ops.saturating_sub(1)) as usize) % self.pressure_wave_multipliers.len();
+            let idx = ((self.alloc_ops.saturating_sub(1)) as usize)
+                % self.pressure_wave_multipliers.len();
             requested.saturating_mul(self.pressure_wave_multipliers[idx])
         };
 

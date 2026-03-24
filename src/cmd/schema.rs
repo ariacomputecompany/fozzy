@@ -660,8 +660,9 @@ pub fn schema_doc() -> SchemaDoc {
                 "runId":"run-id",
                 "modules":[{"name":"fozzy-runtime","buildId":"0.1.0-dev","symbols":["trace_event"]}]
             }),
-            notes: "Symbol map for profile exports; module/symbol lists are deterministically ordered."
-                .to_string(),
+            notes:
+                "Symbol map for profile exports; module/symbol lists are deterministically ordered."
+                    .to_string(),
         },
     );
 
