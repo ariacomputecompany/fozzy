@@ -575,11 +575,7 @@ fn covered_suites_for_hotspot(
             .candidates(suite)
             .into_iter()
             .filter_map(|idx| scenarios.get(*idx))
-            .filter(|s| {
-                suite == SUITE_TEST_DET
-                    || suite == SUITE_RUN_REPLAY_CI
-                    || hint_tokens.intersection(&s.tokens).take(2).count() >= 2
-            })
+            .filter(|s| suite_allows_attribution_match(suite, &hint_tokens, &s.tokens))
             .collect::<Vec<_>>();
         if matches.is_empty() {
             continue;
@@ -647,10 +643,7 @@ impl ScenarioCoverageIndex {
     }
 
     fn candidates<'a>(&'a self, suite: &str) -> &'a [usize] {
-        self.by_suite
-            .get(suite)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.by_suite.get(suite).map(Vec::as_slice).unwrap_or(&[])
     }
 }
 
@@ -845,11 +838,88 @@ fn discover_scenarios(root: &Path) -> FozzyResult<Vec<PathBuf>> {
 fn hotspot_hints(h: &MapHotspot) -> Vec<String> {
     let mut out = BTreeSet::<String>::new();
     out.insert(h.component.to_ascii_lowercase());
+    out.insert(h.path.to_ascii_lowercase());
     if let Some(stem) = Path::new(&h.path).file_stem().and_then(|s| s.to_str()) {
         out.insert(stem.to_ascii_lowercase().replace('.', "-"));
         out.insert(stem.to_ascii_lowercase().replace('.', "_"));
     }
     out.into_iter().filter(|s| s.len() >= 3).collect()
+}
+
+fn suite_allows_attribution_match(
+    suite: &str,
+    hint_tokens: &BTreeSet<String>,
+    scenario_tokens: &BTreeSet<String>,
+) -> bool {
+    if suite == SUITE_TEST_DET || suite == SUITE_RUN_REPLAY_CI {
+        return true;
+    }
+
+    let shared = hint_tokens
+        .intersection(scenario_tokens)
+        .collect::<Vec<_>>();
+    if shared.len() >= 2 {
+        return true;
+    }
+
+    shared
+        .into_iter()
+        .any(|token| is_strong_attribution_token(token))
+}
+
+fn is_strong_attribution_token(token: &str) -> bool {
+    token.len() >= 4 && !is_generic_attribution_token(token)
+}
+
+fn is_generic_attribution_token(token: &str) -> bool {
+    matches!(
+        token,
+        "app"
+            | "apps"
+            | "artifact"
+            | "artifacts"
+            | "bin"
+            | "ci"
+            | "cli"
+            | "cmd"
+            | "config"
+            | "crate"
+            | "crates"
+            | "dist"
+            | "engine"
+            | "example"
+            | "examples"
+            | "explore"
+            | "fail"
+            | "file"
+            | "files"
+            | "fuzz"
+            | "host"
+            | "json"
+            | "main"
+            | "memory"
+            | "mode"
+            | "modes"
+            | "module"
+            | "modules"
+            | "package"
+            | "packages"
+            | "pass"
+            | "proc"
+            | "replay"
+            | "root"
+            | "run"
+            | "scenario"
+            | "scenarios"
+            | "service"
+            | "services"
+            | "shrink"
+            | "src"
+            | "test"
+            | "tests"
+            | "timeout"
+            | "trace"
+    )
 }
 
 fn tokenize(input: &str) -> BTreeSet<String> {
@@ -1243,5 +1313,81 @@ mod tests {
         assert!(should_skip_path(Path::new("./.tmp/map.suites.json")));
         assert!(should_skip_path(Path::new("/repo/.tmp/report.json")));
         assert!(!should_skip_path(Path::new("./src/map_cmd.rs")));
+    }
+
+    #[test]
+    fn map_suites_credits_natural_fetch_host_scenario() {
+        let root = temp_dir("fetch-host-credit");
+        let src = root.join("crates/cli/src/cmd");
+        let tests = root.join("tests");
+        std::fs::create_dir_all(&src).expect("src");
+        std::fs::create_dir_all(&tests).expect("tests");
+        std::fs::write(
+            src.join("fetch.rs"),
+            r#"
+            pub fn fetch() {
+                let _ = std::fs::read("config.json");
+            }
+            "#,
+        )
+        .expect("write source");
+        std::fs::write(
+            tests.join("fetch.host.fozzy.json"),
+            r#"
+            {
+              "version": 1,
+              "name": "fetch-host",
+              "steps": [
+                { "type": "fs_write", "path": "tmp/fetch.txt", "data": "ok" },
+                { "type": "fs_read_assert", "path": "tmp/fetch.txt", "equals": "ok" }
+              ]
+            }
+            "#,
+        )
+        .expect("write scenario");
+
+        let report = map_suites(&MapSuitesOptions {
+            root: root.clone(),
+            scenario_root: tests,
+            min_risk: 1,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
+            limit: 50,
+            offset: 0,
+            max_matched_scenarios: 25,
+        })
+        .expect("map suites");
+        let suite = report.suites.first().expect("suite");
+        assert!(
+            suite.covered_suites.iter().any(|s| s == SUITE_HOST),
+            "expected host suite to be credited from natural fetch.host scenario: {:?}",
+            suite.coverage_evidence
+        );
+    }
+
+    #[test]
+    fn suite_specific_attribution_ignores_generic_token_only_overlap() {
+        let hint_tokens = hotspot_hints(&MapHotspot {
+            id: "src:src/runtime/memory.rs".to_string(),
+            component: "src".to_string(),
+            path: "src/runtime/memory.rs".to_string(),
+            risk_score: 10,
+            reasons: Vec::new(),
+            signals: HotspotSignals {
+                memory_signals: 1,
+                ..HotspotSignals::default()
+            },
+            recommended_suites: vec![SUITE_MEMORY.to_string()],
+        })
+        .into_iter()
+        .flat_map(|hint| tokenize(&hint).into_iter())
+        .collect::<BTreeSet<_>>();
+        let scenario_tokens =
+            tokenize("tests/memory.pass.fozzy.json memory-pass memory_alloc memory_free");
+
+        assert!(
+            !suite_allows_attribution_match(SUITE_MEMORY, &hint_tokens, &scenario_tokens),
+            "generic suite words alone should not count as hotspot attribution"
+        );
     }
 }
