@@ -115,6 +115,13 @@ fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
     serde_json::from_str(s.trim()).expect("stdout json")
 }
 
+fn parse_first_json_stdout(output: &std::process::Output) -> serde_json::Value {
+    let mut docs = serde_json::Deserializer::from_slice(&output.stdout).into_iter();
+    docs.next()
+        .expect("stdout contains json document")
+        .expect("first stdout json")
+}
+
 fn json_run_id(doc: &serde_json::Value) -> String {
     doc.get("identity")
         .and_then(|v| v.get("runId").or_else(|| v.get("run_id")))
@@ -1368,6 +1375,118 @@ fn host_http_when_unmatched_includes_remediation_guidance() {
     assert!(
         msg.contains("--http-backend scripted"),
         "expected remediation guidance in message, got: {msg}"
+    );
+}
+
+#[test]
+fn test_strict_proc_unmatched_reports_actionable_stub_and_location() {
+    let ws = temp_workspace("proc-unmatched-guidance");
+    let scenario = ws.join("repo-owned.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"{
+          "version":1,
+          "name":"repo-owned-proc",
+          "steps":[
+            {"type":"proc_spawn","cmd":"cargo","args":["test"]}
+          ]
+        }"#,
+    )
+    .expect("write scenario");
+
+    let out = run_cli(&[
+        "test".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "strict proc test should fail");
+
+    let doc = parse_json_stdout(&out);
+    let finding = doc
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .expect("first finding");
+    assert_eq!(
+        finding.get("title").and_then(|v| v.as_str()),
+        Some("proc_unmatched")
+    );
+    let msg = finding
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("Strict proc backend blocked an undeclared subprocess"),
+        "expected higher-context headline, got: {msg}"
+    );
+    assert!(
+        msg.contains("Add a `proc_when` step"),
+        "expected concrete remediation, got: {msg}"
+    );
+    assert!(
+        msg.contains("\"cmd\": \"cargo\""),
+        "expected stub example for cargo, got: {msg}"
+    );
+    assert!(
+        msg.contains("\"args\": [\"test\"]"),
+        "expected args example, got: {msg}"
+    );
+    assert_eq!(
+        finding
+            .get("location")
+            .and_then(|v| v.get("file"))
+            .and_then(|v| v.as_str()),
+        Some(scenario.to_string_lossy().as_ref())
+    );
+}
+
+#[test]
+fn doctor_deep_preflights_proc_unmatched_scenarios() {
+    let ws = temp_workspace("doctor-proc-preflight");
+    let scenario = ws.join("repo-owned.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"{
+          "version":1,
+          "name":"repo-owned-proc",
+          "steps":[
+            {"type":"proc_spawn","cmd":"cargo","args":["test"]}
+          ]
+        }"#,
+    )
+    .expect("write scenario");
+
+    let out = run_cli(&[
+        "doctor".into(),
+        "--deep".into(),
+        "--scenario".into(),
+        scenario.to_string_lossy().to_string(),
+        "--runs".into(),
+        "2".into(),
+        "--seed".into(),
+        "7".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(2), "strict doctor should fail");
+
+    let doc = parse_first_json_stdout(&out);
+    let issue = doc
+        .get("issues")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .expect("doctor issue");
+    assert_eq!(
+        issue.get("code").and_then(|v| v.as_str()),
+        Some("proc_unmatched_preflight")
+    );
+    let hint = issue
+        .get("hint")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        hint.contains("Add a `proc_when` step"),
+        "expected doctor hint to carry proc_when guidance, got: {hint}"
     );
 }
 

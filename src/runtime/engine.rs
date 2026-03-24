@@ -13,9 +13,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::{
-    Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, MemoryOptions,
-    MemoryRunReport, MemoryState, Reporter, RunIdentity, RunMode, RunSummary, Scenario,
-    ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc,
+    Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, FindingLocation,
+    MemoryOptions, MemoryRunReport, MemoryState, Reporter, RunIdentity, RunMode, RunSummary,
+    Scenario, ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc,
     write_memory_artifacts, write_memory_delta_artifact, write_profile_artifacts_from_trace,
     write_trace_with_policy,
 };
@@ -1469,6 +1469,16 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
                     HttpBackend::Scripted,
                     MemoryOptions::default(),
                 )?;
+                if i == 0
+                    && let Some(finding) = run.findings.iter().find(|f| f.title == "proc_unmatched")
+                {
+                    issues.push(DoctorIssue {
+                        code: "proc_unmatched_preflight".to_string(),
+                        message: "strict proc backend preflight found an undeclared subprocess"
+                            .to_string(),
+                        hint: Some(finding.message.clone()),
+                    });
+                }
                 let sig = scenario_run_signature(&run);
                 if let Some(b) = &baseline {
                     if b != &sig && first_mismatch_run.is_none() {
@@ -1673,6 +1683,7 @@ fn run_embedded_scenario_inner(
                 ),
             ]),
         });
+        ctx.set_active_step(&scenario_path, idx);
         if let Err(finding) = ctx.exec_step(step) {
             let end_ms = ctx.clock.now_ms();
             ctx.events.push(TraceEvent {
@@ -2027,6 +2038,8 @@ struct ExecCtx<'a> {
     events: Vec<TraceEvent>,
     findings: Vec<Finding>,
     replay: Option<ReplayCursor<'a>>,
+    current_step_index: Option<usize>,
+    scenario_path: Option<PathBuf>,
 }
 
 impl<'a> ExecCtx<'a> {
@@ -2070,7 +2083,22 @@ impl<'a> ExecCtx<'a> {
             events: Vec::new(),
             findings: Vec::new(),
             replay: None,
+            current_step_index: None,
+            scenario_path: None,
         }
+    }
+
+    fn set_active_step(&mut self, scenario_path: &Path, step_index: usize) {
+        self.current_step_index = Some(step_index);
+        self.scenario_path = Some(scenario_path.to_path_buf());
+    }
+
+    fn current_finding_location(&self) -> Option<FindingLocation> {
+        self.scenario_path.as_ref().map(|path| FindingLocation {
+            file: Some(path.display().to_string()),
+            line: None,
+            col: None,
+        })
     }
 
     fn finish(
@@ -3367,14 +3395,17 @@ impl<'a> ExecCtx<'a> {
                         remaining: 0,
                     }
                 } else {
+                    let step_index = self.current_step_index.unwrap_or_default();
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "proc_unmatched".to_string(),
-                        message: format!(
-                            "no proc mock matched {cmd:?} {:?}; proc backend is scripted. define a prior proc_when step for this command/args.",
-                            call_args
+                        message: proc_unmatched_message(
+                            cmd,
+                            &call_args,
+                            self.scenario_path.as_deref(),
+                            step_index,
                         ),
-                        location: None,
+                        location: self.current_finding_location(),
                     });
                 };
                 self.decisions.push(Decision::ProcSpawn {
@@ -4442,6 +4473,44 @@ const HOST_PROC_MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 const HOST_PROC_MAX_STDERR_BYTES: usize = 8 * 1024 * 1024;
 const HOST_HTTP_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const TRACE_EVENT_TEXT_LIMIT_BYTES: usize = 16 * 1024;
+
+fn proc_unmatched_message(
+    cmd: &str,
+    args: &[String],
+    scenario_path: Option<&Path>,
+    step_index: usize,
+) -> String {
+    let invocation = if args.is_empty() {
+        cmd.to_string()
+    } else {
+        format!("{cmd} {}", args.join(" "))
+    };
+    let args_json = serde_json::to_string(args).unwrap_or_else(|_| "[]".to_string());
+    let snippet = format!(
+        concat!(
+            "{{\n",
+            "  \"type\": \"proc_when\",\n",
+            "  \"cmd\": {cmd:?},\n",
+            "  \"args\": {args_json},\n",
+            "  \"exit_code\": 0,\n",
+            "  \"stdout\": \"\",\n",
+            "  \"stderr\": \"\",\n",
+            "  \"times\": 1\n",
+            "}}"
+        ),
+        cmd = cmd,
+        args_json = args_json
+    );
+    let scenario_hint = scenario_path
+        .map(|path| format!(" in {}", path.display()))
+        .unwrap_or_default();
+    format!(
+        "Strict proc backend blocked an undeclared subprocess: {invocation:?}. \
+Add a `proc_when` step for `cmd={cmd}` and `args={args_json}` before step #{} (`proc_spawn`){scenario_hint}. \
+Example:\n{snippet}",
+        step_index + 1
+    )
+}
 
 fn truncate_event_text(text: &str) -> String {
     if text.len() <= TRACE_EVENT_TEXT_LIMIT_BYTES {

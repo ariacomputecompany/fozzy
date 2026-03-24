@@ -226,9 +226,15 @@ impl RunSummary {
             ));
         }
         for finding in &self.findings {
+            let location_suffix = finding
+                .location
+                .as_ref()
+                .and_then(|location| location.file.as_ref())
+                .map(|file| format!(" ({file})"))
+                .unwrap_or_default();
             out.push_str(&format!(
-                "- {:?}: {}: {}\n",
-                finding.kind, finding.title, finding.message
+                "- {:?}: {}{}: {}\n",
+                finding.kind, finding.title, location_suffix, finding.message
             ));
         }
         out.trim_end().to_string()

@@ -630,7 +630,10 @@ impl AttributionHints {
             .filter(|hint| hint.chars().all(|c| c.is_ascii_alphanumeric()))
             .cloned()
             .collect::<BTreeSet<_>>();
-        Self { tokens, exact_stems }
+        Self {
+            tokens,
+            exact_stems,
+        }
     }
 }
 
@@ -1552,10 +1555,12 @@ mod tests {
             .map(|suite| (suite.path.as_str(), suite))
             .collect::<BTreeMap<_, _>>();
 
-        let tag = by_path
-            .get("crates/cli/src/cmd/tag.rs")
-            .expect("tag suite");
-        assert!(tag.covered_suites.iter().any(|suite| suite == SUITE_EXPLORE));
+        let tag = by_path.get("crates/cli/src/cmd/tag.rs").expect("tag suite");
+        assert!(
+            tag.covered_suites
+                .iter()
+                .any(|suite| suite == SUITE_EXPLORE)
+        );
         assert!(tag.covered_suites.iter().any(|suite| suite == SUITE_FUZZ));
         assert!(
             tag.covered_suites
@@ -1564,11 +1569,17 @@ mod tests {
         );
 
         let ipc = by_path.get("crates/cli/src/ipc.rs").expect("ipc suite");
-        assert!(ipc.covered_suites.iter().any(|suite| suite == SUITE_EXPLORE));
+        assert!(
+            ipc.covered_suites
+                .iter()
+                .any(|suite| suite == SUITE_EXPLORE)
+        );
 
-        let log = by_path
-            .get("crates/cli/src/cmd/log.rs")
-            .expect("log suite");
-        assert!(log.covered_suites.iter().any(|suite| suite == SUITE_EXPLORE));
+        let log = by_path.get("crates/cli/src/cmd/log.rs").expect("log suite");
+        assert!(
+            log.covered_suites
+                .iter()
+                .any(|suite| suite == SUITE_EXPLORE)
+        );
     }
 }
