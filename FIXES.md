@@ -198,7 +198,8 @@ Structure:
   Done when:
   - [x] Host backend logic is separated cleanly.
   - [x] Trace/summary finalization helpers are separated cleanly.
-  - [ ] CLI dispatch and profile subcommands have clearer module boundaries.
+  - [x] CLI dispatch has clearer module boundaries.
+  - [ ] Profile subcommands have clearer module boundaries.
   - [ ] Behavior stays stable under regression tests.
 
 ## Suggested Order
