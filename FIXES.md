@@ -186,7 +186,7 @@ Structure:
 
 ### Codebase Structure
 
-- [ ] Break up oversized control-center modules.
+- ✅ Break up oversized control-center modules.
   Why:
   Several core files are extremely large and mix unrelated responsibilities.
   Impact:
@@ -196,11 +196,12 @@ Structure:
   - [src/main.rs](/Users/deepsaint/Desktop/fozzy/src/main.rs:1)
   - [src/cmd/profile_cmd.rs](/Users/deepsaint/Desktop/fozzy/src/cmd/profile_cmd.rs:1)
   Done when:
-  - [x] Host backend logic is separated cleanly.
-  - [x] Trace/summary finalization helpers are separated cleanly.
-  - [x] CLI dispatch has clearer module boundaries.
-  - [ ] Profile subcommands have clearer module boundaries.
-  - [ ] Behavior stays stable under regression tests.
+  - ✅ Host backend logic is separated cleanly.
+  - ✅ Trace/summary finalization helpers are separated cleanly.
+  - ✅ CLI dispatch has clearer module boundaries.
+  - ✅ Profile subcommands have clearer module boundaries.
+  - ✅ Profile render/export helpers are separated cleanly.
+  - ✅ Behavior stays stable under regression tests.
 
 ## Suggested Order
 
@@ -223,7 +224,7 @@ Structure:
 - [x] Scenario cache lifecycle redesign
 - [x] Host timeout enforcement
 - [x] Streaming resource limits for host I/O
-- [ ] Large-module refactors
+- ✅ Large-module refactors
 
 ## Validation Expectations
 
