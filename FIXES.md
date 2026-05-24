@@ -204,6 +204,7 @@ Structure:
   - ✅ Profile diff/explain/metric analysis helpers are separated cleanly.
   - ✅ Profile trace/timeline/profile builders are separated cleanly.
   - ✅ Profile loading/doctor/support helpers are separated cleanly.
+  - ✅ Profile shared types and schema shapes are separated cleanly.
   - ✅ Behavior stays stable under regression tests.
 
 ## Suggested Order
