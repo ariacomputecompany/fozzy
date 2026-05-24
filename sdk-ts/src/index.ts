@@ -301,6 +301,7 @@ export class Fozzy {
 
     const queue: StreamChunk[] = [];
     let done = false;
+    let fatalError: Error | undefined;
     let resolveWait: (() => void) | undefined;
 
     const push = (item: StreamChunk): void => {
@@ -314,6 +315,15 @@ export class Fozzy {
 
     cp.stdout.on("data", (b: Buffer) => push({ source: "stdout", chunk: b.toString("utf8") }));
     cp.stderr.on("data", (b: Buffer) => push({ source: "stderr", chunk: b.toString("utf8") }));
+    cp.on("error", (err: Error) => {
+      fatalError = err;
+      done = true;
+      if (resolveWait) {
+        const r = resolveWait;
+        resolveWait = undefined;
+        r();
+      }
+    });
     cp.on("close", () => {
       done = true;
       if (resolveWait) {
@@ -333,6 +343,9 @@ export class Fozzy {
         const item = queue.shift();
         if (item) yield item;
       }
+    }
+    if (fatalError) {
+      throw fatalError;
     }
   }
 

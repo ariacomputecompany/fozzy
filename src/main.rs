@@ -762,6 +762,7 @@ fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result
             let init_types = selected_init_test_types(with, *all_tests);
             fozzy::init_project(
                 config,
+                &cli.config,
                 &InitTemplate::from_option(template.as_ref()),
                 *force,
                 &init_types,
@@ -1879,6 +1880,7 @@ fn run_full_command(
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let init_res = fozzy::init_project(
             &cfg,
+            Path::new("fozzy.toml"),
             &InitTemplate::Rust,
             true,
             &selected_init_test_types(&[], true),

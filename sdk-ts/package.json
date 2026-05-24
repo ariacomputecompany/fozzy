@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node test/stream-errors.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run typecheck && npm run build",
     "clean": "rm -rf dist"

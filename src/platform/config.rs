@@ -119,16 +119,6 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load_optional(path: &Path) -> Self {
-        match Self::load_optional_checked(path) {
-            Ok(cfg) => cfg,
-            Err(err) => {
-                tracing::warn!("failed to load config {}: {err}", path.display());
-                Self::default()
-            }
-        }
-    }
-
     pub fn load_optional_checked(path: &Path) -> crate::FozzyResult<Self> {
         match std::fs::read_to_string(path) {
             Ok(s) => match toml::from_str::<Config>(&s) {

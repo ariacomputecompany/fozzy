@@ -4,3 +4,10 @@
 PLAN.md
 RUST-STYLE-GUIDE.md
 SDK-TS.md
+/tmp/
+/m13_*.trace.fozzy
+/m13_*.trace.*.fozzy
+/m13_*.json
+/profile.*.json
+/symbols.json
+/fozzyintro.HTML

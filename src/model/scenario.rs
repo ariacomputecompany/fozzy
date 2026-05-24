@@ -443,34 +443,7 @@ impl Scenario {
     }
 
     pub fn validate(&self) -> FozzyResult<()> {
-        for step in &self.steps {
-            match step {
-                Step::Sleep { duration } | Step::Advance { duration } => {
-                    parse_duration(duration)?;
-                }
-                Step::AssertEventuallyKv { within, poll, .. }
-                | Step::AssertNeverKv { within, poll, .. } => {
-                    parse_duration(within)?;
-                    parse_duration(poll)?;
-                }
-                Step::GetKvAssert {
-                    equals: Some(_),
-                    is_null: Some(true),
-                    ..
-                } => {
-                    return Err(FozzyError::Scenario(
-                        "GetKvAssert: cannot set both equals and is_null=true".to_string(),
-                    ));
-                }
-                Step::MemoryFree { alloc_id, key } if alloc_id.is_some() == key.is_some() => {
-                    return Err(FozzyError::Scenario(
-                        "MemoryFree: set exactly one of alloc_id or key".to_string(),
-                    ));
-                }
-                _ => {}
-            }
-        }
-        Ok(())
+        validate_steps(&self.steps)
     }
 
     pub fn example() -> ScenarioV1Steps {
@@ -496,6 +469,40 @@ impl Scenario {
             ],
         }
     }
+}
+
+fn validate_steps(steps: &[Step]) -> FozzyResult<()> {
+    for step in steps {
+        match step {
+            Step::Sleep { duration } | Step::Advance { duration } => {
+                parse_duration(duration)?;
+            }
+            Step::AssertEventuallyKv { within, poll, .. }
+            | Step::AssertNeverKv { within, poll, .. } => {
+                parse_duration(within)?;
+                parse_duration(poll)?;
+            }
+            Step::GetKvAssert {
+                equals: Some(_),
+                is_null: Some(true),
+                ..
+            } => {
+                return Err(FozzyError::Scenario(
+                    "GetKvAssert: cannot set both equals and is_null=true".to_string(),
+                ));
+            }
+            Step::MemoryFree { alloc_id, key } if alloc_id.is_some() == key.is_some() => {
+                return Err(FozzyError::Scenario(
+                    "MemoryFree: set exactly one of alloc_id or key".to_string(),
+                ));
+            }
+            Step::AssertThrows { steps } | Step::AssertRejects { steps } => {
+                validate_steps(steps)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 impl ScenarioV1Distributed {

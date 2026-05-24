@@ -17,7 +17,6 @@ use crate::{
     MemoryOptions, MemoryRunReport, MemoryState, Reporter, RunIdentity, RunMode, RunSummary,
     Scenario, ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc,
     write_memory_artifacts, write_memory_delta_artifact, write_profile_artifacts_from_trace,
-    write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -308,6 +307,7 @@ fn heap_budget_policy(config: &Config) -> HeapBudgetPolicy {
 
 pub fn init_project(
     config: &Config,
+    config_path: &Path,
     template: &InitTemplate,
     force: bool,
     test_types: &[InitTestType],
@@ -324,10 +324,9 @@ pub fn init_project(
     std::fs::create_dir_all(config.corpora_dir())?;
 
     // Write a minimal config if it doesn't exist.
-    let config_path = PathBuf::from("fozzy.toml");
     if force || !config_path.exists() {
         let cfg = toml::to_string_pretty(config).map_err(|e| FozzyError::Config(e.to_string()))?;
-        std::fs::write(&config_path, cfg)?;
+        std::fs::write(config_path, cfg)?;
     }
 
     std::fs::create_dir_all("tests")?;
@@ -526,7 +525,19 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
         globs.to_vec()
     };
 
-    let scenario_paths = crate::find_matching_files(&patterns)?;
+    let resolved_inputs = crate::resolve_matching_files(&patterns)?;
+    if !resolved_inputs.missing_literal_files.is_empty() {
+        let missing = resolved_inputs
+            .missing_literal_files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(FozzyError::InvalidArgument(format!(
+            "explicit scenario path(s) not found: {missing}"
+        )));
+    }
+    let scenario_paths = resolved_inputs.files;
     if scenario_paths.is_empty() {
         return Err(FozzyError::InvalidArgument(format!(
             "no scenario files matched (patterns={patterns:?})"
@@ -557,6 +568,23 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
         filtered_paths.push(p);
     }
 
+    let mut distributed_paths = Vec::new();
+    for path in &filtered_paths {
+        let scenario_path = ScenarioPath::new(path.clone());
+        if matches!(
+            crate::Scenario::load_file(&scenario_path)?,
+            crate::ScenarioFile::Distributed(_)
+        ) {
+            distributed_paths.push(path.display().to_string());
+        }
+    }
+    if !distributed_paths.is_empty() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "fozzy test discovered distributed scenario(s) that must be run with `fozzy explore`: {}",
+            distributed_paths.join(", ")
+        )));
+    }
+
     let jobs = if opt.fail_fast {
         1
     } else {
@@ -577,10 +605,6 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
                 opt.memory.clone(),
             ) {
                 Ok(run) => run,
-                Err(FozzyError::Scenario(msg)) if msg.contains("use `fozzy explore`") => {
-                    skipped += 1;
-                    continue;
-                }
                 Err(err) => return Err(err),
             };
             match run.status {
@@ -718,11 +742,6 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
                                     trace_runs.push(run);
                                 }
                             }
-                            Err(FozzyError::Scenario(msg))
-                                if msg.contains("use `fozzy explore`") =>
-                            {
-                                skipped += 1;
-                            }
                             Err(err) => {
                                 // Bubble up after joining all workers.
                                 findings.push(Finding {
@@ -816,35 +835,7 @@ fn write_test_traces(
     }
     if runs.len() == 1 {
         let run = &runs[0];
-        let summary = RunSummary {
-            status: run.status,
-            mode: RunMode::Test,
-            identity: RunIdentity {
-                run_id: Uuid::new_v4().to_string(),
-                seed,
-                trace_path: Some(record_base.to_string_lossy().to_string()),
-                report_path: None,
-                artifacts_dir: None,
-            },
-            started_at: wall_time_iso_utc(),
-            finished_at: wall_time_iso_utc(),
-            duration_ms: 0,
-            duration_ns: 0,
-            tests: None,
-            memory: run.memory.as_ref().map(|m| m.summary.clone()),
-            findings: run.findings.clone(),
-        };
-        let trace = TraceFile::new(
-            RunMode::Test,
-            Some(run.scenario_path.to_string_lossy().to_string()),
-            Some(run.scenario_embedded.clone()),
-            run.decisions.decisions.clone(),
-            run.events.clone(),
-            summary,
-        );
-        let mut trace = trace;
-        trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-        write_trace_with_policy(&trace, record_base, policy)?;
+        write_single_scenario_trace(record_base, run, seed, policy, RunMode::Test)?;
         return Ok(());
     }
 
@@ -864,35 +855,7 @@ fn write_test_traces(
 
     for (idx, run) in runs.iter().enumerate() {
         let out = parent.join(format!("{base}.{}.fozzy", idx + 1));
-        let summary = RunSummary {
-            status: run.status,
-            mode: RunMode::Test,
-            identity: RunIdentity {
-                run_id: Uuid::new_v4().to_string(),
-                seed,
-                trace_path: Some(out.to_string_lossy().to_string()),
-                report_path: None,
-                artifacts_dir: None,
-            },
-            started_at: wall_time_iso_utc(),
-            finished_at: wall_time_iso_utc(),
-            duration_ms: 0,
-            duration_ns: 0,
-            tests: None,
-            memory: run.memory.as_ref().map(|m| m.summary.clone()),
-            findings: run.findings.clone(),
-        };
-        let trace = TraceFile::new(
-            RunMode::Test,
-            Some(run.scenario_path.to_string_lossy().to_string()),
-            Some(run.scenario_embedded.clone()),
-            run.decisions.decisions.clone(),
-            run.events.clone(),
-            summary,
-        );
-        let mut trace = trace;
-        trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-        write_trace_with_policy(&trace, &out, policy)?;
+        write_single_scenario_trace(&out, run, seed, policy, RunMode::Test)?;
     }
     Ok(())
 }
@@ -963,7 +926,6 @@ pub fn run_scenario(
         report_summary.findings = crate::collapse_findings(report_summary.findings.clone());
     }
 
-    std::fs::write(&report_path, serde_json::to_vec(&report_summary)?)?;
     let explicit_capture = opt.record_trace_to.is_some();
     let emit_heavy = should_emit_heavy_artifacts(run.status, explicit_capture)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
@@ -981,49 +943,88 @@ pub fn run_scenario(
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
     }
-    if emit_profile {
-        profile_trace.summary = report_summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    }
-
-    if matches!(opt.reporter, Reporter::Junit) {
-        std::fs::write(
-            artifacts_dir.join("junit.xml"),
-            crate::render_junit_xml(&report_summary),
-        )?;
-    }
-    if matches!(opt.reporter, Reporter::Html) {
-        std::fs::write(
-            artifacts_dir.join("report.html"),
-            crate::render_html(&report_summary),
-        )?;
-    }
-
     let should_record = opt.record_trace_to.is_some() || run.status != ExitStatus::Pass;
     if should_record {
         let path = opt
             .record_trace_to
             .clone()
             .unwrap_or_else(|| artifacts_dir.join("trace.fozzy"));
-        let trace = TraceFile::new(
-            RunMode::Run,
-            Some(run.scenario_path.to_string_lossy().to_string()),
-            Some(run.scenario_embedded),
-            run.decisions.decisions,
-            run.events,
-            report_summary.clone(),
-        );
-        let mut trace = trace;
-        trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-        let written = write_trace_with_policy(&trace, &path, opt.record_collision)?;
+        let written =
+            write_single_scenario_trace(&path, &run, seed, opt.record_collision, RunMode::Run)?;
         trace_path = Some(written);
     }
 
     let mut summary = report_summary;
     summary.identity.trace_path = trace_path.map(|p| p.to_string_lossy().to_string());
+    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    if emit_profile {
+        profile_trace.summary = summary.clone();
+        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    }
+    if matches!(opt.reporter, Reporter::Junit) {
+        std::fs::write(
+            artifacts_dir.join("junit.xml"),
+            crate::render_junit_xml(&summary),
+        )?;
+    }
+    if matches!(opt.reporter, Reporter::Html) {
+        std::fs::write(
+            artifacts_dir.join("report.html"),
+            crate::render_html(&summary),
+        )?;
+    }
     crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(RunResult { summary })
+}
+
+fn build_single_scenario_trace(
+    out_path: &Path,
+    run: &ScenarioRun,
+    seed: u64,
+    mode: RunMode,
+) -> TraceFile {
+    let summary = RunSummary {
+        status: run.status,
+        mode,
+        identity: RunIdentity {
+            run_id: Uuid::new_v4().to_string(),
+            seed,
+            trace_path: Some(out_path.to_string_lossy().to_string()),
+            report_path: None,
+            artifacts_dir: None,
+        },
+        started_at: wall_time_iso_utc(),
+        finished_at: wall_time_iso_utc(),
+        duration_ms: 0,
+        duration_ns: 0,
+        tests: None,
+        memory: run.memory.as_ref().map(|m| m.summary.clone()),
+        findings: run.findings.clone(),
+    };
+    let mut trace = TraceFile::new(
+        mode,
+        Some(run.scenario_path.to_string_lossy().to_string()),
+        Some(run.scenario_embedded.clone()),
+        run.decisions.decisions.clone(),
+        run.events.clone(),
+        summary,
+    );
+    trace.memory = run.memory.as_ref().map(|m| m.to_trace());
+    trace
+}
+
+fn write_single_scenario_trace(
+    requested_path: &Path,
+    run: &ScenarioRun,
+    seed: u64,
+    policy: RecordCollisionPolicy,
+    mode: RunMode,
+) -> FozzyResult<PathBuf> {
+    let target = crate::resolve_record_target(requested_path, policy)?;
+    let trace = build_single_scenario_trace(&target, run, seed, mode);
+    crate::write_trace_to_target(&trace, &target)?;
+    Ok(target)
 }
 
 pub fn replay_trace(

@@ -555,13 +555,7 @@ fn load_explore_scenario(
             path.as_path().display()
         )));
     };
-    if d.version != 1 {
-        return Err(FozzyError::Scenario(format!(
-            "unsupported distributed scenario version {} (expected 1)",
-            d.version
-        )));
-    }
-
+    d.validate()?;
     distributed_to_explore(d, nodes_override)
 }
 
@@ -569,12 +563,7 @@ pub(crate) fn distributed_to_explore(
     d: ScenarioV1Distributed,
     nodes_override: Option<usize>,
 ) -> FozzyResult<ScenarioV1Explore> {
-    if d.version != 1 {
-        return Err(FozzyError::Scenario(format!(
-            "unsupported distributed scenario version {} (expected 1)",
-            d.version
-        )));
-    }
+    d.validate()?;
     let nodes = if let Some(n) = nodes_override {
         (0..n).map(|i| format!("n{i}")).collect()
     } else if let Some(nodes) = d.distributed.nodes.clone() {
@@ -582,7 +571,7 @@ pub(crate) fn distributed_to_explore(
     } else if let Some(n) = d.distributed.node_count {
         (0..n).map(|i| format!("n{i}")).collect()
     } else {
-        vec!["n0".to_string(), "n1".to_string(), "n2".to_string()]
+        unreachable!("distributed validation requires nodes or node_count")
     };
 
     Ok(ScenarioV1Explore {

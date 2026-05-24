@@ -111,6 +111,20 @@ pub struct MapSuitesReport {
     pub effective_min_risk: u8,
     #[serde(rename = "scenarioCount")]
     pub scenario_count: usize,
+    #[serde(
+        rename = "skippedSourceFiles",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub skipped_source_files: Vec<String>,
+    #[serde(
+        rename = "unreadableScenarios",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub unreadable_scenarios: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     #[serde(rename = "requiredHotspotCount")]
     pub required_hotspot_count: usize,
     #[serde(rename = "coveredHotspotCount")]
@@ -225,6 +239,7 @@ pub struct MapSuitesOptions {
 struct RepoFacts {
     root: PathBuf,
     scanned_files: usize,
+    skipped_source_files: Vec<String>,
     hotspots: Vec<MapHotspot>,
     services: Vec<ServiceBoundary>,
 }
@@ -248,6 +263,12 @@ struct ScenarioFact {
     has_memory: bool,
     has_failure: bool,
     has_shrink: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ScenarioFactBuild {
+    facts: Vec<ScenarioFact>,
+    unreadable_scenarios: Vec<String>,
 }
 
 pub fn map_command(_config: &Config, command: &MapCommand) -> FozzyResult<serde_json::Value> {
@@ -314,7 +335,8 @@ pub fn map_command(_config: &Config, command: &MapCommand) -> FozzyResult<serde_
 pub fn map_suites(opt: &MapSuitesOptions) -> FozzyResult<MapSuitesReport> {
     let facts = scan_repo(&opt.root)?;
     let scenario_files = discover_scenarios(&opt.scenario_root)?;
-    let scenario_facts = build_scenario_facts(&scenario_files);
+    let scenario_build = build_scenario_facts(&scenario_files);
+    let scenario_facts = scenario_build.facts;
     let coverage_index = ScenarioCoverageIndex::new(&scenario_facts);
     let has_known_shrink_failure = scenario_facts.iter().any(|s| s.has_shrink && s.has_failure);
 
@@ -409,6 +431,12 @@ pub fn map_suites(opt: &MapSuitesOptions) -> FozzyResult<MapSuitesReport> {
         base_min_risk: opt.min_risk,
         effective_min_risk,
         scenario_count: scenario_files.len(),
+        skipped_source_files: facts.skipped_source_files.clone(),
+        unreadable_scenarios: scenario_build.unreadable_scenarios.clone(),
+        warnings: map_warnings(
+            &facts.skipped_source_files,
+            &scenario_build.unreadable_scenarios,
+        ),
         required_hotspot_count,
         covered_hotspot_count,
         uncovered_hotspot_count,
@@ -682,8 +710,19 @@ fn matches_suite_signal(s: &ScenarioFact, suite: &str) -> bool {
     }
 }
 
-fn build_scenario_facts(paths: &[PathBuf]) -> Vec<ScenarioFact> {
-    paths.iter().filter_map(|p| scenario_fact(p).ok()).collect()
+fn build_scenario_facts(paths: &[PathBuf]) -> ScenarioFactBuild {
+    let mut facts = Vec::new();
+    let mut unreadable_scenarios = Vec::new();
+    for path in paths {
+        match scenario_fact(path) {
+            Ok(fact) => facts.push(fact),
+            Err(err) => unreadable_scenarios.push(format!("{}: {err}", path.display())),
+        }
+    }
+    ScenarioFactBuild {
+        facts,
+        unreadable_scenarios,
+    }
 }
 
 fn scenario_fact(path: &Path) -> FozzyResult<ScenarioFact> {
@@ -736,6 +775,7 @@ fn scan_repo(root: &Path) -> FozzyResult<RepoFacts> {
 
     let mut records = Vec::<ScanRecord>::new();
     let mut scanned_files = 0usize;
+    let mut skipped_source_files = Vec::new();
     for entry in WalkDir::new(root).into_iter().flatten() {
         if !entry.file_type().is_file() {
             continue;
@@ -745,14 +785,24 @@ fn scan_repo(root: &Path) -> FozzyResult<RepoFacts> {
             continue;
         }
         let Ok(file) = std::fs::File::open(p) else {
+            skipped_source_files.push(format!("{}: failed to open", p.display()));
             continue;
         };
         let mut signal = HotspotSignals::default();
         let mut line_count = 0usize;
         let reader = BufReader::new(file);
-        for line in reader.lines().map_while(Result::ok) {
-            line_count = line_count.saturating_add(1);
-            accumulate_signals_line(&mut signal, &line);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    line_count = line_count.saturating_add(1);
+                    accumulate_signals_line(&mut signal, &line);
+                }
+                Err(err) => {
+                    skipped_source_files
+                        .push(format!("{}: failed to read line: {err}", p.display()));
+                    break;
+                }
+            }
         }
         signal.line_count = line_count;
         let rel = p.strip_prefix(root).unwrap_or(p).to_path_buf();
@@ -830,9 +880,27 @@ fn scan_repo(root: &Path) -> FozzyResult<RepoFacts> {
     Ok(RepoFacts {
         root: root.to_path_buf(),
         scanned_files,
+        skipped_source_files,
         hotspots,
         services,
     })
+}
+
+fn map_warnings(skipped_source_files: &[String], unreadable_scenarios: &[String]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if !skipped_source_files.is_empty() {
+        warnings.push(format!(
+            "map scan skipped {} source file(s); hotspot coverage is incomplete",
+            skipped_source_files.len()
+        ));
+    }
+    if !unreadable_scenarios.is_empty() {
+        warnings.push(format!(
+            "map suites skipped {} unreadable scenario file(s); suite attribution confidence is reduced",
+            unreadable_scenarios.len()
+        ));
+    }
+    warnings
 }
 
 fn discover_scenarios(root: &Path) -> FozzyResult<Vec<PathBuf>> {
@@ -1396,6 +1464,44 @@ mod tests {
             suite.covered_suites.iter().any(|s| s == SUITE_HOST),
             "expected host suite to be credited from natural fetch.host scenario: {:?}",
             suite.coverage_evidence
+        );
+    }
+
+    #[test]
+    fn map_suites_reports_unreadable_scenarios() {
+        let root = temp_dir("unreadable-scenarios");
+        let src = root.join("src");
+        let tests = root.join("tests");
+        std::fs::create_dir_all(&src).expect("src");
+        std::fs::create_dir_all(&tests).expect("tests");
+        std::fs::write(
+            src.join("main.rs"),
+            "fn main() { if true { std::thread::spawn(|| {}); } }",
+        )
+        .expect("write source");
+        std::fs::write(
+            tests.join("good.fozzy.json"),
+            r#"{"version":1,"name":"good","steps":[{"type":"assert_ok","value":true}]}"#,
+        )
+        .expect("write good");
+        std::fs::write(tests.join("bad.fozzy.json"), [0_u8, 159, 146, 150]).expect("write bad");
+
+        let report = map_suites(&MapSuitesOptions {
+            root: root.clone(),
+            scenario_root: tests,
+            min_risk: 1,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
+            limit: 50,
+            offset: 0,
+            max_matched_scenarios: 25,
+        })
+        .expect("map suites");
+
+        assert_eq!(report.unreadable_scenarios.len(), 1);
+        assert!(
+            !report.warnings.is_empty(),
+            "expected degraded-confidence warning when scenarios are unreadable"
         );
     }
 

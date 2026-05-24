@@ -9,11 +9,22 @@ use walkdir::WalkDir;
 
 use crate::{FozzyError, FozzyResult};
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MatchFilesResult {
+    pub files: Vec<PathBuf>,
+    pub missing_literal_files: Vec<PathBuf>,
+}
+
 pub fn find_matching_files(patterns: &[String]) -> FozzyResult<Vec<PathBuf>> {
+    Ok(resolve_matching_files(patterns)?.files)
+}
+
+pub fn resolve_matching_files(patterns: &[String]) -> FozzyResult<MatchFilesResult> {
     let set = compile_globset(patterns)?;
     let cwd = std::env::current_dir()?;
     let check_abs = patterns.iter().any(|p| Path::new(p).is_absolute());
     let mut out = BTreeSet::new();
+    let mut missing_literal_files = BTreeSet::new();
 
     // Accept direct file paths (absolute or relative) even when they are outside cwd.
     for pattern in patterns {
@@ -23,6 +34,8 @@ pub fn find_matching_files(patterns: &[String]) -> FozzyResult<Vec<PathBuf>> {
         let candidate = PathBuf::from(pattern);
         if candidate.is_file() {
             out.insert(candidate);
+        } else {
+            missing_literal_files.insert(candidate);
         }
     }
 
@@ -55,7 +68,15 @@ pub fn find_matching_files(patterns: &[String]) -> FozzyResult<Vec<PathBuf>> {
             }
         }
     }
-    Ok(out.into_iter().collect())
+    let files = out.into_iter().collect::<Vec<_>>();
+    let file_set = files.iter().cloned().collect::<BTreeSet<_>>();
+    Ok(MatchFilesResult {
+        files,
+        missing_literal_files: missing_literal_files
+            .into_iter()
+            .filter(|path| !file_set.contains(path))
+            .collect(),
+    })
 }
 
 fn walk_roots(patterns: &[String]) -> BTreeSet<PathBuf> {
@@ -175,5 +196,15 @@ mod tests {
         let matches =
             find_matching_files(&[scenario.to_string_lossy().to_string()]).expect("match files");
         assert!(matches.iter().any(|p| p == &scenario));
+    }
+
+    #[test]
+    fn resolve_matching_files_reports_missing_literal_file() {
+        let root = temp_dir("missing-literal");
+        let missing = root.join("missing.fozzy.json");
+        let resolved =
+            resolve_matching_files(&[missing.to_string_lossy().to_string()]).expect("resolve");
+        assert!(resolved.files.is_empty());
+        assert_eq!(resolved.missing_literal_files, vec![missing]);
     }
 }

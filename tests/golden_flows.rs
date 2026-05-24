@@ -326,7 +326,14 @@ fn golden_init_scaffold_distributed_pass_succeeds_in_explore() {
     let prev = std::env::current_dir().expect("cwd");
     std::env::set_current_dir(&ws).expect("chdir");
     let cfg = Config::default();
-    init_project(&cfg, &InitTemplate::Rust, true, &[InitTestType::Explore]).expect("init");
+    init_project(
+        &cfg,
+        PathBuf::from("fozzy.toml").as_path(),
+        &InitTemplate::Rust,
+        true,
+        &[InitTestType::Explore],
+    )
+    .expect("init");
     let scenario = ws.join("tests/distributed.pass.fozzy.json");
     let run = explore(
         &cfg,

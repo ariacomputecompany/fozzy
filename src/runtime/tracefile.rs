@@ -281,9 +281,14 @@ pub fn write_trace_with_policy(
     policy: RecordCollisionPolicy,
 ) -> FozzyResult<PathBuf> {
     let target = resolve_record_target(requested, policy)?;
+    write_trace_to_target(trace, &target)?;
+    Ok(target)
+}
+
+pub(crate) fn write_trace_to_target(trace: &TraceFile, target: &Path) -> FozzyResult<()> {
     let _lock = acquire_record_lock(&target)?;
     trace.write_json(&target)?;
-    Ok(target)
+    Ok(())
 }
 
 pub fn trace_replay_warnings(trace: &TraceFile) -> Vec<String> {
@@ -348,7 +353,10 @@ pub fn trace_replay_warnings(trace: &TraceFile) -> Vec<String> {
     warnings
 }
 
-fn resolve_record_target(path: &Path, policy: RecordCollisionPolicy) -> FozzyResult<PathBuf> {
+pub(crate) fn resolve_record_target(
+    path: &Path,
+    policy: RecordCollisionPolicy,
+) -> FozzyResult<PathBuf> {
     match policy {
         RecordCollisionPolicy::Overwrite => Ok(path.to_path_buf()),
         RecordCollisionPolicy::Error => {

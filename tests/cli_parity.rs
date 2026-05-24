@@ -1686,6 +1686,227 @@ fn validate_accepts_distributed_scenarios() {
 }
 
 #[test]
+fn validate_rejects_invalid_nested_steps() {
+    let ws = temp_workspace("validate-nested-invalid");
+    let scenario = ws.join("nested-invalid.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"{
+          "version": 1,
+          "name": "nested-invalid",
+          "steps": [
+            {
+              "type": "assert_throws",
+              "steps": [
+                { "type": "sleep", "duration": "not-a-duration" }
+              ]
+            }
+          ]
+        }"#,
+    )
+    .expect("write scenario");
+
+    let output = run_cli(&[
+        "validate".into(),
+        scenario.display().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "validate should fail nested invalid step"
+    );
+    let msg = String::from_utf8_lossy(&output.stdout).to_string();
+    assert!(
+        msg.contains("not-a-duration"),
+        "expected nested validation error, got: {msg}"
+    );
+}
+
+#[test]
+fn explore_rejects_invalid_distributed_scenario_missing_topology() {
+    let ws = temp_workspace("explore-invalid-distributed");
+    let scenario = ws.join("distributed-invalid.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"{
+          "version": 1,
+          "name": "distributed-invalid",
+          "distributed": {
+            "steps": [
+              { "type": "tick", "duration": "1ms" }
+            ],
+            "invariants": []
+          }
+        }"#,
+    )
+    .expect("write scenario");
+
+    let output = run_cli(&[
+        "explore".into(),
+        scenario.display().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "explore should reject invalid distributed scenario"
+    );
+    let out = parse_json_stdout(&output);
+    let msg = out
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        msg.contains("distributed requires either nodes:[...] or node_count"),
+        "expected distributed validation error, got: {msg}"
+    );
+}
+
+#[test]
+fn test_rejects_explicit_missing_scenario_path_even_if_other_inputs_exist() {
+    let ws = temp_workspace("test-missing-explicit");
+    let scenario = ws.join("ok.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "test".into(),
+            scenario.display().to_string(),
+            ws.join("missing.fozzy.json").display().to_string(),
+            "--det".into(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "test should reject missing explicit path"
+    );
+    let out = parse_json_stdout(&output);
+    let msg = out
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        msg.contains("explicit scenario path(s) not found"),
+        "expected missing explicit path error, got: {msg}"
+    );
+}
+
+#[test]
+fn test_rejects_distributed_scenarios_in_default_test_mode() {
+    let ws = temp_workspace("test-distributed-reject");
+    std::fs::write(ws.join("example.fozzy.json"), fixture("example.fozzy.json"))
+        .expect("write example");
+    std::fs::write(
+        ws.join("distributed.fozzy.json"),
+        r#"{
+          "version": 1,
+          "name": "distributed",
+          "distributed": {
+            "node_count": 2,
+            "steps": [
+              { "type": "tick", "duration": "1ms" }
+            ],
+            "invariants": []
+          }
+        }"#,
+    )
+    .expect("write distributed");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "test".into(),
+            "*.fozzy.json".into(),
+            "--det".into(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "test should reject distributed scenarios"
+    );
+    let out = parse_json_stdout(&output);
+    let msg = out
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        msg.contains("must be run with `fozzy explore`"),
+        "expected distributed-scenario rejection, got: {msg}"
+    );
+}
+
+#[test]
+fn init_honors_custom_config_path() {
+    let ws = temp_workspace("init-custom-config");
+    let output = run_cli_in(
+        &ws,
+        &[
+            "--config".into(),
+            "custom.toml".into(),
+            "init".into(),
+            "--force".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "init should succeed");
+    assert!(
+        ws.join("custom.toml").exists(),
+        "custom config should exist"
+    );
+    assert!(
+        !ws.join("fozzy.toml").exists(),
+        "default config path should not be created when custom path was requested"
+    );
+}
+
+#[test]
+fn run_recorded_trace_embeds_actual_written_trace_path() {
+    let ws = temp_workspace("run-trace-metadata");
+    let scenario = ws.join("example.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+    let requested = ws.join("trace.fozzy");
+    std::fs::write(&requested, b"old").expect("seed collision");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "run should succeed");
+    let out = parse_json_stdout(&output);
+    let trace_path = out
+        .get("identity")
+        .and_then(|v| v.get("tracePath"))
+        .and_then(|v| v.as_str())
+        .expect("trace path")
+        .to_string();
+    let trace_doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&trace_path).expect("read trace"))
+            .expect("trace json");
+    let embedded = trace_doc
+        .get("summary")
+        .and_then(|v| v.get("identity"))
+        .and_then(|v| v.get("tracePath"))
+        .and_then(|v| v.as_str())
+        .expect("embedded trace path");
+    assert_eq!(embedded, trace_path);
+}
+
+#[test]
 fn run_record_collision_defaults_to_append_for_iterative_runs() {
     let ws = temp_workspace("run-record-append");
     let scenario = ws.join("pass.fozzy.json");
