@@ -26,6 +26,8 @@ mod explore;
 mod fsutil;
 #[path = "modes/fuzz.rs"]
 mod fuzz;
+#[path = "runtime/host.rs"]
+mod host;
 #[path = "cmd/map_cmd.rs"]
 mod map_cmd;
 #[path = "model/memory.rs"]
