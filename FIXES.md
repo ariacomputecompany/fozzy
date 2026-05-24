@@ -201,6 +201,7 @@ Structure:
   - ✅ CLI dispatch has clearer module boundaries.
   - ✅ Profile subcommands have clearer module boundaries.
   - ✅ Profile render/export helpers are separated cleanly.
+  - ✅ Profile diff/explain/metric analysis helpers are separated cleanly.
   - ✅ Behavior stays stable under regression tests.
 
 ## Suggested Order
