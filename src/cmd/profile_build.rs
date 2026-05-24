@@ -1,3 +1,4 @@
+use super::profile_support::detect_cpu_collector_capability;
 use super::*;
 
 pub(super) fn build_profile_timeline(trace: &TraceFile) -> Vec<ProfileEvent> {

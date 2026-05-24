@@ -1,3 +1,4 @@
+use super::profile_support::aggregate_metric_bundle;
 use super::*;
 
 pub(super) fn dispatch_profile_command(

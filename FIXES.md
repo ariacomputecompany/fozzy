@@ -203,6 +203,7 @@ Structure:
   - ✅ Profile render/export helpers are separated cleanly.
   - ✅ Profile diff/explain/metric analysis helpers are separated cleanly.
   - ✅ Profile trace/timeline/profile builders are separated cleanly.
+  - ✅ Profile loading/doctor/support helpers are separated cleanly.
   - ✅ Behavior stays stable under regression tests.
 
 ## Suggested Order
