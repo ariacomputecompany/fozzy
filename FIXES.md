@@ -197,7 +197,7 @@ Structure:
   - [src/cmd/profile_cmd.rs](/Users/deepsaint/Desktop/fozzy/src/cmd/profile_cmd.rs:1)
   Done when:
   - [x] Host backend logic is separated cleanly.
-  - [ ] Trace/summary finalization helpers are separated cleanly.
+  - [x] Trace/summary finalization helpers are separated cleanly.
   - [ ] CLI dispatch and profile subcommands have clearer module boundaries.
   - [ ] Behavior stays stable under regression tests.
 

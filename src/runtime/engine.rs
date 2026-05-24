@@ -14,11 +14,15 @@ use std::time::{Duration, Instant};
 
 use crate::{
     Config, Decision, DecisionLog, ExitStatus, Finding, FindingKind, FindingLocation,
-    MemoryOptions, MemoryRunReport, MemoryState, Reporter, RunIdentity, RunMode, RunSummary,
-    Scenario, ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc,
+    MemoryOptions, MemoryRunReport, MemoryState, Reporter, RunMode, RunSummary, Scenario,
+    ScenarioPath, ScenarioV1Steps, TraceEvent, TraceFile, TracePath, wall_time_iso_utc,
     write_memory_artifacts, write_memory_delta_artifact, write_profile_artifacts_from_trace,
 };
 
+use crate::finalize::{
+    build_run_summary, build_shrink_preview_trace, write_reporter_artifacts,
+    write_single_scenario_trace, write_summary_report,
+};
 use crate::host::{
     HostHttpDispatch, HostProcDispatch, assert_http_when_response_matches_host, canonical_headers,
     dispatch_host_http, dispatch_host_proc, host_http_rule_matches, host_http_rule_path_supported,
@@ -778,52 +782,38 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
     std::fs::create_dir_all(&artifacts_dir)?;
     let report_path = artifacts_dir.join("report.json");
 
-    let summary = RunSummary {
+    let summary = build_run_summary(
         status,
-        mode: RunMode::Test,
-        identity: RunIdentity {
-            run_id,
-            seed,
-            trace_path: None,
-            report_path: Some(report_path.to_string_lossy().to_string()),
-            artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
-        },
+        RunMode::Test,
+        run_id,
+        seed,
+        None,
+        Some(report_path.to_string_lossy().to_string()),
+        Some(artifacts_dir.to_string_lossy().to_string()),
         started_at,
         finished_at,
         duration_ms,
         duration_ns,
-        tests: Some(crate::TestCounts {
+        Some(crate::TestCounts {
             passed,
             failed,
             skipped,
         }),
-        memory: if has_memory {
+        if has_memory {
             Some(memory_summary)
         } else {
             None
         },
-        findings: crate::collapse_findings(findings),
-    };
+        crate::collapse_findings(findings),
+    );
 
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    write_summary_report(&summary, &report_path, &artifacts_dir)?;
 
     if let Some(record_base) = &opt.record_trace_to {
         write_test_traces(record_base, &trace_runs, seed, opt.record_collision)?;
     }
 
-    if matches!(opt.reporter, Reporter::Junit) {
-        std::fs::write(
-            artifacts_dir.join("junit.xml"),
-            crate::render_junit_xml(&summary),
-        )?;
-    }
-    if matches!(opt.reporter, Reporter::Html) {
-        std::fs::write(
-            artifacts_dir.join("report.html"),
-            crate::render_html(&summary),
-        )?;
-    }
+    write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
 
     Ok(RunResult { summary })
 }
@@ -896,24 +886,22 @@ pub fn run_scenario(
     let report_path = artifacts_dir.join("report.json");
     let mut trace_path: Option<PathBuf> = None;
 
-    let mut report_summary = RunSummary {
-        status: run.status,
-        mode: RunMode::Run,
-        identity: RunIdentity {
-            run_id: run_id.clone(),
-            seed,
-            trace_path: None,
-            report_path: Some(report_path.to_string_lossy().to_string()),
-            artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
-        },
+    let mut report_summary = build_run_summary(
+        run.status,
+        RunMode::Run,
+        run_id.clone(),
+        seed,
+        None,
+        Some(report_path.to_string_lossy().to_string()),
+        Some(artifacts_dir.to_string_lossy().to_string()),
         started_at,
         finished_at,
         duration_ms,
         duration_ns,
-        tests: None,
-        memory: run.memory.as_ref().map(|m| m.summary.clone()),
-        findings: run.findings.clone(),
-    };
+        None,
+        run.memory.as_ref().map(|m| m.summary.clone()),
+        run.findings.clone(),
+    );
     let mut profile_trace = TraceFile::new(
         RunMode::Run,
         Some(run.scenario_path.to_string_lossy().to_string()),
@@ -960,75 +948,14 @@ pub fn run_scenario(
 
     let mut summary = report_summary;
     summary.identity.trace_path = trace_path.map(|p| p.to_string_lossy().to_string());
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if emit_profile {
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
-    if matches!(opt.reporter, Reporter::Junit) {
-        std::fs::write(
-            artifacts_dir.join("junit.xml"),
-            crate::render_junit_xml(&summary),
-        )?;
-    }
-    if matches!(opt.reporter, Reporter::Html) {
-        std::fs::write(
-            artifacts_dir.join("report.html"),
-            crate::render_html(&summary),
-        )?;
-    }
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
 
     Ok(RunResult { summary })
-}
-
-fn build_single_scenario_trace(
-    out_path: &Path,
-    run: &ScenarioRun,
-    seed: u64,
-    mode: RunMode,
-) -> TraceFile {
-    let summary = RunSummary {
-        status: run.status,
-        mode,
-        identity: RunIdentity {
-            run_id: Uuid::new_v4().to_string(),
-            seed,
-            trace_path: Some(out_path.to_string_lossy().to_string()),
-            report_path: None,
-            artifacts_dir: None,
-        },
-        started_at: wall_time_iso_utc(),
-        finished_at: wall_time_iso_utc(),
-        duration_ms: 0,
-        duration_ns: 0,
-        tests: None,
-        memory: run.memory.as_ref().map(|m| m.summary.clone()),
-        findings: run.findings.clone(),
-    };
-    let mut trace = TraceFile::new(
-        mode,
-        Some(run.scenario_path.to_string_lossy().to_string()),
-        Some(run.scenario_embedded.clone()),
-        run.decisions.decisions.clone(),
-        run.events.clone(),
-        summary,
-    );
-    trace.memory = run.memory.as_ref().map(|m| m.to_trace());
-    trace
-}
-
-fn write_single_scenario_trace(
-    requested_path: &Path,
-    run: &ScenarioRun,
-    seed: u64,
-    policy: RecordCollisionPolicy,
-    mode: RunMode,
-) -> FozzyResult<PathBuf> {
-    let target = crate::resolve_record_target(requested_path, policy)?;
-    let trace = build_single_scenario_trace(&target, run, seed, mode);
-    crate::write_trace_to_target(&trace, &target)?;
-    Ok(target)
 }
 
 pub fn replay_trace(
@@ -1114,24 +1041,22 @@ pub fn replay_trace(
         });
     }
 
-    let mut summary = RunSummary {
-        status: run.status,
-        mode: RunMode::Replay,
-        identity: RunIdentity {
-            run_id,
-            seed,
-            trace_path: Some(trace_path.as_path().to_string_lossy().to_string()),
-            report_path: Some(report_path.to_string_lossy().to_string()),
-            artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
-        },
+    let mut summary = build_run_summary(
+        run.status,
+        RunMode::Replay,
+        run_id,
+        seed,
+        Some(trace_path.as_path().to_string_lossy().to_string()),
+        Some(report_path.to_string_lossy().to_string()),
+        Some(artifacts_dir.to_string_lossy().to_string()),
         started_at,
         finished_at,
         duration_ms,
         duration_ns,
-        tests: None,
-        memory: run.memory.as_ref().map(|m| m.summary.clone()),
+        None,
+        run.memory.as_ref().map(|m| m.summary.clone()),
         findings,
-    };
+    );
     let mut profile_trace = TraceFile::new(
         RunMode::Replay,
         Some(scenario_path.clone()),
@@ -1148,7 +1073,7 @@ pub fn replay_trace(
         summary.findings = crate::collapse_findings(summary.findings.clone());
     }
 
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     let explicit_capture = opt.dump_events || opt.step;
     let emit_heavy = should_emit_heavy_artifacts(run.status, explicit_capture)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
@@ -1170,8 +1095,6 @@ pub fn replay_trace(
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
-
     Ok(RunResult { summary })
 }
 
@@ -1324,24 +1247,22 @@ fn shrink_trace_inner(
     let run_id = Uuid::new_v4().to_string();
     let started_at = wall_time_iso_utc();
     let finished_at = wall_time_iso_utc();
-    let summary = RunSummary {
-        status: best_run.status,
-        mode: RunMode::Run,
-        identity: RunIdentity {
-            run_id,
-            seed,
-            trace_path: Some(out_path.to_string_lossy().to_string()),
-            report_path: None,
-            artifacts_dir: None,
-        },
+    let summary = build_run_summary(
+        best_run.status,
+        RunMode::Run,
+        run_id,
+        seed,
+        Some(out_path.to_string_lossy().to_string()),
+        None,
+        None,
         started_at,
         finished_at,
-        duration_ms: 0,
-        duration_ns: 0,
-        tests: None,
-        memory: best_run.memory.as_ref().map(|m| m.summary.clone()),
-        findings: best_run.findings.clone(),
-    };
+        0,
+        0,
+        None,
+        best_run.memory.as_ref().map(|m| m.summary.clone()),
+        best_run.findings.clone(),
+    );
 
     let trace_out = TraceFile::new(
         RunMode::Run,
@@ -1379,41 +1300,6 @@ fn shrink_trace_inner(
         out_trace_path: out_path.to_string_lossy().to_string(),
         result: RunResult { summary },
     })
-}
-
-fn build_shrink_preview_trace(
-    scenario: &ScenarioV1Steps,
-    seed: u64,
-    run: &ScenarioRun,
-) -> TraceFile {
-    let summary = RunSummary {
-        status: run.status,
-        mode: RunMode::Run,
-        identity: RunIdentity {
-            run_id: "shrink-preview".to_string(),
-            seed,
-            trace_path: None,
-            report_path: None,
-            artifacts_dir: None,
-        },
-        started_at: String::new(),
-        finished_at: String::new(),
-        duration_ms: 0,
-        duration_ns: 0,
-        tests: None,
-        memory: run.memory.as_ref().map(|m| m.summary.clone()),
-        findings: run.findings.clone(),
-    };
-    let mut out = TraceFile::new(
-        RunMode::Run,
-        None,
-        Some(scenario.clone()),
-        run.decisions.decisions.clone(),
-        run.events.clone(),
-        summary,
-    );
-    out.memory = run.memory.as_ref().map(|m| m.to_trace());
-    out
 }
 
 pub(crate) fn shrink_status_matches(target: ExitStatus, candidate: ExitStatus) -> bool {
@@ -1577,14 +1463,14 @@ pub fn should_emit_profile_artifacts(
 }
 
 #[derive(Debug, Clone)]
-struct ScenarioRun {
-    status: ExitStatus,
-    findings: Vec<Finding>,
-    memory: Option<MemoryRunReport>,
-    decisions: DecisionLog,
-    events: Vec<TraceEvent>,
-    scenario_path: PathBuf,
-    scenario_embedded: ScenarioV1Steps,
+pub(crate) struct ScenarioRun {
+    pub(crate) status: ExitStatus,
+    pub(crate) findings: Vec<Finding>,
+    pub(crate) memory: Option<MemoryRunReport>,
+    pub(crate) decisions: DecisionLog,
+    pub(crate) events: Vec<TraceEvent>,
+    pub(crate) scenario_path: PathBuf,
+    pub(crate) scenario_embedded: ScenarioV1Steps,
 }
 
 #[allow(clippy::too_many_arguments)]

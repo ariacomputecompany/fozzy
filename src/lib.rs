@@ -22,6 +22,8 @@ mod envinfo;
 mod error;
 #[path = "modes/explore.rs"]
 mod explore;
+#[path = "runtime/finalize.rs"]
+mod finalize;
 #[path = "platform/fsutil.rs"]
 mod fsutil;
 #[path = "modes/fuzz.rs"]
