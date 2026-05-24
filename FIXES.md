@@ -146,7 +146,7 @@ Structure:
 
 ### Runtime Safety And Resource Control
 
-- [ ] Make host-backed runtime operations respect Fozzy timeouts while the host call is actually in flight.
+- [x] Make host-backed runtime operations respect Fozzy timeouts while the host call is actually in flight.
   Why:
   Host HTTP and host process steps block inside the step itself, while timeout checks happen only before and after step execution.
   Impact:
@@ -154,11 +154,11 @@ Structure:
   Evidence:
   [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:1644), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:1718), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:3049), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:3351)
   Done when:
-  - [ ] Hung host proc calls time out promptly.
-  - [ ] Hung host HTTP calls time out promptly.
-  - [ ] Timeout behavior is recorded and replayed coherently.
+  - [x] Hung host proc calls time out promptly.
+  - [x] Hung host HTTP calls time out promptly.
+  - [x] Timeout behavior is recorded and replayed coherently.
 
-- [ ] Enforce host stdout/stderr and HTTP body limits during streaming, not after full buffering.
+- [x] Enforce host stdout/stderr and HTTP body limits during streaming, not after full buffering.
   Why:
   Current size checks happen after the whole payload has already been loaded into memory.
   Impact:
@@ -166,13 +166,13 @@ Structure:
   Evidence:
   [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:3363), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:4257)
   Done when:
-  - [ ] Oversized host proc output is cut off safely during read.
-  - [ ] Oversized host HTTP bodies are aborted during read.
-  - [ ] The failure mode remains debuggable.
+  - [x] Oversized host proc output is cut off safely during read.
+  - [x] Oversized host HTTP bodies are aborted during read.
+  - [x] The failure mode remains debuggable.
 
 ### Caching And Lifecycle Semantics
 
-- [ ] Rework process-global scenario caches so they do not serve stale content forever and do not grow without bound.
+- [x] Rework process-global scenario caches so they do not serve stale content forever and do not grow without bound.
   Why:
   Parsed scenarios and compiled fuzz targets are cached globally for the lifetime of the process.
   Impact:
@@ -180,9 +180,9 @@ Structure:
   Evidence:
   [src/model/scenario.rs](/Users/deepsaint/Desktop/fozzy/src/model/scenario.rs:393), [src/modes/fuzz.rs](/Users/deepsaint/Desktop/fozzy/src/modes/fuzz.rs:737)
   Done when:
-  - [ ] Cache lifecycle is explicit.
-  - [ ] Scenario edits can be observed correctly, or the cache semantics are deliberately bounded and documented.
-  - [ ] Repeated unique temp paths do not cause unbounded growth.
+  - [x] Cache lifecycle is explicit.
+  - [x] Scenario edits can be observed correctly, or the cache semantics are deliberately bounded and documented.
+  - [x] Repeated unique temp paths do not cause unbounded growth.
 
 ### Codebase Structure
 
@@ -219,9 +219,9 @@ Structure:
 
 ### Second Pass
 
-- [ ] Scenario cache lifecycle redesign
-- [ ] Host timeout enforcement
-- [ ] Streaming resource limits for host I/O
+- [x] Scenario cache lifecycle redesign
+- [x] Host timeout enforcement
+- [x] Streaming resource limits for host I/O
 - [ ] Large-module refactors
 
 ## Validation Expectations

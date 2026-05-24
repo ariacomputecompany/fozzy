@@ -8,8 +8,10 @@ use uuid::Uuid;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::mpsc;
+use std::process::Stdio;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -1630,10 +1632,18 @@ fn run_embedded_scenario_inner(
     http_backend: HttpBackend,
     memory: MemoryOptions,
 ) -> FozzyResult<ScenarioRun> {
-    let mut ctx = ExecCtx::new(seed, det, proc_backend, fs_backend, http_backend, memory);
     let started = Instant::now();
-    let start_virtual_ms = ctx.clock.now_ms();
     let deadline = timeout.map(|t| started + t);
+    let mut ctx = ExecCtx::new(
+        seed,
+        det,
+        deadline,
+        proc_backend,
+        fs_backend,
+        http_backend,
+        memory,
+    );
+    let start_virtual_ms = ctx.clock.now_ms();
     let mut scheduler = crate::DeterministicScheduler::new(crate::SchedulerMode::Fifo, seed);
     for (idx, step) in scenario.steps.iter().enumerate() {
         scheduler.enqueue(step.kind_name().to_string(), idx);
@@ -1699,8 +1709,13 @@ fn run_embedded_scenario_inner(
                     ),
                 ]),
             });
+            let status = if finding_is_timeout(&finding) {
+                ExitStatus::Timeout
+            } else {
+                ExitStatus::Fail
+            };
             ctx.findings.push(finding);
-            return Ok(ctx.finish(ExitStatus::Fail, scenario_path, scenario));
+            return Ok(ctx.finish(status, scenario_path, scenario));
         }
         let end_ms = ctx.clock.now_ms();
         ctx.events.push(TraceEvent {
@@ -1768,6 +1783,10 @@ fn timeout_reached(
     }
 }
 
+fn finding_is_timeout(finding: &Finding) -> bool {
+    finding.kind == FindingKind::Hang && finding.title == "timeout"
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_scenario_replay_inner<'a>(
     _config: &Config,
@@ -1790,10 +1809,6 @@ fn run_scenario_replay_inner<'a>(
         )));
     }
 
-    let mut ctx = ExecCtx::new(seed, true, proc_backend, fs_backend, http_backend, memory);
-    if let Some(d) = decisions {
-        ctx.replay = Some(ReplayCursor::new(d));
-    }
     let has_scheduler_pick = decisions
         .map(|d| {
             d.iter()
@@ -1803,6 +1818,18 @@ fn run_scenario_replay_inner<'a>(
 
     let started = Instant::now();
     let deadline = until.map(|t| started + t);
+    let mut ctx = ExecCtx::new(
+        seed,
+        true,
+        deadline,
+        proc_backend,
+        fs_backend,
+        http_backend,
+        memory,
+    );
+    if let Some(d) = decisions {
+        ctx.replay = Some(ReplayCursor::new(d));
+    }
 
     if has_scheduler_pick {
         let mut scheduler = crate::DeterministicScheduler::new(crate::SchedulerMode::Fifo, seed);
@@ -1875,12 +1902,13 @@ fn run_scenario_replay_inner<'a>(
                         ),
                     ]),
                 });
+                let status = if finding_is_timeout(&finding) {
+                    ExitStatus::Timeout
+                } else {
+                    ExitStatus::Fail
+                };
                 ctx.findings.push(finding);
-                return Ok(ctx.finish(
-                    ExitStatus::Fail,
-                    PathBuf::from(scenario_path),
-                    scenario.clone(),
-                ));
+                return Ok(ctx.finish(status, PathBuf::from(scenario_path), scenario.clone()));
             }
             let end_ms = ctx.clock.now_ms();
             ctx.events.push(TraceEvent {
@@ -1961,12 +1989,13 @@ fn run_scenario_replay_inner<'a>(
                         ),
                     ]),
                 });
+                let status = if finding_is_timeout(&finding) {
+                    ExitStatus::Timeout
+                } else {
+                    ExitStatus::Fail
+                };
                 ctx.findings.push(finding);
-                return Ok(ctx.finish(
-                    ExitStatus::Fail,
-                    PathBuf::from(scenario_path),
-                    scenario.clone(),
-                ));
+                return Ok(ctx.finish(status, PathBuf::from(scenario_path), scenario.clone()));
             }
             let end_ms = ctx.clock.now_ms();
             ctx.events.push(TraceEvent {
@@ -2016,6 +2045,7 @@ struct ExecCtx<'a> {
     proc_backend: ProcBackend,
     fs_backend: FsBackend,
     http_backend: HttpBackend,
+    host_deadline: Option<Instant>,
     host_root: PathBuf,
     rng: ChaCha20Rng,
     clock: crate::VirtualClock,
@@ -2047,6 +2077,7 @@ impl<'a> ExecCtx<'a> {
     fn new(
         seed: u64,
         det: bool,
+        host_deadline: Option<Instant>,
         proc_backend: ProcBackend,
         fs_backend: FsBackend,
         http_backend: HttpBackend,
@@ -2061,6 +2092,7 @@ impl<'a> ExecCtx<'a> {
             proc_backend,
             fs_backend,
             http_backend,
+            host_deadline,
             host_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             rng,
             clock: crate::VirtualClock::default(),
@@ -2100,6 +2132,11 @@ impl<'a> ExecCtx<'a> {
             line: None,
             col: None,
         })
+    }
+
+    fn remaining_host_timeout(&self) -> Option<Duration> {
+        let deadline = self.host_deadline?;
+        Some(deadline.saturating_duration_since(Instant::now()))
     }
 
     fn finish(
@@ -3024,135 +3061,186 @@ impl<'a> ExecCtx<'a> {
                         location: None,
                     });
                 }
-                let (status_code, resp_headers, resp_body, backend) = if let Some(
-                    Decision::HttpRequest {
+                let (status_code, resp_headers, resp_body, backend) = match self
+                    .replay_peek()
+                    .cloned()
+                {
+                    Some(Decision::HttpRequest {
                         method: replay_method,
                         path: replay_path,
                         status_code,
                         headers,
                         body,
-                    },
-                ) =
-                    self.replay_peek().cloned()
-                {
-                    if replay_method != *method || replay_path != *path {
+                    }) => {
+                        if replay_method != *method || replay_path != *path {
+                            return Err(Finding {
+                                kind: FindingKind::Checker,
+                                title: "replay_drift".to_string(),
+                                message: format!(
+                                    "replay http drift: expected {replay_method} {replay_path}, got {method} {path}"
+                                ),
+                                location: None,
+                            });
+                        }
+                        let _ = self.replay_take_if(|d| matches!(d, Decision::HttpRequest { .. }));
+                        (status_code, headers, body, "replay".to_string())
+                    }
+                    Some(Decision::HttpRequestTimeout {
+                        method: replay_method,
+                        path: replay_path,
+                    }) => {
+                        if replay_method != *method || replay_path != *path {
+                            return Err(Finding {
+                                kind: FindingKind::Checker,
+                                title: "replay_drift".to_string(),
+                                message: format!(
+                                    "replay http timeout drift: expected {replay_method} {replay_path}, got {method} {path}"
+                                ),
+                                location: None,
+                            });
+                        }
+                        let _ = self
+                            .replay_take_if(|d| matches!(d, Decision::HttpRequestTimeout { .. }));
                         return Err(Finding {
-                            kind: FindingKind::Checker,
-                            title: "replay_drift".to_string(),
-                            message: format!(
-                                "replay http drift: expected {replay_method} {replay_path}, got {method} {path}"
-                            ),
-                            location: None,
+                            kind: FindingKind::Hang,
+                            title: "timeout".to_string(),
+                            message: format!("host http request timed out for {method} {path}"),
+                            location: self.current_finding_location(),
                         });
                     }
-                    let _ = self.replay_take_if(|d| matches!(d, Decision::HttpRequest { .. }));
-                    (status_code, headers, body, "replay".to_string())
-                } else if matches!(self.http_backend, HttpBackend::Host) {
-                    if !path.starts_with("http://") && !path.starts_with("https://") {
-                        return Err(Finding {
-                            kind: FindingKind::Checker,
-                            title: "http_host_url".to_string(),
-                            message: format!(
-                                "host http backend requires absolute http/https url, got {path:?}"
-                            ),
-                            location: None,
+                    _ if matches!(self.http_backend, HttpBackend::Host) => {
+                        if !path.starts_with("http://") && !path.starts_with("https://") {
+                            return Err(Finding {
+                                kind: FindingKind::Checker,
+                                title: "http_host_url".to_string(),
+                                message: format!(
+                                    "host http backend requires absolute http/https url, got {path:?}"
+                                ),
+                                location: None,
+                            });
+                        }
+                        let host_rule_idx = self.http_rules.iter().position(|r| {
+                            r.remaining > 0
+                                && r.method == *method
+                                && host_http_rule_matches(r, path)
                         });
-                    }
-                    let host_rule_idx = self.http_rules.iter().position(|r| {
-                        r.remaining > 0 && r.method == *method && host_http_rule_matches(r, path)
-                    });
-                    if !self.http_rules.is_empty() && host_rule_idx.is_none() {
-                        return Err(Finding {
-                            kind: FindingKind::Assertion,
-                            title: "http_when_host_unmatched".to_string(),
-                            message: format!(
-                                "no http_when matched host request {method} {path}. remediation: \
+                        if !self.http_rules.is_empty() && host_rule_idx.is_none() {
+                            return Err(Finding {
+                                kind: FindingKind::Assertion,
+                                title: "http_when_host_unmatched".to_string(),
+                                message: format!(
+                                    "no http_when matched host request {method} {path}. remediation: \
                                  1) align http_when.method/path with this request (absolute url or '/path'), \
                                  2) run with --http-backend scripted to use mocked responses. example: \
                                  fozzy run <scenario.fozzy.json> --http-backend scripted --json"
-                            ),
-                            location: None,
-                        });
-                    }
-                    let request_headers = canonical_headers(headers.as_ref())?;
-                    let response =
-                        dispatch_host_http(method, path, &request_headers, body.as_deref())
-                            .map_err(|message| Finding {
-                                kind: FindingKind::Assertion,
-                                title: "http_host_request".to_string(),
-                                message,
+                                ),
                                 location: None,
-                            })?;
-                    self.decisions.push(Decision::HttpRequest {
-                        method: method.clone(),
-                        path: path.clone(),
-                        status_code: response.status,
-                        headers: response.headers.clone(),
-                        body: response.body.clone(),
-                    });
-                    if let Some(idx) = host_rule_idx {
+                            });
+                        }
+                        let request_headers = canonical_headers(headers.as_ref())?;
+                        let response = dispatch_host_http(
+                            method,
+                            path,
+                            &request_headers,
+                            body.as_deref(),
+                            self.remaining_host_timeout(),
+                        )
+                        .map_err(|message| Finding {
+                            kind: FindingKind::Assertion,
+                            title: "http_host_request".to_string(),
+                            message,
+                            location: None,
+                        })?;
+                        let response = match response {
+                            HostHttpDispatch::Completed(response) => {
+                                self.decisions.push(Decision::HttpRequest {
+                                    method: method.clone(),
+                                    path: path.clone(),
+                                    status_code: response.status,
+                                    headers: response.headers.clone(),
+                                    body: response.body.clone(),
+                                });
+                                response
+                            }
+                            HostHttpDispatch::TimedOut => {
+                                self.decisions.push(Decision::HttpRequestTimeout {
+                                    method: method.clone(),
+                                    path: path.clone(),
+                                });
+                                return Err(Finding {
+                                    kind: FindingKind::Hang,
+                                    title: "timeout".to_string(),
+                                    message: format!(
+                                        "host http request timed out for {method} {path}"
+                                    ),
+                                    location: self.current_finding_location(),
+                                });
+                            }
+                        };
+                        if let Some(idx) = host_rule_idx {
+                            let mut rule = self.http_rules[idx].clone();
+                            if rule.remaining != u64::MAX {
+                                rule.remaining = rule.remaining.saturating_sub(1);
+                            }
+                            self.http_rules[idx] = rule.clone();
+                            assert_http_when_response_matches_host(
+                                method,
+                                path,
+                                &rule,
+                                response.status,
+                                &response.headers,
+                                &response.body,
+                            )?;
+                        }
+                        (
+                            response.status,
+                            response.headers,
+                            response.body,
+                            "host".to_string(),
+                        )
+                    }
+                    _ => {
+                        let rule_idx = self.http_rules.iter().position(|r| {
+                            r.remaining > 0 && r.method == *method && r.path == *path
+                        });
+                        let Some(idx) = rule_idx else {
+                            return Err(Finding {
+                                kind: FindingKind::Assertion,
+                                title: "http_unmatched".to_string(),
+                                message: format!("no http mock matched {method} {path}"),
+                                location: None,
+                            });
+                        };
+
                         let mut rule = self.http_rules[idx].clone();
                         if rule.remaining != u64::MAX {
                             rule.remaining = rule.remaining.saturating_sub(1);
                         }
                         self.http_rules[idx] = rule.clone();
-                        assert_http_when_response_matches_host(
-                            method,
-                            path,
-                            &rule,
-                            response.status,
-                            &response.headers,
-                            &response.body,
-                        )?;
-                    }
-                    (
-                        response.status,
-                        response.headers,
-                        response.body,
-                        "host".to_string(),
-                    )
-                } else {
-                    let rule_idx = self
-                        .http_rules
-                        .iter()
-                        .position(|r| r.remaining > 0 && r.method == *method && r.path == *path);
-                    let Some(idx) = rule_idx else {
-                        return Err(Finding {
-                            kind: FindingKind::Assertion,
-                            title: "http_unmatched".to_string(),
-                            message: format!("no http mock matched {method} {path}"),
-                            location: None,
-                        });
-                    };
 
-                    let mut rule = self.http_rules[idx].clone();
-                    if rule.remaining != u64::MAX {
-                        rule.remaining = rule.remaining.saturating_sub(1);
-                    }
-                    self.http_rules[idx] = rule.clone();
+                        if self.det && rule.delay_ms > 0 {
+                            self.clock.advance(Duration::from_millis(rule.delay_ms));
+                        } else if !self.det && rule.delay_ms > 0 {
+                            std::thread::sleep(Duration::from_millis(rule.delay_ms));
+                        }
 
-                    if self.det && rule.delay_ms > 0 {
-                        self.clock.advance(Duration::from_millis(rule.delay_ms));
-                    } else if !self.det && rule.delay_ms > 0 {
-                        std::thread::sleep(Duration::from_millis(rule.delay_ms));
+                        let resp_body = if let Some(j) = &rule.json {
+                            serde_json::to_string(j).map_err(|e| Finding {
+                                kind: FindingKind::Checker,
+                                title: "http_json_serialize".to_string(),
+                                message: e.to_string(),
+                                location: None,
+                            })?
+                        } else {
+                            rule.body.clone().unwrap_or_default()
+                        };
+                        (
+                            rule.status,
+                            rule.headers.clone(),
+                            resp_body,
+                            "scripted".to_string(),
+                        )
                     }
-
-                    let resp_body = if let Some(j) = &rule.json {
-                        serde_json::to_string(j).map_err(|e| Finding {
-                            kind: FindingKind::Checker,
-                            title: "http_json_serialize".to_string(),
-                            message: e.to_string(),
-                            location: None,
-                        })?
-                    } else {
-                        rule.body.clone().unwrap_or_default()
-                    };
-                    (
-                        rule.status,
-                        rule.headers.clone(),
-                        resp_body,
-                        "scripted".to_string(),
-                    )
                 };
 
                 self.events.push(TraceEvent {
@@ -3332,6 +3420,31 @@ impl<'a> ExecCtx<'a> {
                             remaining: 0,
                         })
                     }
+                    Some(Decision::ProcSpawnTimeout {
+                        cmd: replay_cmd,
+                        args: replay_args,
+                        ..
+                    }) => {
+                        if replay_cmd != *cmd || replay_args != call_args {
+                            return Err(Finding {
+                                kind: FindingKind::Checker,
+                                title: "replay_drift".to_string(),
+                                message: format!(
+                                    "replay proc timeout drift: expected {replay_cmd:?} {:?}, got {cmd:?} {:?}",
+                                    replay_args, call_args
+                                ),
+                                location: None,
+                            });
+                        }
+                        let _ =
+                            self.replay_take_if(|d| matches!(d, Decision::ProcSpawnTimeout { .. }));
+                        return Err(Finding {
+                            kind: FindingKind::Hang,
+                            title: "timeout".to_string(),
+                            message: format!("host proc timed out for {cmd:?} {:?}", call_args),
+                            location: self.current_finding_location(),
+                        });
+                    }
                     Some(_) | None => None,
                 };
 
@@ -3349,51 +3462,29 @@ impl<'a> ExecCtx<'a> {
                     self.proc_rules[idx] = rule.clone();
                     rule
                 } else if matches!(self.proc_backend, ProcBackend::Host) {
-                    let output = std::process::Command::new(cmd)
-                        .args(&call_args)
-                        .output()
-                        .map_err(|e| Finding {
+                    match dispatch_host_proc(cmd, &call_args, self.host_deadline).map_err(
+                        |message| Finding {
                             kind: FindingKind::Assertion,
                             title: "proc_spawn_host".to_string(),
-                            message: format!(
-                                "host proc spawn failed for {cmd:?} {:?}: {e}",
-                                call_args
-                            ),
+                            message,
                             location: None,
-                        })?;
-                    if output.stdout.len() > HOST_PROC_MAX_STDOUT_BYTES {
-                        return Err(Finding {
-                            kind: FindingKind::Assertion,
-                            title: "proc_spawn_host".to_string(),
-                            message: format!(
-                                "host proc stdout exceeded limit for {cmd:?} {:?}: {} bytes > {} bytes",
-                                call_args,
-                                output.stdout.len(),
-                                HOST_PROC_MAX_STDOUT_BYTES
-                            ),
-                            location: None,
-                        });
-                    }
-                    if output.stderr.len() > HOST_PROC_MAX_STDERR_BYTES {
-                        return Err(Finding {
-                            kind: FindingKind::Assertion,
-                            title: "proc_spawn_host".to_string(),
-                            message: format!(
-                                "host proc stderr exceeded limit for {cmd:?} {:?}: {} bytes > {} bytes",
-                                call_args,
-                                output.stderr.len(),
-                                HOST_PROC_MAX_STDERR_BYTES
-                            ),
-                            location: None,
-                        });
-                    }
-                    ProcRule {
-                        cmd: cmd.clone(),
-                        args: call_args.clone(),
-                        exit_code: output.status.code().unwrap_or(-1),
-                        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-                        remaining: 0,
+                        },
+                    )? {
+                        HostProcDispatch::Completed(rule) => rule,
+                        HostProcDispatch::TimedOut { stdout, stderr } => {
+                            self.decisions.push(Decision::ProcSpawnTimeout {
+                                cmd: cmd.clone(),
+                                args: call_args.clone(),
+                                stdout,
+                                stderr,
+                            });
+                            return Err(Finding {
+                                kind: FindingKind::Hang,
+                                title: "timeout".to_string(),
+                                message: format!("host proc timed out for {cmd:?} {:?}", call_args),
+                                location: self.current_finding_location(),
+                            });
+                        }
                     }
                 } else {
                     let step_index = self.current_step_index.unwrap_or_default();
@@ -4179,6 +4270,193 @@ struct HttpResponseData {
     body: String,
 }
 
+#[derive(Debug)]
+enum HostProcDispatch {
+    Completed(ProcRule),
+    TimedOut { stdout: String, stderr: String },
+}
+
+#[derive(Debug)]
+enum HostHttpDispatch {
+    Completed(HttpResponseData),
+    TimedOut,
+}
+
+#[derive(Debug)]
+enum StreamReadError {
+    Io(String),
+    LimitExceeded { observed: usize, limit: usize },
+}
+
+fn spawn_stream_reader<T>(
+    mut stream: T,
+    max_bytes: usize,
+) -> (
+    Arc<Mutex<Vec<u8>>>,
+    mpsc::Receiver<Result<(), StreamReadError>>,
+)
+where
+    T: Read + Send + 'static,
+{
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let writer = Arc::clone(&buffer);
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        let mut total = 0usize;
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => {
+                    let _ = tx.send(Ok(()));
+                    return;
+                }
+                Ok(n) => {
+                    total = total.saturating_add(n);
+                    if let Ok(mut guard) = writer.lock() {
+                        let remaining = max_bytes.saturating_sub(guard.len());
+                        guard.extend_from_slice(&chunk[..n.min(remaining)]);
+                    }
+                    if total > max_bytes {
+                        let _ = tx.send(Err(StreamReadError::LimitExceeded {
+                            observed: total,
+                            limit: max_bytes,
+                        }));
+                        return;
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(StreamReadError::Io(err.to_string())));
+                    return;
+                }
+            }
+        }
+    });
+    (buffer, rx)
+}
+
+fn snapshot_stream(buffer: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
+    buffer.lock().map(|guard| guard.clone()).unwrap_or_default()
+}
+
+fn wait_stream_reader(
+    rx: &mpsc::Receiver<Result<(), StreamReadError>>,
+    label: &str,
+    invocation: &str,
+) -> Result<(), String> {
+    match rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(StreamReadError::Io(err))) => Err(format!(
+            "host proc {label} read failed for {invocation}: {err}"
+        )),
+        Ok(Err(StreamReadError::LimitExceeded { observed, limit })) => Err(format!(
+            "host proc {label} exceeded limit for {invocation}: {observed} bytes > {limit} bytes"
+        )),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "host proc {label} reader did not flush after process exit for {invocation}"
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(format!(
+            "host proc {label} reader disconnected for {invocation}"
+        )),
+    }
+}
+
+fn poll_stream_reader(
+    rx: &mpsc::Receiver<Result<(), StreamReadError>>,
+    label: &str,
+    invocation: &str,
+) -> Result<bool, String> {
+    match rx.try_recv() {
+        Ok(Ok(())) => Ok(true),
+        Ok(Err(StreamReadError::Io(err))) => Err(format!(
+            "host proc {label} read failed for {invocation}: {err}"
+        )),
+        Ok(Err(StreamReadError::LimitExceeded { observed, limit })) => Err(format!(
+            "host proc {label} exceeded limit for {invocation}: {observed} bytes > {limit} bytes"
+        )),
+        Err(mpsc::TryRecvError::Empty) => Ok(false),
+        Err(mpsc::TryRecvError::Disconnected) => Err(format!(
+            "host proc {label} reader disconnected for {invocation}"
+        )),
+    }
+}
+
+fn dispatch_host_proc(
+    cmd: &str,
+    args: &[String],
+    deadline: Option<Instant>,
+) -> Result<HostProcDispatch, String> {
+    let invocation = if args.is_empty() {
+        format!("{cmd:?}")
+    } else {
+        format!("{cmd:?} {:?}", args)
+    };
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("host proc spawn failed for {cmd:?} {:?}: {e}", args))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("host proc stdout pipe missing for {invocation}"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("host proc stderr pipe missing for {invocation}"))?;
+    let (stdout_buf, stdout_rx) = spawn_stream_reader(stdout, HOST_PROC_MAX_STDOUT_BYTES);
+    let (stderr_buf, stderr_rx) = spawn_stream_reader(stderr, HOST_PROC_MAX_STDERR_BYTES);
+
+    loop {
+        if let Some(deadline) = deadline
+            && Instant::now() >= deadline
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = wait_stream_reader(&stdout_rx, "stdout", &invocation);
+            let _ = wait_stream_reader(&stderr_rx, "stderr", &invocation);
+            return Ok(HostProcDispatch::TimedOut {
+                stdout: String::from_utf8_lossy(&snapshot_stream(&stdout_buf)).to_string(),
+                stderr: String::from_utf8_lossy(&snapshot_stream(&stderr_buf)).to_string(),
+            });
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("host proc wait failed for {invocation}: {e}"))?
+        {
+            wait_stream_reader(&stdout_rx, "stdout", &invocation)?;
+            wait_stream_reader(&stderr_rx, "stderr", &invocation)?;
+            return Ok(HostProcDispatch::Completed(ProcRule {
+                cmd: cmd.to_string(),
+                args: args.to_vec(),
+                exit_code: status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&snapshot_stream(&stdout_buf)).to_string(),
+                stderr: String::from_utf8_lossy(&snapshot_stream(&stderr_buf)).to_string(),
+                remaining: 0,
+            }));
+        }
+
+        let stdout_done = poll_stream_reader(&stdout_rx, "stdout", &invocation)?;
+        let stderr_done = poll_stream_reader(&stderr_rx, "stderr", &invocation)?;
+        if stdout_done && stderr_done {
+            let status = child
+                .wait()
+                .map_err(|e| format!("host proc wait failed for {invocation}: {e}"))?;
+            return Ok(HostProcDispatch::Completed(ProcRule {
+                cmd: cmd.to_string(),
+                args: args.to_vec(),
+                exit_code: status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&snapshot_stream(&stdout_buf)).to_string(),
+                stderr: String::from_utf8_lossy(&snapshot_stream(&stderr_buf)).to_string(),
+                remaining: 0,
+            }));
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn canonical_headers(
     headers: Option<&BTreeMap<String, String>>,
 ) -> Result<BTreeMap<String, String>, Finding> {
@@ -4214,7 +4492,8 @@ fn dispatch_host_http(
     url: &str,
     headers: &BTreeMap<String, String>,
     body: Option<&str>,
-) -> Result<HttpResponseData, String> {
+    timeout: Option<Duration>,
+) -> Result<HostHttpDispatch, String> {
     let method = method.to_ascii_uppercase();
     if !matches!(
         method.as_str(),
@@ -4230,7 +4509,17 @@ fn dispatch_host_http(
             "invalid host http url {url:?}; expected http(s)://<host>[:port]/path"
         ));
     }
-    let mut req = ureq::request(&method, url);
+    if matches!(timeout, Some(limit) if limit.is_zero()) {
+        return Ok(HostHttpDispatch::TimedOut);
+    }
+    let mut agent = ureq::AgentBuilder::new();
+    if let Some(limit) = timeout {
+        agent = agent
+            .timeout_connect(limit)
+            .timeout_read(limit)
+            .timeout_write(limit);
+    }
+    let mut req = agent.build().request(&method, url);
     for (k, v) in headers {
         req = req.set(k, v);
     }
@@ -4243,9 +4532,11 @@ fn dispatch_host_http(
         Ok(resp) => resp,
         Err(ureq::Error::Status(_, resp)) => resp,
         Err(err) => {
-            return Err(format!(
-                "host http request failed for {method} {url}: {err}"
-            ));
+            let message = format!("host http request failed for {method} {url}: {err}");
+            if message.contains("timed out") || message.contains("timeout") {
+                return Ok(HostHttpDispatch::TimedOut);
+            }
+            return Err(message);
         }
     };
     let mut out_headers = BTreeMap::new();
@@ -4255,21 +4546,36 @@ fn dispatch_host_http(
         }
     }
     let status_code = response.status();
-    let body = response
-        .into_string()
-        .map_err(|e| format!("host http body read failed for {method} {url}: {e}"))?;
-    if body.len() > HOST_HTTP_MAX_BODY_BYTES {
-        return Err(format!(
-            "host http body exceeded limit for {method} {url}: {} bytes > {} bytes",
-            body.len(),
-            HOST_HTTP_MAX_BODY_BYTES
-        ));
+    let mut reader = response.into_reader();
+    let mut body_bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                body_bytes.extend_from_slice(&chunk[..n]);
+                if body_bytes.len() > HOST_HTTP_MAX_BODY_BYTES {
+                    return Err(format!(
+                        "host http body exceeded limit for {method} {url}: {} bytes > {} bytes",
+                        body_bytes.len(),
+                        HOST_HTTP_MAX_BODY_BYTES
+                    ));
+                }
+            }
+            Err(err) => {
+                let message = format!("host http body read failed for {method} {url}: {err}");
+                if message.contains("timed out") || message.contains("timeout") {
+                    return Ok(HostHttpDispatch::TimedOut);
+                }
+                return Err(message);
+            }
+        }
     }
-    Ok(HttpResponseData {
+    Ok(HostHttpDispatch::Completed(HttpResponseData {
         status: status_code,
         headers: out_headers,
-        body,
-    })
+        body: String::from_utf8_lossy(&body_bytes).to_string(),
+    }))
 }
 
 fn host_http_rule_path_supported(path: &str) -> bool {

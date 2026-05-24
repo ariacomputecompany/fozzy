@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 use crate::{FozzyError, FozzyResult, parse_duration};
 
@@ -391,14 +390,6 @@ pub struct Scenario {
 
 impl Scenario {
     pub fn load_file(path: &ScenarioPath) -> FozzyResult<ScenarioFile> {
-        static CACHE: OnceLock<Mutex<std::collections::BTreeMap<PathBuf, ScenarioFile>>> =
-            OnceLock::new();
-        let cache = CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
-        if let Ok(guard) = cache.lock()
-            && let Some(cached) = guard.get(path.as_path())
-        {
-            return Ok(cached.clone());
-        }
         let bytes = std::fs::read(path.as_path())?;
         let parsed: ScenarioFile = serde_json::from_slice(&bytes).map_err(|err| {
             FozzyError::Scenario(format!(
@@ -410,9 +401,6 @@ impl Scenario {
                 path.as_path().display()
             ))
         })?;
-        if let Ok(mut guard) = cache.lock() {
-            guard.insert(path.as_path().to_path_buf(), parsed.clone());
-        }
         Ok(parsed)
     }
 
@@ -573,5 +561,47 @@ impl ScenarioV1Distributed {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Scenario, ScenarioFile, ScenarioPath};
+    use std::path::PathBuf;
+
+    fn temp_scenario_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "fozzy-scenario-{name}-{}.fozzy.json",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn load_file_observes_updated_scenario_contents() {
+        let path = temp_scenario_path("reload");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"name":"first","steps":[{"type":"assert_ok","value":true}]}"#,
+        )
+        .expect("write initial scenario");
+
+        let scenario_path = ScenarioPath::new(path.clone());
+        let first = Scenario::load_file(&scenario_path).expect("load first scenario");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"name":"second","steps":[{"type":"assert_ok","value":true}]}"#,
+        )
+        .expect("rewrite scenario");
+        let second = Scenario::load_file(&scenario_path).expect("load rewritten scenario");
+
+        match (first, second) {
+            (ScenarioFile::Steps(first), ScenarioFile::Steps(second)) => {
+                assert_eq!(first.name, "first");
+                assert_eq!(second.name, "second");
+            }
+            other => panic!("expected steps scenarios, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(path);
     }
 }

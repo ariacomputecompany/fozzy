@@ -10,7 +10,6 @@ use uuid::Uuid;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -678,7 +677,15 @@ fn supported_fuzz_targets() -> Vec<String> {
 
 fn execute_scenario_target(_config: &Config, path: &Path, input: &[u8]) -> FozzyResult<FuzzExec> {
     let seed = seed_from_input(input);
-    let parsed = scenario_target_cache(path)?;
+    let scenario_path = ScenarioPath::new(path.to_path_buf());
+    let parsed = crate::Scenario::load_file(&scenario_path)?;
+    let parsed = match parsed {
+        ScenarioFile::Steps(s) => ScenarioTarget::Steps(s),
+        ScenarioFile::Distributed(d) => {
+            ScenarioTarget::Distributed(crate::distributed_to_explore(d, None)?)
+        }
+        ScenarioFile::Suites(_) => ScenarioTarget::Suites,
+    };
     let (status, findings) = match parsed {
         ScenarioTarget::Steps(scenario) => {
             crate::run_embedded_steps_for_fuzz(&scenario, path, seed, scenario_fuzz_memory())?
@@ -732,29 +739,6 @@ enum ScenarioTarget {
     Steps(crate::ScenarioV1Steps),
     Distributed(crate::ScenarioV1Explore),
     Suites,
-}
-
-fn scenario_target_cache(path: &Path) -> FozzyResult<ScenarioTarget> {
-    static CACHE: OnceLock<Mutex<BTreeMap<PathBuf, ScenarioTarget>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
-    if let Ok(guard) = cache.lock()
-        && let Some(found) = guard.get(path)
-    {
-        return Ok(found.clone());
-    }
-    let scenario_path = ScenarioPath::new(path.to_path_buf());
-    let parsed = crate::Scenario::load_file(&scenario_path)?;
-    let compiled = match parsed {
-        ScenarioFile::Steps(s) => ScenarioTarget::Steps(s),
-        ScenarioFile::Distributed(d) => {
-            ScenarioTarget::Distributed(crate::distributed_to_explore(d, None)?)
-        }
-        ScenarioFile::Suites(_) => ScenarioTarget::Suites,
-    };
-    if let Ok(mut guard) = cache.lock() {
-        guard.insert(path.to_path_buf(), compiled.clone());
-    }
-    Ok(compiled)
 }
 
 fn should_emit_heavy_artifacts(status: ExitStatus, explicit_request: bool) -> bool {

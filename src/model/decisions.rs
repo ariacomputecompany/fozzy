@@ -41,10 +41,20 @@ pub enum Decision {
         headers: std::collections::BTreeMap<String, String>,
         body: String,
     },
+    HttpRequestTimeout {
+        method: String,
+        path: String,
+    },
     ProcSpawn {
         cmd: String,
         args: Vec<String>,
         exit_code: i32,
+        stdout: String,
+        stderr: String,
+    },
+    ProcSpawnTimeout {
+        cmd: String,
+        args: Vec<String>,
         stdout: String,
         stderr: String,
     },

@@ -110,6 +110,81 @@ fn spawn_header_http_server() -> (String, mpsc::Sender<()>) {
     (format!("http://{addr}/headers"), stop_tx)
 }
 
+fn spawn_slow_http_server(delay: Duration) -> (String, mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind http listener");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let start = std::time::Instant::now();
+        loop {
+            if stop_rx.try_recv().is_ok() || start.elapsed() > Duration::from_secs(10) {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0u8; 1024];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    thread::sleep(delay);
+                    let response =
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                    let _ = std::io::Write::write_all(&mut stream, response);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    (format!("http://{addr}/slow"), stop_tx)
+}
+
+fn spawn_large_body_http_server(body_len: usize) -> (String, mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind http listener");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let start = std::time::Instant::now();
+        loop {
+            if stop_rx.try_recv().is_ok() || start.elapsed() > Duration::from_secs(10) {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0u8; 1024];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = std::io::Write::write_all(&mut stream, header.as_bytes());
+                    let chunk = vec![b'x'; 8192];
+                    let mut remaining = body_len;
+                    while remaining > 0 {
+                        let write_len = remaining.min(chunk.len());
+                        if std::io::Write::write_all(&mut stream, &chunk[..write_len]).is_err() {
+                            break;
+                        }
+                        remaining -= write_len;
+                    }
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    (format!("http://{addr}/large"), stop_tx)
+}
+
 fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
     let s = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(s.trim()).expect("stdout json")
@@ -899,6 +974,104 @@ fn replay_uses_recorded_proc_decisions_from_host_backend_trace() {
     assert_eq!(doc.get("status").and_then(|v| v.as_str()), Some("pass"));
 }
 
+#[cfg(unix)]
+#[test]
+fn host_proc_timeout_is_recorded_and_replayed_as_timeout() {
+    let ws = temp_workspace("host-proc-timeout");
+    let scenario = ws.join("host-proc-timeout.fozzy.json");
+    let trace = ws.join("host-proc-timeout.fozzy");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc-timeout",
+      "steps":[
+        {"type":"proc_spawn","cmd":"/bin/sh","args":["-c","sleep 2"]}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--timeout".into(),
+        "50ms".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(3),
+        "host proc timeout should exit 3, stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let run_doc = parse_json_stdout(&run);
+    assert_eq!(
+        run_doc.get("status").and_then(|v| v.as_str()),
+        Some("timeout")
+    );
+
+    let replay = run_cli(&[
+        "replay".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        replay.status.code(),
+        Some(3),
+        "replay should preserve proc timeout, stderr={}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replay_doc = parse_json_stdout(&replay);
+    assert_eq!(
+        replay_doc.get("status").and_then(|v| v.as_str()),
+        Some("timeout")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn host_proc_stdout_limit_is_enforced_during_streaming() {
+    let ws = temp_workspace("host-proc-limit");
+    let scenario = ws.join("host-proc-limit.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc-limit",
+      "steps":[
+        {"type":"proc_spawn","cmd":"/bin/sh","args":["-c","yes x | head -c 9000000"]}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "oversized host proc stdout should fail, stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let doc = parse_json_stdout(&run);
+    let findings = doc
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .expect("findings array");
+    assert!(findings.iter().any(|finding| {
+        finding.get("title").and_then(|v| v.as_str()) == Some("proc_spawn_host")
+            && finding
+                .get("message")
+                .and_then(|v| v.as_str())
+                .is_some_and(|msg| msg.contains("stdout exceeded limit"))
+    }));
+}
+
 #[test]
 fn exit_code_matrix_core_contract() {
     let ws = temp_workspace("exit-matrix");
@@ -1149,6 +1322,110 @@ fn host_http_backend_executes_and_replays_from_decisions() {
         "--json".into(),
     ]);
     assert_eq!(replay.status.code(), Some(0), "replay must pass");
+}
+
+#[test]
+fn host_http_timeout_is_recorded_and_replayed_as_timeout() {
+    let (url, stop_tx) = spawn_slow_http_server(Duration::from_millis(200));
+    let ws = temp_workspace("host-http-timeout");
+    let scenario = ws.join("host-http-timeout.fozzy.json");
+    let trace = ws.join("host-http-timeout.fozzy");
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-http-timeout",
+      "steps":[
+        {{"type":"http_request","method":"GET","path":"{url}","expect_status":200}}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let run = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--timeout".into(),
+        "50ms".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    let _ = stop_tx.send(());
+    assert_eq!(
+        run.status.code(),
+        Some(3),
+        "host http timeout should exit 3, stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let run_doc = parse_json_stdout(&run);
+    assert_eq!(
+        run_doc.get("status").and_then(|v| v.as_str()),
+        Some("timeout")
+    );
+
+    let replay = run_cli(&[
+        "replay".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        replay.status.code(),
+        Some(3),
+        "replay should preserve http timeout, stderr={}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replay_doc = parse_json_stdout(&replay);
+    assert_eq!(
+        replay_doc.get("status").and_then(|v| v.as_str()),
+        Some("timeout")
+    );
+}
+
+#[test]
+fn host_http_body_limit_is_enforced_during_streaming() {
+    let (url, stop_tx) = spawn_large_body_http_server(8 * 1024 * 1024 + 1024);
+    let ws = temp_workspace("host-http-limit");
+    let scenario = ws.join("host-http-limit.fozzy.json");
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-http-limit",
+      "steps":[
+        {{"type":"http_request","method":"GET","path":"{url}","expect_status":200}}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let run = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    let _ = stop_tx.send(());
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "oversized host http body should fail, stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let doc = parse_json_stdout(&run);
+    let findings = doc
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .expect("findings array");
+    assert!(findings.iter().any(|finding| {
+        let title = finding.get("title").and_then(|v| v.as_str());
+        let message = finding.get("message").and_then(|v| v.as_str());
+        title == Some("http_host_request")
+            && message.is_some_and(|msg| {
+                msg.contains("host http body exceeded limit")
+                    || msg.contains("host http body read failed")
+            })
+    }));
 }
 
 #[test]

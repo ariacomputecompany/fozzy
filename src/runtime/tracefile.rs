@@ -315,10 +315,12 @@ pub fn trace_replay_warnings(trace: &TraceFile) -> Vec<String> {
                 .and_then(|v| v.as_str())
                 .is_some_and(|backend| backend == "host")
     });
-    let has_proc_decisions = trace
-        .decisions
-        .iter()
-        .any(|d| matches!(d, Decision::ProcSpawn { .. }));
+    let has_proc_decisions = trace.decisions.iter().any(|d| {
+        matches!(
+            d,
+            Decision::ProcSpawn { .. } | Decision::ProcSpawnTimeout { .. }
+        )
+    });
     let used_host_http = trace.events.iter().any(|e| {
         e.name == "http_request"
             && e.fields
@@ -326,10 +328,12 @@ pub fn trace_replay_warnings(trace: &TraceFile) -> Vec<String> {
                 .and_then(|v| v.as_str())
                 .is_some_and(|backend| backend == "host")
     });
-    let has_http_decisions = trace
-        .decisions
-        .iter()
-        .any(|d| matches!(d, Decision::HttpRequest { .. }));
+    let has_http_decisions = trace.decisions.iter().any(|d| {
+        matches!(
+            d,
+            Decision::HttpRequest { .. } | Decision::HttpRequestTimeout { .. }
+        )
+    });
 
     let mut warnings = Vec::new();
     if used_host_fs && !has_fs_decisions {
