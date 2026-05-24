@@ -205,6 +205,7 @@ Structure:
   - ✅ Profile trace/timeline/profile builders are separated cleanly.
   - ✅ Profile loading/doctor/support helpers are separated cleanly.
   - ✅ Profile shared types and schema shapes are separated cleanly.
+  - ✅ Profile tests are separated cleanly from production command wiring.
   - ✅ Behavior stays stable under regression tests.
 
 ## Suggested Order
