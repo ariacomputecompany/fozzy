@@ -10,7 +10,7 @@ Structure:
 
 ### CLI And Artifact Correctness
 
-- [ ] Fix trace metadata drift so recorded traces always embed the real final `tracePath`.
+- ✅ Fix trace metadata drift so recorded traces always embed the real final `tracePath`.
   Why:
   Recorded traces can be written successfully while the summary inside the trace omits or misstates the final output path.
   Impact:
@@ -18,11 +18,11 @@ Structure:
   Evidence:
   [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:1008), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:1022), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:818), [src/runtime/tracefile.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/tracefile.rs:278)
   Done when:
-  - [ ] `run --record` writes a trace whose embedded summary path matches the actual file written.
-  - [ ] `test --record` does the same in both overwrite and append modes.
-  - [ ] Regression tests cover append-mode collision handling.
+  - ✅ `run --record` writes a trace whose embedded summary path matches the actual file written.
+  - ✅ `test --record` does the same in both overwrite and append modes.
+  - ✅ Regression tests cover append-mode collision handling.
 
-- [ ] Make `fozzy test` fail clearly when the caller explicitly supplies a nonexistent scenario path.
+- ✅ Make `fozzy test` fail clearly when the caller explicitly supplies a nonexistent scenario path.
   Why:
   Today a mixed invocation can pass if one input exists and another explicit file path is wrong.
   Impact:
@@ -30,11 +30,11 @@ Structure:
   Evidence:
   Discovery and empty-match handling live in [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:522), with file matching in [src/platform/fsutil.rs](/Users/deepsaint/Desktop/fozzy/src/platform/fsutil.rs:12).
   Done when:
-  - [ ] Explicit missing paths cause a hard failure with a clear error.
-  - [ ] Glob patterns still preserve normal glob semantics.
-  - [ ] Mixed literal-path and glob invocations are covered by tests.
+  - ✅ Explicit missing paths cause a hard failure with a clear error.
+  - ✅ Glob patterns still preserve normal glob semantics.
+  - ✅ Mixed literal-path and glob invocations are covered by tests.
 
-- [ ] Make `fozzy init` honor `--config <path>` instead of always writing `fozzy.toml`.
+- ✅ Make `fozzy init` honor `--config <path>` instead of always writing `fozzy.toml`.
   Why:
   The CLI exposes a custom config path but initialization still writes the default filename.
   Impact:
@@ -42,11 +42,11 @@ Structure:
   Evidence:
   [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:327), [src/main.rs](/Users/deepsaint/Desktop/fozzy/src/main.rs:29)
   Done when:
-  - [ ] Default init still creates `fozzy.toml`.
-  - [ ] `--config custom.toml init` writes `custom.toml`.
-  - [ ] Force/non-force behavior is tested for custom config paths.
+  - ✅ Default init still creates `fozzy.toml`.
+  - ✅ `--config custom.toml init` writes `custom.toml`.
+  - ✅ Force/non-force behavior is tested for custom config paths.
 
-- [ ] Stop default `fozzy test` runs from silently skipping distributed scenarios while still reporting overall success.
+- ✅ Stop default `fozzy test` runs from silently skipping distributed scenarios while still reporting overall success.
   Why:
   The default test discovery can find distributed scenarios, but the runner skips them and can still return `status=pass`.
   Impact:
@@ -54,13 +54,13 @@ Structure:
   Evidence:
   [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:523), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:580), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:721)
   Done when:
-  - [ ] Mixed regular/distributed discovery no longer produces a misleading false-green result.
-  - [ ] The final contract is explicit: fail, opt-in skip, or separate discovery domains.
-  - [ ] Docs and init scaffolding match the final behavior.
+  - ✅ Mixed regular/distributed discovery no longer produces a misleading false-green result.
+  - ✅ The final contract is explicit: fail, opt-in skip, or separate discovery domains.
+  - ✅ Docs and init scaffolding match the final behavior.
 
 ### Validation And Contract Drift
 
-- [ ] Make distributed-scenario validation consistent across `fozzy validate` and `fozzy explore`.
+- ✅ Make distributed-scenario validation consistent across `fozzy validate` and `fozzy explore`.
   Why:
   A distributed scenario can be rejected by validation and still execute successfully through explore.
   Impact:
@@ -68,11 +68,11 @@ Structure:
   Evidence:
   Validator in [src/model/scenario.rs](/Users/deepsaint/Desktop/fozzy/src/model/scenario.rs:502), validation call site in [src/main.rs](/Users/deepsaint/Desktop/fozzy/src/main.rs:1284), explore loading in [src/modes/explore.rs](/Users/deepsaint/Desktop/fozzy/src/modes/explore.rs:546)
   Done when:
-  - [ ] A scenario rejected by `validate` is also rejected by `explore`, unless an explicit permissive mode exists.
-  - [ ] Missing topology declarations are not silently synthesized during execution.
-  - [ ] Regression tests cover malformed distributed scenarios.
+  - ✅ A scenario rejected by `validate` is also rejected by `explore`, unless an explicit permissive mode exists.
+  - ✅ Missing topology declarations are not silently synthesized during execution.
+  - ✅ Regression tests cover malformed distributed scenarios.
 
-- [ ] Make scenario validation recurse into nested `assert_throws` and `assert_rejects` blocks.
+- ✅ Make scenario validation recurse into nested `assert_throws` and `assert_rejects` blocks.
   Why:
   Top-level validation does not currently validate the nested step programs inside these wrappers.
   Impact:
@@ -80,11 +80,11 @@ Structure:
   Evidence:
   Top-level validation in [src/model/scenario.rs](/Users/deepsaint/Desktop/fozzy/src/model/scenario.rs:445), nested execution in [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:3973)
   Done when:
-  - [ ] Nested invalid steps fail validation before runtime.
-  - [ ] The same validation rules apply at top level and in nested blocks.
-  - [ ] Tests cover nested invalid durations and invalid field combinations.
+  - ✅ Nested invalid steps fail validation before runtime.
+  - ✅ The same validation rules apply at top level and in nested blocks.
+  - ✅ Tests cover nested invalid durations and invalid field combinations.
 
-- [ ] Stop silently discarding source/scenario read failures in topology mapping.
+- ✅ Stop silently discarding source/scenario read failures in topology mapping.
   Why:
   `fozzy map` currently skips unreadable files and dropped scenarios without surfacing that the report is incomplete.
   Impact:
@@ -92,13 +92,13 @@ Structure:
   Evidence:
   [src/cmd/map_cmd.rs](/Users/deepsaint/Desktop/fozzy/src/cmd/map_cmd.rs:747), [src/cmd/map_cmd.rs](/Users/deepsaint/Desktop/fozzy/src/cmd/map_cmd.rs:753), [src/cmd/map_cmd.rs](/Users/deepsaint/Desktop/fozzy/src/cmd/map_cmd.rs:685)
   Done when:
-  - [ ] Unreadable source files are reported explicitly.
-  - [ ] Invalid or unreadable scenario files are reported explicitly.
-  - [ ] JSON output includes structured degraded-confidence metadata.
+  - ✅ Unreadable source files are reported explicitly.
+  - ✅ Invalid or unreadable scenario files are reported explicitly.
+  - ✅ JSON output includes structured degraded-confidence metadata.
 
 ### SDK And Local Developer Experience
 
-- [ ] Harden the TypeScript SDK `stream()` path so spawn failures become normal SDK errors.
+- ✅ Harden the TypeScript SDK `stream()` path so spawn failures become normal SDK errors.
   Why:
   `stream()` does not currently install an `error` handler on the child process.
   Impact:
@@ -106,11 +106,11 @@ Structure:
   Evidence:
   [sdk-ts/src/index.ts](/Users/deepsaint/Desktop/fozzy/sdk-ts/src/index.ts:292), reference behavior in [sdk-ts/src/index.ts](/Users/deepsaint/Desktop/fozzy/sdk-ts/src/index.ts:470)
   Done when:
-  - [ ] Missing binary errors are catchable.
-  - [ ] Permission-denied spawn errors are catchable.
-  - [ ] Normal streaming behavior still works.
+  - ✅ Missing binary errors are catchable.
+  - ✅ Permission-denied spawn errors are catchable.
+  - ✅ Normal streaming behavior still works.
 
-- [ ] Consolidate duplicated run/test summary finalization and artifact-writing logic.
+- ✅ Consolidate duplicated run/test summary finalization and artifact-writing logic.
   Why:
   Similar mechanics are implemented in multiple places with slightly different behavior.
   Impact:
@@ -118,20 +118,20 @@ Structure:
   Evidence:
   [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:522), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:809), [src/runtime/engine.rs](/Users/deepsaint/Desktop/fozzy/src/runtime/engine.rs:1008)
   Done when:
-  - [ ] Run/test/replay/shrink flows use the same summary and artifact conventions where applicable.
-  - [ ] Collision-policy handling is consistent.
-  - [ ] Regression coverage exists for the shared logic.
+  - ✅ Run/test/replay/shrink flows use the same summary and artifact conventions where applicable.
+  - ✅ Collision-policy handling is consistent.
+  - ✅ Regression coverage exists for the shared logic.
 
-- [ ] Clean up checked-in runtime artifacts and profiling outputs at repo root.
+- ✅ Clean up checked-in runtime artifacts and profiling outputs at repo root.
   Why:
   The repo currently contains many trace/profile outputs alongside source files.
   Impact:
   This adds noise to audits and reviews and can interfere with tooling signal quality.
   Done when:
-  - [ ] Incidental runtime outputs are ignored or moved out of the repo root.
-  - [ ] Intentional fixtures remain documented and clearly separated.
+  - ✅ Incidental runtime outputs are ignored or moved out of the repo root.
+  - ✅ Intentional fixtures remain documented and clearly separated.
 
-- [ ] Clarify or remove legacy config-loading pathways that no longer match CLI behavior.
+- ✅ Clarify or remove legacy config-loading pathways that no longer match CLI behavior.
   Why:
   The CLI now exits on config parse/read errors, but a fallback helper still exists that warns and silently defaults.
   Impact:
@@ -139,8 +139,8 @@ Structure:
   Evidence:
   [src/platform/config.rs](/Users/deepsaint/Desktop/fozzy/src/platform/config.rs:122), [src/main.rs](/Users/deepsaint/Desktop/fozzy/src/main.rs:674)
   Done when:
-  - [ ] The intended config-loading contract is explicit.
-  - [ ] Library and CLI behavior are documented or unified.
+  - ✅ The intended config-loading contract is explicit.
+  - ✅ Library and CLI behavior are documented or unified.
 
 ## Deeper Architectural Issues Second
 
@@ -205,17 +205,17 @@ Structure:
 
 ### First Pass
 
-- [ ] Trace metadata consistency
-- [ ] Explicit missing-path failures in `fozzy test`
-- [ ] `init --config` path handling
-- [ ] False-green distributed-scenario handling in `fozzy test`
-- [ ] Distributed validation parity
-- [ ] Recursive nested-step validation
-- [ ] Topology mapper degraded-read reporting
-- [ ] SDK `stream()` error handling
-- [ ] Shared summary/artifact finalization cleanup
-- [ ] Repo artifact cleanup
-- [ ] Config-loading contract cleanup
+- ✅ Trace metadata consistency
+- ✅ Explicit missing-path failures in `fozzy test`
+- ✅ `init --config` path handling
+- ✅ False-green distributed-scenario handling in `fozzy test`
+- ✅ Distributed validation parity
+- ✅ Recursive nested-step validation
+- ✅ Topology mapper degraded-read reporting
+- ✅ SDK `stream()` error handling
+- ✅ Shared summary/artifact finalization cleanup
+- ✅ Repo artifact cleanup
+- ✅ Config-loading contract cleanup
 
 ### Second Pass
 
@@ -226,8 +226,8 @@ Structure:
 
 ## Validation Expectations
 
-- [ ] New behavior is covered by focused regression tests.
-- [ ] Runtime-impacting fixes are validated with Fozzy-first flows:
+- ✅ New behavior is covered by focused regression tests.
+- ✅ Runtime-impacting fixes are validated with Fozzy-first flows:
   - `fozzy doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json`
   - `fozzy test --det --strict <scenarios...> --json`
   - `fozzy run ... --det --record <trace.fozzy> --json`
