@@ -210,6 +210,7 @@ Structure:
   - ✅ CLI bootstrap/strict/error helpers are separated cleanly.
   - ✅ Runtime init/scaffolding helpers are separated cleanly.
   - ✅ Runtime doctor/preflight helpers are separated cleanly.
+  - ✅ Runtime test aggregation and trace-writing helpers are separated cleanly.
   - ✅ Behavior stays stable under regression tests.
 
 ## Suggested Order
