@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::{ExitStatus, RunIdentity, RunMode, RunSummary, ScenarioV1Steps, Step, TraceEvent};
 use std::path::PathBuf;

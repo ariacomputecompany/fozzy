@@ -206,6 +206,7 @@ Structure:
   - ✅ Profile loading/doctor/support helpers are separated cleanly.
   - ✅ Profile shared types and schema shapes are separated cleanly.
   - ✅ Profile tests are separated cleanly from production command wiring.
+  - ✅ Full/gate CLI workflows are separated cleanly.
   - ✅ Behavior stays stable under regression tests.
 
 ## Suggested Order
