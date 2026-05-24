@@ -12,6 +12,8 @@ mod config;
 mod corpus;
 #[path = "model/decisions.rs"]
 mod decisions;
+#[path = "runtime/doctor.rs"]
+mod doctor;
 #[path = "platform/duration.rs"]
 mod duration;
 #[path = "runtime/engine.rs"]
@@ -30,6 +32,8 @@ mod fsutil;
 mod fuzz;
 #[path = "runtime/host.rs"]
 mod host;
+#[path = "runtime/init_scaffold.rs"]
+mod init_scaffold;
 #[path = "cmd/map_cmd.rs"]
 mod map_cmd;
 #[path = "model/memory.rs"]
@@ -63,6 +67,7 @@ pub use clock::*;
 pub use config::*;
 pub use corpus::*;
 pub use decisions::*;
+pub use doctor::*;
 pub use duration::*;
 pub use engine::*;
 pub use envinfo::*;
@@ -70,6 +75,7 @@ pub use error::*;
 pub use explore::*;
 pub use fsutil::*;
 pub use fuzz::*;
+pub use init_scaffold::*;
 pub use map_cmd::*;
 pub use memory::*;
 pub use memory_cmd::*;
