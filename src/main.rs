@@ -2,6 +2,7 @@
 
 mod cli_dispatch;
 mod cli_logger;
+mod cli_runtime;
 mod cli_workflows;
 
 use clap::{Parser, Subcommand, error::ErrorKind};
@@ -12,6 +13,11 @@ use std::process::{Command as ProcessCommand, ExitCode};
 use walkdir::WalkDir;
 
 use cli_logger::CliLogger;
+use cli_runtime::{
+    args_request_json, enforce_strict_run, enforce_strict_summary, exit_code_for_status,
+    init_tracing, normalize_global_args, print_clap_error_and_exit, print_error_and_exit,
+    resolve_memory_options, strict_enabled,
+};
 use fozzy::{
     ArtifactCommand, CiOptions, Config, CorpusCommand, ExitStatus, ExploreOptions, FlakeBudget,
     FozzyDuration, FsBackend, FuzzMode, FuzzOptions, FuzzTarget, HttpBackend, InitTemplate,
@@ -678,237 +684,12 @@ fn main() -> ExitCode {
         Err(err) => return print_error_and_exit(&logger, anyhow::anyhow!("{err}")),
     };
 
-    match run_command(&cli, &config, &logger) {
+    match cli_dispatch::run_command(&cli, &config, &logger) {
         Ok(code) => code,
         Err(err) => print_error_and_exit(&logger, err),
     }
 }
 
-fn args_request_json(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--json" || a == "--json=true")
-}
-
-fn normalize_global_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
-    let all: Vec<String> = args.into_iter().collect();
-    if all.is_empty() {
-        return all;
-    }
-
-    let mut globals = Vec::new();
-    let mut rest = Vec::new();
-
-    let mut i = 1usize;
-    while i < all.len() {
-        let arg = &all[i];
-        match arg.as_str() {
-            "--json" | "--no-color" | "--strict" | "--unsafe" => {
-                globals.push(arg.clone());
-                i += 1;
-            }
-            "--config" | "--cwd" | "--log" | "--proc-backend" | "--fs-backend"
-            | "--http-backend" => {
-                globals.push(arg.clone());
-                if i + 1 < all.len() {
-                    globals.push(all[i + 1].clone());
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            _ if arg.starts_with("--config=")
-                || arg.starts_with("--cwd=")
-                || arg.starts_with("--log=")
-                || arg.starts_with("--proc-backend=")
-                || arg.starts_with("--fs-backend=")
-                || arg.starts_with("--http-backend=")
-                || arg.starts_with("--strict=")
-                || arg.starts_with("--unsafe=") =>
-            {
-                globals.push(arg.clone());
-                i += 1;
-            }
-            _ => {
-                rest.push(arg.clone());
-                i += 1;
-            }
-        }
-    }
-
-    let mut normalized = Vec::with_capacity(all.len());
-    normalized.push(all[0].clone());
-    normalized.extend(globals);
-    normalized.extend(rest);
-    normalized
-}
-
-fn init_tracing(level: &str) -> anyhow::Result<()> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .init();
-    Ok(())
-}
-
-fn run_command(cli: &Cli, config: &Config, logger: &CliLogger) -> anyhow::Result<ExitCode> {
-    cli_dispatch::run_command(cli, config, logger)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_gate_command(
-    config: &Config,
-    profile: GateProfile,
-    scenario_root: &Path,
-    scopes: &[String],
-    seed: Option<u64>,
-    doctor_runs: u32,
-    strict: bool,
-) -> anyhow::Result<GateReport> {
-    cli_workflows::run_gate_command(
-        config,
-        profile,
-        scenario_root,
-        scopes,
-        seed,
-        doctor_runs,
-        strict,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_full_command(
-    config: &Config,
-    scenario_root: &Path,
-    seed: Option<u64>,
-    doctor_runs: u32,
-    fuzz_time: std::time::Duration,
-    explore_steps: u64,
-    explore_nodes: usize,
-    strict: bool,
-    unsafe_mode: bool,
-    allow_expected_failures: bool,
-    scenario_filter: Option<&str>,
-    skip_steps: &[String],
-    required_steps: &[String],
-    require_topology_coverage: Option<&Path>,
-    topology_min_risk: u8,
-    topology_profile: TopologyProfile,
-    topology_shrink_policy: ShrinkCoveragePolicy,
-) -> anyhow::Result<FullReport> {
-    cli_workflows::run_full_command(
-        config,
-        scenario_root,
-        seed,
-        doctor_runs,
-        fuzz_time,
-        explore_steps,
-        explore_nodes,
-        strict,
-        unsafe_mode,
-        allow_expected_failures,
-        scenario_filter,
-        skip_steps,
-        required_steps,
-        require_topology_coverage,
-        topology_min_risk,
-        topology_profile,
-        topology_shrink_policy,
-    )
-}
-
 fn selected_init_test_types(with: &[InitTestType], all_tests: bool) -> Vec<InitTestType> {
     cli_workflows::selected_init_test_types(with, all_tests)
-}
-
-fn enforce_strict_run(cli: &Cli, summary: &RunSummary) -> anyhow::Result<()> {
-    enforce_strict_summary(strict_enabled(cli), summary)
-}
-
-fn enforce_strict_summary(strict: bool, summary: &RunSummary) -> anyhow::Result<()> {
-    if !strict {
-        return Ok(());
-    }
-
-    let warnings: Vec<&str> = summary
-        .findings
-        .iter()
-        .filter(|f| {
-            f.kind == fozzy::FindingKind::Checker && summary.status == fozzy::ExitStatus::Pass
-        })
-        .map(|f| f.message.as_str())
-        .collect();
-    if warnings.is_empty() {
-        return Ok(());
-    }
-
-    Err(anyhow::anyhow!(
-        "strict mode: run contains warning findings: {}",
-        warnings.join("; ")
-    ))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn resolve_memory_options(
-    config: &Config,
-    mem_track: bool,
-    mem_artifacts: bool,
-    mem_limit_mb: Option<u64>,
-    mem_fail_after: Option<u64>,
-    mem_fragmentation_seed: Option<u64>,
-    mem_pressure_wave: Option<String>,
-    fail_on_leak: bool,
-    leak_budget: Option<u64>,
-) -> MemoryOptions {
-    MemoryOptions {
-        track: mem_track || config.mem_track,
-        limit_mb: mem_limit_mb.or(config.mem_limit_mb),
-        fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
-        fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
-        pressure_wave: mem_pressure_wave.or_else(|| config.mem_pressure_wave.clone()),
-        fail_on_leak: fail_on_leak || config.fail_on_leak,
-        leak_budget_bytes: leak_budget.or(config.leak_budget),
-        artifacts: mem_artifacts || config.mem_artifacts,
-    }
-}
-
-fn strict_enabled(cli: &Cli) -> bool {
-    cli.strict && !cli.unsafe_mode
-}
-
-fn print_error_and_exit(logger: &CliLogger, err: anyhow::Error) -> ExitCode {
-    let msg = format!("{err:#}");
-    logger.print_error(&msg);
-    ExitCode::from(2)
-}
-
-fn print_clap_error_and_exit(json: bool, err: clap::Error) -> ExitCode {
-    let kind = err.kind();
-    let code = err.exit_code();
-    if matches!(kind, ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
-        let _ = err.print();
-        return ExitCode::from(code as u8);
-    }
-    if json {
-        let out = serde_json::json!({
-            "code": "error",
-            "message": err.to_string().trim_end(),
-        });
-        match serde_json::to_string_pretty(&out) {
-            Ok(s) => println!("{s}"),
-            Err(_) => println!("{out}"),
-        }
-    } else {
-        let _ = err.print();
-    }
-    ExitCode::from(code as u8)
-}
-
-fn exit_code_for_status(status: ExitStatus) -> ExitCode {
-    match status {
-        ExitStatus::Pass => ExitCode::SUCCESS,
-        ExitStatus::Fail => ExitCode::from(1),
-        ExitStatus::Timeout => ExitCode::from(3),
-        ExitStatus::Crash => ExitCode::from(4),
-        ExitStatus::Error => ExitCode::from(2),
-    }
 }

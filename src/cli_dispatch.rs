@@ -460,7 +460,7 @@ pub(super) fn run_command(
             seed,
             doctor_runs,
         } => {
-            let report = run_gate_command(
+            let report = cli_workflows::run_gate_command(
                 config,
                 *profile,
                 scenario_root,
@@ -574,7 +574,7 @@ pub(super) fn run_command(
             topology_profile,
             topology_shrink_policy,
         } => {
-            let report = run_full_command(
+            let report = cli_workflows::run_full_command(
                 config,
                 scenario_root,
                 *seed,
