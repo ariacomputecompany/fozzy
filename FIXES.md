@@ -211,6 +211,8 @@ Structure:
   - ✅ Runtime init/scaffolding helpers are separated cleanly.
   - ✅ Runtime doctor/preflight helpers are separated cleanly.
   - ✅ Runtime test aggregation and trace-writing helpers are separated cleanly.
+  - ✅ Runtime run/replay/shrink orchestration helpers are separated cleanly.
+  - ✅ Runtime engine is now focused on execution core responsibilities.
   - ✅ Behavior stays stable under regression tests.
 
 ## Suggested Order

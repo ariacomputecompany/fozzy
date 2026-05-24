@@ -48,6 +48,8 @@ mod profile_cmd;
 mod reporting;
 #[path = "cmd/reporting_cmd.rs"]
 mod reporting_cmd;
+#[path = "runtime/run_flow.rs"]
+mod run_flow;
 #[path = "model/scenario.rs"]
 mod scenario;
 #[path = "runtime/scheduler.rs"]
@@ -85,6 +87,7 @@ pub use memorycap::*;
 pub use profile_cmd::*;
 pub use reporting::*;
 pub use reporting_cmd::*;
+pub use run_flow::*;
 pub use scenario::*;
 pub use scheduler::*;
 pub use schema::*;
