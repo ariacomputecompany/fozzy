@@ -121,6 +121,7 @@ Structure:
   - ✅ Run/test/replay/shrink flows use the same summary and artifact conventions where applicable.
   - ✅ Collision-policy handling is consistent.
   - ✅ Fresh recorded trace paths normalize consistently across `trace verify`, `replay`, and `ci`.
+  - ✅ Direct trace selectors normalize consistently across artifacts/report/memory/profile follow-up commands.
   - ✅ Regression coverage exists for the shared logic.
 
 - ✅ Clean up checked-in runtime artifacts and profiling outputs at repo root.

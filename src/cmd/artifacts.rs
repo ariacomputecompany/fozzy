@@ -173,14 +173,8 @@ pub fn artifacts_command(
 }
 
 fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>> {
-    let run_path = PathBuf::from(run);
-    if run_path.exists()
-        && run_path.is_file()
-        && run_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"))
-    {
+    let run_path = PathBuf::from(crate::normalize_run_or_trace_selector(run));
+    if run_path.exists() && run_path.is_file() && crate::is_trace_path(&run_path) {
         let mut out = Vec::new();
         push_if_exists(&mut out, ArtifactKind::Trace, run_path.clone())?;
         if let Some(parent) = run_path.parent() {
@@ -736,7 +730,7 @@ pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<P
     // `run` can be:
     // - a run id (directory `.fozzy/runs/<runId>`)
     // - a trace path (`*.fozzy`) that either is `.../trace.fozzy` or points to a trace file.
-    let path = PathBuf::from(run);
+    let path = PathBuf::from(crate::normalize_run_or_trace_selector(run));
     if path.exists() {
         if path.is_dir() {
             return Ok(path);
@@ -1119,12 +1113,8 @@ fn validate_manifest_integrity(files: &[PathBuf], run: &str) -> FozzyResult<()> 
 }
 
 fn is_direct_trace_input(run: &str) -> bool {
-    let p = PathBuf::from(run);
-    p.exists()
-        && p.is_file()
-        && p.extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"))
+    let p = PathBuf::from(crate::normalize_run_or_trace_selector(run));
+    p.exists() && p.is_file() && crate::is_trace_path(&p)
 }
 
 fn validate_output_file_path_secure(out_file: &Path) -> FozzyResult<()> {

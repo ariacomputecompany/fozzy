@@ -2255,6 +2255,120 @@ fn trace_followup_commands_accept_bare_and_dot_relative_paths() {
             "ci should pass for {trace_arg}: {}",
             String::from_utf8_lossy(&ci.stderr)
         );
+
+        let artifacts = run_cli_in(
+            &ws,
+            &[
+                "artifacts".into(),
+                "ls".into(),
+                trace_arg.into(),
+                "--json".into(),
+            ],
+        );
+        assert_eq!(
+            artifacts.status.code(),
+            Some(0),
+            "artifacts ls should pass for {trace_arg}: {}",
+            String::from_utf8_lossy(&artifacts.stderr)
+        );
+        let artifacts_doc = parse_json_stdout(&artifacts);
+        let listed_path = artifacts_doc
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .and_then(|v| v.first())
+            .and_then(|v| v.get("path"))
+            .and_then(|v| v.as_str())
+            .expect("listed trace path");
+        assert_eq!(
+            std::fs::canonicalize(listed_path).expect("canonicalize listed path"),
+            std::fs::canonicalize(ws.join("artifacts/repro.trace.fozzy"))
+                .expect("canonicalize expected trace"),
+            "artifacts ls should normalize direct trace path for {trace_arg}"
+        );
+
+        let report = run_cli_in(
+            &ws,
+            &[
+                "report".into(),
+                "show".into(),
+                trace_arg.into(),
+                "--format".into(),
+                "json".into(),
+                "--json".into(),
+            ],
+        );
+        assert_eq!(
+            report.status.code(),
+            Some(0),
+            "report show should pass for {trace_arg}: {}",
+            String::from_utf8_lossy(&report.stderr)
+        );
+        let report_doc = parse_json_stdout(&report);
+        assert_eq!(
+            report_doc
+                .get("profileDiagnosis")
+                .and_then(|v| v.get("run"))
+                .and_then(|v| v.as_str())
+                .expect("diagnosis run"),
+            std::fs::canonicalize(ws.join("artifacts/repro.trace.fozzy"))
+                .expect("canonicalize expected trace")
+                .to_string_lossy(),
+            "report show should normalize embedded profile selector for {trace_arg}"
+        );
+
+        let memory = run_cli_in(
+            &ws,
+            &[
+                "memory".into(),
+                "top".into(),
+                trace_arg.into(),
+                "--json".into(),
+            ],
+        );
+        assert_eq!(
+            memory.status.code(),
+            Some(0),
+            "memory top should pass for {trace_arg}: {}",
+            String::from_utf8_lossy(&memory.stderr)
+        );
+        let memory_doc = parse_json_stdout(&memory);
+        assert_eq!(
+            memory_doc
+                .get("run")
+                .and_then(|v| v.as_str())
+                .expect("memory run"),
+            std::fs::canonicalize(ws.join("artifacts/repro.trace.fozzy"))
+                .expect("canonicalize expected trace")
+                .to_string_lossy(),
+            "memory top should normalize run selector for {trace_arg}"
+        );
+
+        let profile = run_cli_in(
+            &ws,
+            &[
+                "profile".into(),
+                "doctor".into(),
+                trace_arg.into(),
+                "--json".into(),
+            ],
+        );
+        assert_eq!(
+            profile.status.code(),
+            Some(0),
+            "profile doctor should pass for {trace_arg}: {}",
+            String::from_utf8_lossy(&profile.stderr)
+        );
+        let profile_doc = parse_json_stdout(&profile);
+        assert_eq!(
+            profile_doc
+                .get("run")
+                .and_then(|v| v.as_str())
+                .expect("profile doctor run"),
+            std::fs::canonicalize(ws.join("artifacts/repro.trace.fozzy"))
+                .expect("canonicalize expected trace")
+                .to_string_lossy(),
+            "profile doctor should normalize run selector for {trace_arg}"
+        );
     }
 }
 

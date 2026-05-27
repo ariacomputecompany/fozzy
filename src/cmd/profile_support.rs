@@ -266,6 +266,7 @@ pub(super) fn profile_doctor(
     run: &str,
     deep: bool,
 ) -> FozzyResult<serde_json::Value> {
+    let run_label = crate::normalize_run_or_trace_selector(run);
     let mut checks = Vec::<serde_json::Value>::new();
     let mut issues = Vec::<String>::new();
     checks.push(serde_json::json!({
@@ -306,7 +307,7 @@ pub(super) fn profile_doctor(
             }));
             return Ok(serde_json::json!({
                 "schemaVersion": "fozzy.profile_doctor.v1",
-                "run": run,
+                "run": run_label,
                 "ok": false,
                 "checks": checks,
                 "issues": issues,
@@ -481,7 +482,7 @@ pub(super) fn profile_doctor(
         .all(|c| c.get("ok").and_then(|v| v.as_bool()).unwrap_or(false));
     Ok(serde_json::json!({
         "schemaVersion": "fozzy.profile_doctor.v1",
-        "run": run,
+        "run": run_label,
         "ok": ok,
         "checks": checks,
         "issues": issues,
@@ -505,14 +506,8 @@ pub(super) fn resolve_profile_artifacts(
     config: &Config,
     selector: &str,
 ) -> FozzyResult<(PathBuf, Option<PathBuf>)> {
-    let input = PathBuf::from(selector);
-    if input.exists()
-        && input.is_file()
-        && input
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("fozzy"))
-    {
+    let input = PathBuf::from(crate::normalize_run_or_trace_selector(selector));
+    if input.exists() && input.is_file() && crate::is_trace_path(&input) {
         let canonical = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
         let key = blake3::hash(canonical.to_string_lossy().as_bytes())
             .to_hex()

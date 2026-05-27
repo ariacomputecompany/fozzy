@@ -41,6 +41,21 @@ pub fn normalize_trace_path(path: &Path) -> PathBuf {
     normalize_lexical_path(&absolute)
 }
 
+pub fn is_trace_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"))
+}
+
+pub fn normalize_run_or_trace_selector(selector: &str) -> String {
+    let path = PathBuf::from(selector);
+    if is_trace_path(&path) {
+        normalize_trace_path(&path).to_string_lossy().to_string()
+    } else {
+        selector.to_string()
+    }
+}
+
 fn normalize_lexical_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {

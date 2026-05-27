@@ -138,6 +138,7 @@ pub(super) fn dispatch_profile_command(
             out,
             format,
         } => {
+            let run_label = crate::normalize_run_or_trace_selector(run);
             let use_heap = *heap || !*cpu;
             let bundle = match load_profile_bundle(
                 config,
@@ -178,7 +179,7 @@ pub(super) fn dispatch_profile_command(
                 ProfileFlameFormat::Folded => folded_to_text(&folded),
                 ProfileFlameFormat::Svg => folded_to_svg(&folded),
                 ProfileFlameFormat::Speedscope => {
-                    serde_json::to_string_pretty(&folded_to_speedscope(run, &folded))?
+                    serde_json::to_string_pretty(&folded_to_speedscope(&run_label, &folded))?
                 }
             };
             if let Some(path) = out {
@@ -186,7 +187,7 @@ pub(super) fn dispatch_profile_command(
             }
             Ok(serde_json::json!({
                 "schemaVersion": "fozzy.profile_flame.v1",
-                "run": run,
+                "run": run_label,
                 "domain": domain,
                 "empty": folded.is_empty(),
                 "reason": if folded.is_empty() { Some(empty_reason) } else { None::<&str> },
@@ -196,6 +197,7 @@ pub(super) fn dispatch_profile_command(
             }))
         }
         ProfileCommand::Timeline { run, out, format } => {
+            let run_label = crate::normalize_run_or_trace_selector(run);
             let bundle = match load_profile_bundle(
                 config,
                 run,
@@ -211,7 +213,7 @@ pub(super) fn dispatch_profile_command(
                 ProfileTimelineFormat::Json => {
                     let payload = serde_json::json!({
                         "schemaVersion": "fozzy.profile_timeline.v1",
-                        "run": run,
+                        "run": run_label,
                         "format": "json",
                         "timeDomains": {
                             "virtualTime": "deterministic, replay-critical",
@@ -231,7 +233,7 @@ pub(super) fn dispatch_profile_command(
                     }
                     Ok(serde_json::json!({
                         "schemaVersion": "fozzy.profile_timeline.v1",
-                        "run": run,
+                        "run": run_label,
                         "format": "html",
                         "timeDomains": {
                             "virtualTime": "deterministic, replay-critical",
@@ -335,6 +337,7 @@ pub(super) fn dispatch_profile_command(
             Ok(serde_json::to_value(explain)?)
         }
         ProfileCommand::Export { run, format, out } => {
+            let run_label = crate::normalize_run_or_trace_selector(run);
             let bundle = match load_profile_bundle(
                 config,
                 run,
@@ -371,7 +374,7 @@ pub(super) fn dispatch_profile_command(
             };
             let value = match format {
                 ProfileExportFormat::Speedscope => serde_json::to_value(folded_to_speedscope(
-                    run,
+                    &run_label,
                     &bundle
                         .cpu
                         .as_ref()
@@ -380,14 +383,14 @@ pub(super) fn dispatch_profile_command(
                 ))?,
                 ProfileExportFormat::Pprof => serde_json::json!({
                     "schemaVersion": "fozzy.profile_pprof.v1",
-                    "run": run,
+                    "run": run_label,
                     "sampleType": "cpu",
                     "samples": bundle.cpu.as_ref().expect("cpu profile required").samples,
                     "symbols": bundle.symbols.as_ref().expect("symbols required"),
                 }),
                 ProfileExportFormat::Otlp => serde_json::json!({
                     "schemaVersion": "fozzy.profile_otlp.v1",
-                    "run": run,
+                    "run": run_label,
                     "resource": {
                         "service.name": "fozzy",
                         "run.id": bundle.metrics.run_id,
@@ -399,7 +402,7 @@ pub(super) fn dispatch_profile_command(
             write_json(out, &value)?;
             Ok(serde_json::json!({
                 "schemaVersion": "fozzy.profile_export_result.v1",
-                "run": run,
+                "run": run_label,
                 "format": format,
                 "out": out,
                 "warnings": warnings,
@@ -412,6 +415,7 @@ pub(super) fn dispatch_profile_command(
             budget,
             minimize,
         } => {
+            let run_label = crate::normalize_run_or_trace_selector(run);
             let (artifacts_dir, trace_path) = match resolve_profile_trace(config, run) {
                 Ok(v) => v,
                 Err(err) => return profile_contract_or_error(strict, "shrink", run, err),
@@ -468,7 +472,7 @@ pub(super) fn dispatch_profile_command(
             Ok(serde_json::json!({
                 "schemaVersion": "fozzy.profile_shrink.v1",
                 "status": status,
-                "run": run,
+                "run": run_label,
                 "trace": trace_path,
                 "outTrace": shrunk.out_trace_path,
                 "metric": metric,

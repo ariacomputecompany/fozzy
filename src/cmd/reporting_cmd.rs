@@ -101,10 +101,11 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
 
 fn report_doc_with_profile(config: &Config, run: &str, summary: &RunSummary) -> serde_json::Value {
     let mut value = serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}));
+    let run = crate::normalize_run_or_trace_selector(run);
     let explain = crate::profile_command(
         config,
         &ProfileCommand::Explain {
-            run: run.to_string(),
+            run: run.clone(),
             diff_with: None,
         },
         false,

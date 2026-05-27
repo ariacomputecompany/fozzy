@@ -81,9 +81,10 @@ struct MemoryBundle {
 pub fn memory_command(config: &Config, command: &MemoryCommand) -> FozzyResult<serde_json::Value> {
     match command {
         MemoryCommand::Graph { run, out } => {
+            let run_label = crate::normalize_run_or_trace_selector(run);
             let bundle = load_memory_bundle(config, run)?;
             let payload = MemoryGraphOutput {
-                run: run.clone(),
+                run: run_label,
                 graph: bundle.graph,
             };
             if let Some(out_path) = out {
@@ -92,11 +93,13 @@ pub fn memory_command(config: &Config, command: &MemoryCommand) -> FozzyResult<s
             Ok(serde_json::to_value(payload)?)
         }
         MemoryCommand::Diff { left, right } => {
+            let left_label = crate::normalize_run_or_trace_selector(left);
+            let right_label = crate::normalize_run_or_trace_selector(right);
             let l = load_memory_bundle(config, left)?;
             let r = load_memory_bundle(config, right)?;
             let out = MemoryDiff {
-                left: left.clone(),
-                right: right.clone(),
+                left: left_label,
+                right: right_label,
                 left_leaked_bytes: l.summary.leaked_bytes,
                 right_leaked_bytes: r.summary.leaked_bytes,
                 left_leaked_allocs: l.summary.leaked_allocs,
@@ -111,6 +114,7 @@ pub fn memory_command(config: &Config, command: &MemoryCommand) -> FozzyResult<s
             Ok(serde_json::to_value(out)?)
         }
         MemoryCommand::Top { run, limit } => {
+            let run_label = crate::normalize_run_or_trace_selector(run);
             let mut bundle = load_memory_bundle(config, run)?;
             bundle.leaks.sort_by(|a, b| {
                 b.bytes
@@ -118,7 +122,7 @@ pub fn memory_command(config: &Config, command: &MemoryCommand) -> FozzyResult<s
                     .then_with(|| a.alloc_id.cmp(&b.alloc_id))
             });
             let out = MemoryTop {
-                run: run.clone(),
+                run: run_label,
                 limit: *limit,
                 total: bundle.leaks.len(),
                 leaks: bundle.leaks.into_iter().take(*limit).collect(),
@@ -129,14 +133,8 @@ pub fn memory_command(config: &Config, command: &MemoryCommand) -> FozzyResult<s
 }
 
 fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
-    let input = PathBuf::from(run);
-    if input.exists()
-        && input.is_file()
-        && input
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"))
-    {
+    let input = PathBuf::from(crate::normalize_run_or_trace_selector(run));
+    if input.exists() && input.is_file() && crate::is_trace_path(&input) {
         return load_from_trace(&input, run);
     }
 
