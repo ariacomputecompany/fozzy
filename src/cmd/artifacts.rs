@@ -559,7 +559,7 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
 }
 
 fn resolve_trace_path(config: &Config, run: &str) -> FozzyResult<PathBuf> {
-    let input = PathBuf::from(run);
+    let input = crate::normalize_trace_path(&PathBuf::from(run));
     if input.exists()
         && input.is_file()
         && input
@@ -713,7 +713,7 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<Option<RunSummary>> {
 }
 
 fn load_trace(config: &Config, run: &str) -> FozzyResult<Option<TraceFile>> {
-    let input = PathBuf::from(run);
+    let input = crate::normalize_trace_path(&PathBuf::from(run));
     let trace_path = if input.exists()
         && input.is_file()
         && input

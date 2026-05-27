@@ -229,7 +229,7 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<RunSummary> {
         return Ok(summary);
     }
 
-    let input_path = PathBuf::from(run);
+    let input_path = crate::normalize_trace_path(&PathBuf::from(run));
     let trace_path = if input_path.exists() {
         let is_trace = input_path
             .extension()

@@ -2184,6 +2184,81 @@ fn run_recorded_trace_embeds_actual_written_trace_path() {
 }
 
 #[test]
+fn trace_followup_commands_accept_bare_and_dot_relative_paths() {
+    let ws = temp_workspace("trace-relative-followup");
+    let scenario = ws.join("example.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+
+    let run = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            "example.fozzy.json".into(),
+            "--det".into(),
+            "--record".into(),
+            "artifacts/repro.trace.fozzy".into(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "run should succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let out = parse_json_stdout(&run);
+    let trace_path = out
+        .get("identity")
+        .and_then(|v| v.get("tracePath"))
+        .and_then(|v| v.as_str())
+        .expect("trace path");
+    assert_eq!(
+        std::fs::canonicalize(trace_path).expect("canonicalize recorded trace"),
+        std::fs::canonicalize(ws.join("artifacts/repro.trace.fozzy"))
+            .expect("canonicalize expected trace"),
+        "recorded trace path should normalize to the created trace location"
+    );
+
+    for trace_arg in [
+        "artifacts/repro.trace.fozzy",
+        "./artifacts/repro.trace.fozzy",
+    ] {
+        let verify = run_cli_in(
+            &ws,
+            &[
+                "trace".into(),
+                "verify".into(),
+                trace_arg.into(),
+                "--strict".into(),
+                "--json".into(),
+            ],
+        );
+        assert_eq!(
+            verify.status.code(),
+            Some(0),
+            "trace verify should pass for {trace_arg}: {}",
+            String::from_utf8_lossy(&verify.stderr)
+        );
+
+        let replay = run_cli_in(&ws, &["replay".into(), trace_arg.into(), "--json".into()]);
+        assert_eq!(
+            replay.status.code(),
+            Some(0),
+            "replay should pass for {trace_arg}: {}",
+            String::from_utf8_lossy(&replay.stderr)
+        );
+
+        let ci = run_cli_in(&ws, &["ci".into(), trace_arg.into(), "--json".into()]);
+        assert_eq!(
+            ci.status.code(),
+            Some(0),
+            "ci should pass for {trace_arg}: {}",
+            String::from_utf8_lossy(&ci.stderr)
+        );
+    }
+}
+
+#[test]
 fn run_record_collision_defaults_to_append_for_iterative_runs() {
     let ws = temp_workspace("run-record-append");
     let scenario = ws.join("pass.fozzy.json");

@@ -56,8 +56,9 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         ));
     }
     let mut checks = Vec::new();
+    let trace_path = crate::normalize_trace_path(&opt.trace);
 
-    let verify = verify_trace_file(&opt.trace)?;
+    let verify = verify_trace_file(&trace_path)?;
     let strict_integrity_ok =
         verify.checksum_present && verify.checksum_valid && verify.warnings.is_empty();
     checks.push(CiCheck {
@@ -75,10 +76,10 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         )),
     });
 
-    let trace = TraceFile::read_json(&opt.trace)?;
+    let trace = TraceFile::read_json(&trace_path)?;
     let replay = replay_trace(
         config,
-        TracePath::new(opt.trace.clone()),
+        TracePath::new(trace_path.clone()),
         &ReplayOptions {
             step: false,
             until: None,
@@ -128,7 +129,7 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
     artifacts_command(
         config,
         &ArtifactCommand::Export {
-            run: opt.trace.display().to_string(),
+            run: trace_path.display().to_string(),
             out: zip_path.clone(),
         },
     )?;

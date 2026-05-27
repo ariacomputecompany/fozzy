@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::{
@@ -20,12 +20,42 @@ pub struct TracePath {
 
 impl TracePath {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path: normalize_trace_path(&path),
+        }
     }
 
     pub fn as_path(&self) -> &Path {
         &self.path
     }
+}
+
+pub fn normalize_trace_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    normalize_lexical_path(&absolute)
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,7 +292,8 @@ pub fn trace_schema_warnings(version: u32) -> Vec<String> {
 }
 
 pub fn verify_trace_file(path: &Path) -> FozzyResult<TraceVerifyReport> {
-    let t = TraceFile::read_json(path)?;
+    let path = normalize_trace_path(path);
+    let t = TraceFile::read_json(&path)?;
     let mut warnings = trace_schema_warnings(t.version);
     warnings.extend(trace_replay_warnings(&t));
     Ok(TraceVerifyReport {
@@ -361,8 +392,9 @@ pub(crate) fn resolve_record_target(
     path: &Path,
     policy: RecordCollisionPolicy,
 ) -> FozzyResult<PathBuf> {
+    let path = normalize_trace_path(path);
     match policy {
-        RecordCollisionPolicy::Overwrite => Ok(path.to_path_buf()),
+        RecordCollisionPolicy::Overwrite => Ok(path),
         RecordCollisionPolicy::Error => {
             if path.exists() {
                 Err(FozzyError::Trace(format!(
@@ -370,12 +402,12 @@ pub(crate) fn resolve_record_target(
                     path.display(),
                 )))
             } else {
-                Ok(path.to_path_buf())
+                Ok(path)
             }
         }
         RecordCollisionPolicy::Append => {
             if !path.exists() {
-                return Ok(path.to_path_buf());
+                return Ok(path);
             }
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
@@ -420,6 +452,9 @@ impl Drop for RecordLockGuard {
 }
 
 fn acquire_record_lock(target: &Path) -> FozzyResult<RecordLockGuard> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let lock_path = PathBuf::from(format!("{}.lock", target.to_string_lossy()));
     let try_open = || {
         std::fs::OpenOptions::new()
