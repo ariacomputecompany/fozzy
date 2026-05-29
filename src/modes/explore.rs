@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use crate::{
     Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind,
-    MemoryRunReport, MemoryState, ProfileCaptureLevel, RecordCollisionPolicy, Reporter,
-    RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath, ScenarioV1Distributed,
-    TraceEvent, TraceFile, should_emit_profile_artifacts, wall_time_iso_utc,
-    write_memory_artifacts, write_profile_artifacts_from_trace, write_trace_with_policy,
+    MemoryRunReport, ProfileCaptureLevel, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
+    RunSummary, ScenarioFile, ScenarioPath, ScenarioV1Distributed, TraceEvent, TraceFile,
+    should_emit_profile_artifacts, wall_time_iso_utc, write_memory_artifacts,
+    write_profile_artifacts_from_trace, write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};
@@ -164,11 +164,7 @@ pub fn explore(
     let (status, findings, events, delivered, decisions) =
         run_explore_inner(&scenario, seed, opt.schedule, opt.steps, opt.time)?;
     let _ = delivered;
-    let memory_report = if opt.memory.track {
-        Some(MemoryState::new(opt.memory.clone()).finalize())
-    } else {
-        None
-    };
+    let memory_report: Option<MemoryRunReport> = None;
 
     let finished_at = wall_time_iso_utc();
     let (duration_ms, duration_ns) = crate::duration_fields(started.elapsed());
@@ -586,15 +582,15 @@ pub(crate) fn distributed_to_explore(
 pub(crate) fn execute_explore_for_fuzz(
     scenario: &ScenarioV1Explore,
     seed: u64,
-) -> FozzyResult<(ExitStatus, Vec<Finding>)> {
-    let (status, findings, _, _, _) = run_explore_inner(
+) -> FozzyResult<(ExitStatus, Vec<Finding>, Vec<crate::TraceEvent>)> {
+    let (status, findings, events, _, _) = run_explore_inner(
         scenario,
         seed,
         ScheduleStrategy::CoverageGuided,
         Some(200),
         None,
     )?;
-    Ok((status, findings))
+    Ok((status, findings, events))
 }
 
 fn should_emit_heavy_artifacts(status: ExitStatus, explicit_request: bool) -> bool {

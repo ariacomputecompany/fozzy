@@ -458,8 +458,8 @@ pub(crate) fn run_embedded_steps_for_fuzz(
     scenario_path: &Path,
     seed: u64,
     memory: MemoryOptions,
-) -> FozzyResult<(ExitStatus, Vec<Finding>)> {
-    let run = run_embedded_scenario_inner(
+) -> FozzyResult<ScenarioRun> {
+    run_embedded_scenario_inner(
         scenario.clone(),
         scenario_path.to_path_buf(),
         seed,
@@ -469,8 +469,7 @@ pub(crate) fn run_embedded_steps_for_fuzz(
         FsBackend::Virtual,
         HttpBackend::Scripted,
         memory,
-    )?;
-    Ok((run.status, run.findings))
+    )
 }
 
 fn timeout_reached(
@@ -842,6 +841,28 @@ impl<'a> ExecCtx<'a> {
         })
     }
 
+    fn current_memory_callsite(
+        &self,
+        op: &str,
+        key: Option<&String>,
+        tag: Option<&String>,
+    ) -> String {
+        let mut parts = vec![op.to_string()];
+        if let Some(path) = self.scenario_path.as_ref() {
+            parts.push(format!("path={}", path.display()));
+        }
+        if let Some(step_index) = self.current_step_index {
+            parts.push(format!("step={step_index}"));
+        }
+        if let Some(key) = key {
+            parts.push(format!("key={key}"));
+        }
+        if let Some(tag) = tag {
+            parts.push(format!("tag={tag}"));
+        }
+        parts.join("|")
+    }
+
     fn remaining_host_timeout(&self) -> Option<Duration> {
         let deadline = self.host_deadline?;
         Some(deadline.saturating_duration_since(Instant::now()))
@@ -854,9 +875,11 @@ impl<'a> ExecCtx<'a> {
         embedded: ScenarioV1Steps,
     ) -> ScenarioRun {
         let mut memory_report = None;
-        if self.memory.options.track {
+        if self.memory.options.tracking_requested() || self.memory.has_activity() {
             let report = self.memory.finalize();
-            if report.summary.leaked_bytes > 0 {
+            if report.summary.leaked_bytes > 0
+                && (report.options.fail_on_leak || report.options.leak_budget_bytes.is_none())
+            {
                 self.findings.push(Finding {
                     kind: FindingKind::Checker,
                     title: "memory_leak".to_string(),
@@ -883,10 +906,7 @@ impl<'a> ExecCtx<'a> {
                     status = ExitStatus::Fail;
                 }
             }
-            if report.options.fail_on_leak
-                && report.summary.leaked_bytes > 0
-                && status == ExitStatus::Pass
-            {
+            if !report.leak_allowed_by_policy() && status == ExitStatus::Pass {
                 status = ExitStatus::Fail;
             }
             memory_report = Some(report);
@@ -2559,14 +2579,14 @@ impl<'a> ExecCtx<'a> {
             }
 
             crate::Step::MemoryAlloc { bytes, key, tag } => {
-                let outcome = self.memory.allocate(
-                    *bytes,
-                    tag.clone(),
-                    "step:memory_alloc",
-                    self.clock.now_ms(),
-                );
+                let callsite =
+                    self.current_memory_callsite("memory_alloc", key.as_ref(), tag.as_ref());
+                let outcome =
+                    self.memory
+                        .allocate(*bytes, tag.clone(), &callsite, self.clock.now_ms());
                 self.decisions.push(Decision::MemoryAlloc {
                     bytes: *bytes,
+                    effective_bytes: outcome.effective_bytes,
                     alloc_id: outcome.alloc_id,
                     callsite_hash: outcome.callsite_hash.clone(),
                     failed_reason: outcome.failed_reason.clone(),
@@ -2575,10 +2595,12 @@ impl<'a> ExecCtx<'a> {
                     match cur.next() {
                         Some(Decision::MemoryAlloc {
                             bytes: expected_bytes,
+                            effective_bytes: expected_effective_bytes,
                             alloc_id: expected_alloc_id,
                             failed_reason: expected_failed,
                             ..
                         }) if *expected_bytes == *bytes
+                            && *expected_effective_bytes == outcome.effective_bytes
                             && *expected_alloc_id == outcome.alloc_id
                             && *expected_failed == outcome.failed_reason => {}
                         Some(other) => {
@@ -2604,6 +2626,10 @@ impl<'a> ExecCtx<'a> {
                     name: "memory_alloc".to_string(),
                     fields: serde_json::Map::from_iter([
                         ("bytes".to_string(), serde_json::json!(bytes)),
+                        (
+                            "effective_bytes".to_string(),
+                            serde_json::json!(outcome.effective_bytes),
+                        ),
                         ("alloc_id".to_string(), serde_json::json!(outcome.alloc_id)),
                         (
                             "failed_reason".to_string(),
@@ -2706,7 +2732,7 @@ impl<'a> ExecCtx<'a> {
             }
 
             crate::Step::MemoryLimitMb { mb } => {
-                self.memory.options.limit_mb = Some(*mb);
+                self.memory.set_limit_mb(*mb);
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "memory_limit_mb".to_string(),
@@ -2716,7 +2742,7 @@ impl<'a> ExecCtx<'a> {
             }
 
             crate::Step::MemoryFailAfterAllocs { count } => {
-                self.memory.options.fail_after_allocs = Some(*count);
+                self.memory.set_fail_after_allocs(*count);
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "memory_fail_after_allocs".to_string(),
@@ -2729,7 +2755,7 @@ impl<'a> ExecCtx<'a> {
             }
 
             crate::Step::MemoryFragmentation { seed } => {
-                self.memory.options.fragmentation_seed = Some(*seed);
+                self.memory.set_fragmentation_seed(*seed);
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "memory_fragmentation".to_string(),
@@ -2742,7 +2768,7 @@ impl<'a> ExecCtx<'a> {
             }
 
             crate::Step::MemoryPressureWave { pattern } => {
-                self.memory.options.pressure_wave = Some(pattern.clone());
+                self.memory.set_pressure_wave(pattern.clone());
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "memory_pressure_wave".to_string(),

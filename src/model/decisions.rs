@@ -71,6 +71,7 @@ pub enum Decision {
     },
     MemoryAlloc {
         bytes: u64,
+        effective_bytes: u64,
         alloc_id: Option<u64>,
         callsite_hash: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

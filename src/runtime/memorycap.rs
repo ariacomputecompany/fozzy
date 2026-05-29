@@ -19,6 +19,7 @@ pub struct AllocOutcome {
     pub alloc_id: Option<u64>,
     pub failed_reason: Option<String>,
     pub callsite_hash: String,
+    pub effective_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -40,9 +41,11 @@ pub struct MemoryState {
 
 impl MemoryState {
     pub fn new(options: MemoryOptions) -> Self {
+        let pressure_wave_multipliers = parse_pressure_wave(options.pressure_wave.as_deref());
+        let fragmentation_seed = options.fragmentation_seed.unwrap_or(0);
         Self {
-            pressure_wave_multipliers: parse_pressure_wave(options.pressure_wave.as_deref()),
-            fragmentation_seed: options.fragmentation_seed.unwrap_or(0),
+            pressure_wave_multipliers,
+            fragmentation_seed,
             options,
             next_alloc_id: 1,
             alloc_ops: 0,
@@ -86,6 +89,7 @@ impl MemoryState {
                     alloc_id: None,
                     failed_reason: Some("limit_mb".to_string()),
                     callsite_hash,
+                    effective_bytes,
                 };
             }
         }
@@ -108,6 +112,7 @@ impl MemoryState {
                 alloc_id: None,
                 failed_reason: Some("fail_after_allocs".to_string()),
                 callsite_hash,
+                effective_bytes,
             };
         }
 
@@ -150,6 +155,7 @@ impl MemoryState {
             alloc_id: Some(alloc_id),
             failed_reason: None,
             callsite_hash,
+            effective_bytes,
         }
     }
 
@@ -198,6 +204,32 @@ impl MemoryState {
 
     pub fn in_use_bytes(&self) -> u64 {
         self.in_use_bytes
+    }
+
+    pub fn has_activity(&self) -> bool {
+        self.alloc_ops > 0
+            || self.free_count > 0
+            || self.failed_alloc_count > 0
+            || !self.timeline.is_empty()
+            || !self.live.is_empty()
+    }
+
+    pub fn set_limit_mb(&mut self, limit_mb: u64) {
+        self.options.limit_mb = Some(limit_mb);
+    }
+
+    pub fn set_fail_after_allocs(&mut self, count: u64) {
+        self.options.fail_after_allocs = Some(count);
+    }
+
+    pub fn set_fragmentation_seed(&mut self, seed: u64) {
+        self.options.fragmentation_seed = Some(seed);
+        self.fragmentation_seed = seed;
+    }
+
+    pub fn set_pressure_wave(&mut self, pattern: String) {
+        self.pressure_wave_multipliers = parse_pressure_wave(Some(pattern.as_str()));
+        self.options.pressure_wave = Some(pattern);
     }
 
     pub fn finalize(self) -> MemoryRunReport {
@@ -301,4 +333,28 @@ fn parse_pressure_wave(pattern: Option<&str>) -> Vec<u64> {
         .filter_map(|s| s.trim().parse::<u64>().ok())
         .filter(|m| *m > 0)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scenario_level_memory_controls_apply_live() {
+        let mut state = MemoryState::new(MemoryOptions {
+            track: true,
+            artifacts: true,
+            ..MemoryOptions::default()
+        });
+        state.set_fragmentation_seed(7);
+        state.set_pressure_wave("1,2,4".to_string());
+
+        let a = state.allocate(200_000, None, "step:memory_alloc", 0);
+        let b = state.allocate(200_000, None, "step:memory_alloc", 0);
+        let c = state.allocate(200_000, None, "step:memory_alloc", 0);
+
+        assert_eq!(a.effective_bytes, 224_000);
+        assert_eq!(b.effective_bytes, 480_000);
+        assert_eq!(c.effective_bytes, 1_008_000);
+    }
 }

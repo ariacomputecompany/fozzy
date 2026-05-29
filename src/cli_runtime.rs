@@ -75,12 +75,8 @@ pub(super) fn enforce_strict_summary(strict: bool, summary: &RunSummary) -> anyh
         return Ok(());
     }
 
-    let warnings: Vec<&str> = summary
-        .findings
-        .iter()
-        .filter(|f| {
-            f.kind == fozzy::FindingKind::Checker && summary.status == fozzy::ExitStatus::Pass
-        })
+    let warnings: Vec<&str> = fozzy::pass_checker_warnings(summary)
+        .into_iter()
         .map(|f| f.message.as_str())
         .collect();
     if warnings.is_empty() {
@@ -105,8 +101,24 @@ pub(super) fn resolve_memory_options(
     fail_on_leak: bool,
     leak_budget: Option<u64>,
 ) -> MemoryOptions {
+    let track = mem_track
+        || mem_artifacts
+        || mem_limit_mb.is_some()
+        || mem_fail_after.is_some()
+        || mem_fragmentation_seed.is_some()
+        || mem_pressure_wave.is_some()
+        || fail_on_leak
+        || leak_budget.is_some()
+        || config.mem_track
+        || config.mem_artifacts
+        || config.mem_limit_mb.is_some()
+        || config.mem_fail_after.is_some()
+        || config.mem_fragmentation_seed.is_some()
+        || config.mem_pressure_wave.is_some()
+        || config.fail_on_leak
+        || config.leak_budget.is_some();
     MemoryOptions {
-        track: mem_track || config.mem_track,
+        track,
         limit_mb: mem_limit_mb.or(config.mem_limit_mb),
         fail_after_allocs: mem_fail_after.or(config.mem_fail_after),
         fragmentation_seed: mem_fragmentation_seed.or(config.mem_fragmentation_seed),
@@ -114,6 +126,30 @@ pub(super) fn resolve_memory_options(
         fail_on_leak: fail_on_leak || config.fail_on_leak,
         leak_budget_bytes: leak_budget.or(config.leak_budget),
         artifacts: mem_artifacts || config.mem_artifacts,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_memory_options_enables_tracking_for_memory_policy() {
+        let opts = resolve_memory_options(
+            &Config::default(),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some(256),
+        );
+        assert!(
+            opts.track,
+            "leak-budget policy should not be silently ignored"
+        );
     }
 }
 

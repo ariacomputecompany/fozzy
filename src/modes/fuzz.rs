@@ -22,7 +22,13 @@ use crate::{
 use crate::{FozzyError, FozzyResult};
 use crate::{HeapBudgetPolicy, heap_budget_findings_from_trace};
 
-type LastExec = (Vec<u8>, Vec<TraceEvent>, ExitStatus, Vec<Finding>);
+type LastExec = (
+    Vec<u8>,
+    Vec<TraceEvent>,
+    ExitStatus,
+    Vec<Finding>,
+    Option<crate::MemoryTrace>,
+);
 
 fn heap_budget_policy(config: &Config) -> HeapBudgetPolicy {
     HeapBudgetPolicy {
@@ -204,7 +210,7 @@ pub fn fuzz(
         let mut input = base.clone();
         mutate_bytes(&mut input, &mut rng, opt.max_input_bytes);
 
-        let mut exec = execute_target(config, target, &input)?;
+        let mut exec = execute_target(config, target, &input, &opt.memory)?;
         if let Some(mem) = memory_state.as_mut() {
             let outcome = mem.allocate(
                 input.len() as u64,
@@ -233,6 +239,7 @@ pub fn fuzz(
             exec.events.clone(),
             exec.status,
             exec.findings.clone(),
+            exec.memory.clone(),
         ));
         executed += 1;
 
@@ -264,6 +271,8 @@ pub fn fuzz(
             let finished_at = wall_time_iso_utc();
             let (duration_ms, duration_ns) = crate::duration_fields(started.elapsed());
 
+            let harness_memory = memory_state.as_ref().map(|m| m.clone().finalize());
+            let crash_memory = fuzz_exec_memory(exec.memory.as_ref(), harness_memory.as_ref());
             let mut summary = RunSummary {
                 status: exec.status,
                 mode: RunMode::Fuzz,
@@ -279,7 +288,7 @@ pub fn fuzz(
                 duration_ms,
                 duration_ns,
                 tests: None,
-                memory: memory_state.as_ref().map(|m| m.clone().finalize().summary),
+                memory: crash_memory.as_ref().map(|m| m.summary.clone()),
                 findings: exec.findings.clone(),
             };
             let mut budget_trace = TraceFile::new_fuzz(
@@ -288,9 +297,7 @@ pub fn fuzz(
                 exec.events.clone(),
                 summary.clone(),
             );
-            budget_trace.memory = memory_state
-                .as_ref()
-                .map(|m| m.clone().finalize().to_trace());
+            budget_trace.memory = crash_memory.as_ref().map(|m| m.to_trace());
             let heap_findings =
                 heap_budget_findings_from_trace(&budget_trace, &heap_budget_policy(config));
             if !heap_findings.is_empty() {
@@ -325,9 +332,7 @@ pub fn fuzz(
                 summary.clone(),
             );
             let mut trace = trace;
-            trace.memory = memory_state
-                .as_ref()
-                .map(|m| m.clone().finalize().to_trace());
+            trace.memory = crash_memory.as_ref().map(|m| m.to_trace());
             let written = write_trace_with_policy(&trace, &trace_out, opt.record_collision)?;
             crash_trace_path = Some(written);
             let emit_heavy = should_emit_heavy_artifacts(exec.status, true)
@@ -347,8 +352,14 @@ pub fn fuzz(
             crate::write_run_manifest(&summary, &artifacts_dir)?;
 
             if opt.minimize || opt.shrink {
-                let minimized =
-                    minimize_input(config, target, &input, opt.max_input_bytes, exec.status)?;
+                let minimized = minimize_input(
+                    config,
+                    target,
+                    &input,
+                    opt.max_input_bytes,
+                    exec.status,
+                    &opt.memory,
+                )?;
                 let _min_path = persist_crash_min_input(&corpus_dir, &minimized)?;
             }
 
@@ -369,6 +380,10 @@ pub fn fuzz(
     let report_path = artifacts_dir.join("report.json");
 
     let memory_report = memory_state.map(|m| m.finalize());
+    let last_exec_memory = last_exec
+        .as_ref()
+        .and_then(|(_, _, _, _, memory)| memory.clone());
+    let effective_memory = fuzz_exec_memory(last_exec_memory.as_ref(), memory_report.as_ref());
     findings = crate::collapse_findings(findings);
     let mut summary = RunSummary {
         status,
@@ -387,12 +402,13 @@ pub fn fuzz(
         duration_ms,
         duration_ns,
         tests: None,
-        memory: memory_report.as_ref().map(|m| m.summary.clone()),
+        memory: effective_memory.as_ref().map(|m| m.summary.clone()),
         findings,
     };
-    let (profile_input, profile_events, profile_status, profile_findings) = last_exec
-        .clone()
-        .unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new()));
+    let (profile_input, profile_events, profile_status, profile_findings, profile_memory) =
+        last_exec
+            .clone()
+            .unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new(), None));
     let mut profile_summary = summary.clone();
     profile_summary.status = profile_status;
     profile_summary.findings = profile_findings;
@@ -402,14 +418,15 @@ pub fn fuzz(
         profile_events,
         profile_summary,
     );
-    profile_trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+    profile_trace.memory =
+        profile_memory.or_else(|| effective_memory.as_ref().map(|m| m.to_trace()));
     let heap_findings =
         heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
     if !heap_findings.is_empty() {
         summary.findings.extend(heap_findings);
         summary.findings = crate::collapse_findings(summary.findings.clone());
     }
-    if let Some(mem) = memory_report.as_ref() {
+    if let Some(mem) = effective_memory.as_ref() {
         if mem.options.fail_on_leak && mem.summary.leaked_bytes > 0 {
             status = ExitStatus::Fail;
             summary.status = status;
@@ -417,7 +434,7 @@ pub fn fuzz(
     }
 
     std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
-    if let Some(mem) = memory_report.as_ref()
+    if let Some(mem) = effective_memory.as_ref()
         && mem.options.artifacts
     {
         write_memory_artifacts(mem, &artifacts_dir)?;
@@ -453,15 +470,15 @@ pub fn fuzz(
     if let Some(record_path) = &opt.record_trace_to
         && crash_trace_path.is_none()
     {
-        let (input, events, exec_status, exec_findings) =
-            last_exec.unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new()));
+        let (input, events, exec_status, exec_findings, exec_memory) = last_exec
+            .unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new(), None));
         let mut trace_summary = summary.clone();
         trace_summary.status = exec_status;
         trace_summary.findings = exec_findings;
         trace_summary.identity.trace_path = Some(record_path.to_string_lossy().to_string());
         let trace = TraceFile::new_fuzz(target_string(target), &input, events, trace_summary);
         let mut trace = trace;
-        trace.memory = memory_report.as_ref().map(|m| m.to_trace());
+        trace.memory = exec_memory.or_else(|| effective_memory.as_ref().map(|m| m.to_trace()));
         let written = write_trace_with_policy(&trace, record_path, opt.record_collision)?;
         summary.identity.trace_path = Some(written.to_string_lossy().to_string());
     }
@@ -476,7 +493,7 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
     };
     let target: FuzzTarget = fuzz.target.parse()?;
     let input = hex_decode(&fuzz.input_hex)?;
-    let exec = execute_target(config, &target, &input)?;
+    let exec = execute_target(config, &target, &input, &fuzz_trace_memory_options(trace))?;
 
     let run_id = Uuid::new_v4().to_string();
     let artifacts_dir = config.runs_dir().join(&run_id);
@@ -495,8 +512,48 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         });
     }
 
+    if trace.memory.is_some() != exec.memory.is_some() {
+        findings.push(Finding {
+            kind: FindingKind::Checker,
+            title: "replay_memory_drift".to_string(),
+            message: format!(
+                "replay memory presence drift: expected_memory={} actual_memory={}",
+                trace.memory.is_some(),
+                exec.memory.is_some()
+            ),
+            location: None,
+        });
+    } else if let (Some(expected), Some(actual)) = (trace.memory.as_ref(), exec.memory.as_ref())
+        && expected.summary != actual.summary
+    {
+        findings.push(Finding {
+            kind: FindingKind::Checker,
+            title: "replay_memory_drift".to_string(),
+            message: format!(
+                "replay memory drift: expected leaked_bytes={} leaked_allocs={} peak_bytes={}, got leaked_bytes={} leaked_allocs={} peak_bytes={}",
+                expected.summary.leaked_bytes,
+                expected.summary.leaked_allocs,
+                expected.summary.peak_bytes,
+                actual.summary.leaked_bytes,
+                actual.summary.leaked_allocs,
+                actual.summary.peak_bytes
+            ),
+            location: None,
+        });
+    }
+
+    let replay_status = if findings
+        .iter()
+        .any(|f| f.kind == FindingKind::Checker && f.title.starts_with("replay_"))
+        && exec.status == ExitStatus::Pass
+    {
+        ExitStatus::Fail
+    } else {
+        exec.status
+    };
+
     let mut summary = RunSummary {
-        status: exec.status,
+        status: replay_status,
         mode: RunMode::Replay,
         identity: RunIdentity {
             run_id,
@@ -510,7 +567,7 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         duration_ms: 0,
         duration_ns: 0,
         tests: None,
-        memory: trace.memory.as_ref().map(|m| m.summary.clone()),
+        memory: exec.memory.as_ref().map(|m| m.summary.clone()),
         findings,
     };
     let mut profile_trace = TraceFile::new_fuzz(
@@ -519,7 +576,7 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
         exec.events.clone(),
         summary.clone(),
     );
-    profile_trace.memory = trace.memory.clone();
+    profile_trace.memory = exec.memory.clone();
     let heap_findings =
         heap_budget_findings_from_trace(&profile_trace, &heap_budget_policy(config));
     if !heap_findings.is_empty() {
@@ -528,7 +585,7 @@ pub fn replay_fuzz_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crat
     }
 
     std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
-    if should_emit_heavy_artifacts(exec.status, true) {
+    if should_emit_heavy_artifacts(replay_status, true) {
         std::fs::write(
             artifacts_dir.join("events.json"),
             serde_json::to_vec(&exec.events)?,
@@ -561,8 +618,20 @@ pub fn shrink_fuzz_trace(
         ));
     }
 
-    let minimized = minimize_input(_config, &target, &input, 1024 * 1024, target_status)?;
-    let exec = execute_target(_config, &target, &minimized)?;
+    let minimized = minimize_input(
+        _config,
+        &target,
+        &input,
+        1024 * 1024,
+        target_status,
+        &fuzz_trace_memory_options(&trace),
+    )?;
+    let exec = execute_target(
+        _config,
+        &target,
+        &minimized,
+        &fuzz_trace_memory_options(&trace),
+    )?;
 
     let out_path = opt
         .out_trace_path
@@ -586,7 +655,7 @@ pub fn shrink_fuzz_trace(
         duration_ms: 0,
         duration_ns: 0,
         tests: None,
-        memory: trace.memory.as_ref().map(|m| m.summary.clone()),
+        memory: exec.memory.as_ref().map(|m| m.summary.clone()),
         findings: exec.findings.clone(),
     };
 
@@ -597,7 +666,7 @@ pub fn shrink_fuzz_trace(
         summary.clone(),
     );
     let mut trace_out = trace_out;
-    trace_out.memory = trace.memory.clone();
+    trace_out.memory = exec.memory.clone();
     trace_out.write_json(&out_path).map_err(|err| {
         FozzyError::Trace(format!(
             "failed to write shrunk fuzz trace to {}: {err}",
@@ -624,9 +693,15 @@ struct FuzzExec {
     findings: Vec<Finding>,
     events: Vec<TraceEvent>,
     coverage: BTreeSet<u64>,
+    memory: Option<crate::MemoryTrace>,
 }
 
-fn execute_target(config: &Config, target: &FuzzTarget, input: &[u8]) -> FozzyResult<FuzzExec> {
+fn execute_target(
+    config: &Config,
+    target: &FuzzTarget,
+    input: &[u8],
+    scenario_memory: &MemoryOptions,
+) -> FozzyResult<FuzzExec> {
     match target {
         FuzzTarget::Function { id } => {
             let Some(plugin) = find_function_target(id) else {
@@ -637,7 +712,9 @@ fn execute_target(config: &Config, target: &FuzzTarget, input: &[u8]) -> FozzyRe
             };
             (plugin.exec)(input)
         }
-        FuzzTarget::Scenario { path } => execute_scenario_target(config, path, input),
+        FuzzTarget::Scenario { path } => {
+            execute_scenario_target(config, path, input, scenario_memory)
+        }
     }
 }
 
@@ -675,7 +752,12 @@ fn supported_fuzz_targets() -> Vec<String> {
     out
 }
 
-fn execute_scenario_target(_config: &Config, path: &Path, input: &[u8]) -> FozzyResult<FuzzExec> {
+fn execute_scenario_target(
+    _config: &Config,
+    path: &Path,
+    input: &[u8],
+    scenario_memory: &MemoryOptions,
+) -> FozzyResult<FuzzExec> {
     let seed = seed_from_input(input);
     let scenario_path = ScenarioPath::new(path.to_path_buf());
     let parsed = crate::Scenario::load_file(&scenario_path)?;
@@ -686,11 +768,28 @@ fn execute_scenario_target(_config: &Config, path: &Path, input: &[u8]) -> Fozzy
         }
         ScenarioFile::Suites(_) => ScenarioTarget::Suites,
     };
-    let (status, findings) = match parsed {
+    let exec = match parsed {
         ScenarioTarget::Steps(scenario) => {
-            crate::run_embedded_steps_for_fuzz(&scenario, path, seed, scenario_fuzz_memory())?
+            let run =
+                crate::run_embedded_steps_for_fuzz(&scenario, path, seed, scenario_memory.clone())?;
+            FuzzExec {
+                status: run.status,
+                findings: run.findings,
+                events: run.events,
+                coverage: BTreeSet::new(),
+                memory: run.memory.as_ref().map(|m| m.to_trace()),
+            }
         }
-        ScenarioTarget::Distributed(scenario) => crate::execute_explore_for_fuzz(&scenario, seed)?,
+        ScenarioTarget::Distributed(scenario) => {
+            let (status, findings, events) = crate::execute_explore_for_fuzz(&scenario, seed)?;
+            FuzzExec {
+                status,
+                findings,
+                events,
+                coverage: BTreeSet::new(),
+                memory: None,
+            }
+        }
         ScenarioTarget::Suites => {
             return Err(FozzyError::InvalidArgument(format!(
                 "scenario fuzz target {} uses suites variant; provide a steps or distributed scenario",
@@ -701,37 +800,16 @@ fn execute_scenario_target(_config: &Config, path: &Path, input: &[u8]) -> Fozzy
 
     let mut coverage = BTreeSet::new();
     coverage.insert(stable_edge(&format!("scenario_path:{}", path.display())));
-    coverage.insert(stable_edge(&format!("scenario_status:{status:?}")));
+    coverage.insert(stable_edge(&format!("scenario_status:{:?}", exec.status)));
     coverage.insert(stable_edge(&format!("scenario_seed:{seed}")));
-    for finding in &findings {
+    for finding in &exec.findings {
         coverage.insert(stable_edge(&format!(
             "scenario_finding:{}:{}",
             finding.title, finding.message
         )));
     }
 
-    let event = TraceEvent {
-        time_ms: 1,
-        name: "scenario_fuzz_exec".to_string(),
-        fields: serde_json::Map::from_iter([
-            (
-                "path".to_string(),
-                serde_json::json!(path.display().to_string()),
-            ),
-            ("seed".to_string(), serde_json::json!(seed)),
-            (
-                "status".to_string(),
-                serde_json::json!(format!("{:?}", status).to_ascii_lowercase()),
-            ),
-        ]),
-    };
-
-    Ok(FuzzExec {
-        status,
-        findings,
-        events: vec![event],
-        coverage,
-    })
+    Ok(FuzzExec { coverage, ..exec })
 }
 
 #[derive(Clone)]
@@ -749,17 +827,32 @@ fn should_emit_heavy_artifacts(status: ExitStatus, explicit_request: bool) -> bo
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
-fn scenario_fuzz_memory() -> MemoryOptions {
-    MemoryOptions {
-        track: false,
-        limit_mb: None,
-        fail_after_allocs: None,
-        fail_on_leak: false,
-        leak_budget_bytes: None,
-        fragmentation_seed: None,
-        pressure_wave: None,
-        artifacts: false,
-    }
+fn fuzz_exec_memory(
+    exec_memory: Option<&crate::MemoryTrace>,
+    harness_memory: Option<&crate::MemoryRunReport>,
+) -> Option<crate::MemoryRunReport> {
+    exec_memory
+        .map(|memory| crate::MemoryRunReport {
+            schema_version: "fozzy.memory_report.v1".to_string(),
+            options: memory.options.clone(),
+            summary: memory.summary.clone(),
+            leaks: memory.leaks.clone(),
+            timeline: Vec::new(),
+            graph: memory.graph.clone(),
+        })
+        .or_else(|| harness_memory.cloned())
+}
+
+fn fuzz_trace_memory_options(trace: &TraceFile) -> MemoryOptions {
+    trace
+        .memory
+        .as_ref()
+        .map(|m| m.options.clone())
+        .unwrap_or(MemoryOptions {
+            track: false,
+            artifacts: false,
+            ..MemoryOptions::default()
+        })
 }
 
 fn execute_kv(input: &[u8]) -> FozzyResult<FuzzExec> {
@@ -829,6 +922,7 @@ fn execute_kv(input: &[u8]) -> FozzyResult<FuzzExec> {
                         findings,
                         events,
                         coverage,
+                        memory: None,
                     });
                 }
                 coverage.insert(stable_edge("assert:pass"));
@@ -845,6 +939,7 @@ fn execute_kv(input: &[u8]) -> FozzyResult<FuzzExec> {
                     findings,
                     events,
                     coverage,
+                    memory: None,
                 });
             }
             0xFF => {
@@ -859,6 +954,7 @@ fn execute_kv(input: &[u8]) -> FozzyResult<FuzzExec> {
                     findings,
                     events,
                     coverage,
+                    memory: None,
                 });
             }
             _ => {
@@ -873,6 +969,7 @@ fn execute_kv(input: &[u8]) -> FozzyResult<FuzzExec> {
         findings,
         events,
         coverage,
+        memory: None,
     })
 }
 
@@ -904,6 +1001,7 @@ fn execute_utf8(input: &[u8]) -> FozzyResult<FuzzExec> {
             findings,
             events,
             coverage,
+            memory: None,
         });
     }
 
@@ -924,6 +1022,7 @@ fn execute_utf8(input: &[u8]) -> FozzyResult<FuzzExec> {
             findings,
             events,
             coverage,
+            memory: None,
         });
     }
     if s.contains("PANIC") {
@@ -939,6 +1038,7 @@ fn execute_utf8(input: &[u8]) -> FozzyResult<FuzzExec> {
             findings,
             events,
             coverage,
+            memory: None,
         });
     }
     if s.contains("TIMEOUT") {
@@ -954,6 +1054,7 @@ fn execute_utf8(input: &[u8]) -> FozzyResult<FuzzExec> {
             findings,
             events,
             coverage,
+            memory: None,
         });
     }
 
@@ -963,6 +1064,7 @@ fn execute_utf8(input: &[u8]) -> FozzyResult<FuzzExec> {
         findings,
         events,
         coverage,
+        memory: None,
     })
 }
 
@@ -1110,6 +1212,7 @@ fn minimize_input(
     input: &[u8],
     max_len: usize,
     target_status: ExitStatus,
+    scenario_memory: &MemoryOptions,
 ) -> FozzyResult<Vec<u8>> {
     let mut best = input.to_vec();
     let mut chunk = best.len().max(1).div_ceil(2);
@@ -1128,7 +1231,7 @@ fn minimize_input(
                 i += chunk;
                 continue;
             }
-            let exec = execute_target(config, target, &trial)?;
+            let exec = execute_target(config, target, &trial, scenario_memory)?;
             if crate::shrink_status_matches(target_status, exec.status) {
                 best = trial;
                 improved = true;
@@ -1200,8 +1303,57 @@ fn hex_val(b: u8) -> FozzyResult<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FuzzTarget, crash_trace_output_path, with_numeric_suffix};
-    use std::path::Path;
+    use super::{
+        FuzzTarget, crash_trace_output_path, execute_target, replay_fuzz_trace, with_numeric_suffix,
+    };
+    use crate::{
+        CURRENT_TRACE_VERSION, Config, MemoryOptions, Reporter, RunIdentity, RunMode, RunSummary,
+        TRACE_FORMAT, TraceFile,
+    };
+    use std::path::{Path, PathBuf};
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-fuzz-test-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("create temp workspace");
+        root
+    }
+
+    fn test_config(root: &Path) -> Config {
+        Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        }
+    }
+
+    fn write_memory_leak_scenario(root: &Path) -> PathBuf {
+        let path = root.join("memory.leak.fozzy.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "version": 1,
+  "name": "memory-leak",
+  "steps": [
+    { "type": "memory_alloc", "bytes": 256, "key": "leak", "tag": "leak-test" }
+  ]
+}"#,
+        )
+        .expect("write scenario");
+        path
+    }
 
     #[test]
     fn crash_trace_output_path_uses_base_then_numbered_suffixes() {
@@ -1225,5 +1377,94 @@ mod tests {
         let b: FuzzTarget = "tests/example.fozzy.json".parse().expect("path form");
         assert!(matches!(a, FuzzTarget::Scenario { .. }));
         assert!(matches!(b, FuzzTarget::Scenario { .. }));
+    }
+
+    #[test]
+    fn scenario_fuzz_target_preserves_structured_memory() {
+        let root = temp_workspace("scenario-memory");
+        let scenario = write_memory_leak_scenario(&root);
+        let cfg = test_config(&root);
+        let target = FuzzTarget::Scenario { path: scenario };
+
+        let exec = execute_target(
+            &cfg,
+            &target,
+            &[1, 2, 3],
+            &MemoryOptions {
+                track: false,
+                artifacts: false,
+                ..MemoryOptions::default()
+            },
+        )
+        .expect("execute target");
+
+        assert_eq!(exec.status, crate::ExitStatus::Fail);
+        assert_eq!(
+            exec.memory.as_ref().map(|m| m.summary.leaked_bytes),
+            Some(256)
+        );
+    }
+
+    #[test]
+    fn replay_fuzz_trace_uses_replayed_memory_summary() {
+        let root = temp_workspace("scenario-replay");
+        let scenario = write_memory_leak_scenario(&root);
+        let cfg = test_config(&root);
+        let target = FuzzTarget::Scenario {
+            path: scenario.clone(),
+        };
+        let exec = execute_target(
+            &cfg,
+            &target,
+            &[7],
+            &MemoryOptions {
+                track: false,
+                artifacts: false,
+                ..MemoryOptions::default()
+            },
+        )
+        .expect("execute target");
+        let trace_path = root.join("trace.fozzy");
+        let trace = TraceFile {
+            format: TRACE_FORMAT.to_string(),
+            version: CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Fuzz,
+            scenario_path: None,
+            scenario: None,
+            fuzz: Some(crate::FuzzTrace {
+                target: format!("scenario:{}", scenario.display()),
+                input_hex: "07".to_string(),
+            }),
+            explore: None,
+            memory: exec.memory.clone(),
+            decisions: Vec::new(),
+            events: exec.events.clone(),
+            summary: RunSummary {
+                status: exec.status,
+                mode: RunMode::Fuzz,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: None,
+                    artifacts_dir: None,
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: exec.memory.as_ref().map(|m| m.summary.clone()),
+                findings: exec.findings.clone(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&trace_path).expect("write trace");
+        let replayed = replay_fuzz_trace(&cfg, &trace).expect("replay fuzz trace");
+        assert_eq!(
+            replayed.summary.memory.as_ref().map(|m| m.leaked_bytes),
+            Some(256)
+        );
     }
 }

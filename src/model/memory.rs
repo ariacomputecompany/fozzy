@@ -39,6 +39,19 @@ impl Default for MemoryOptions {
     }
 }
 
+impl MemoryOptions {
+    pub fn tracking_requested(&self) -> bool {
+        self.track
+            || self.limit_mb.is_some()
+            || self.fail_after_allocs.is_some()
+            || self.fail_on_leak
+            || self.leak_budget_bytes.is_some()
+            || self.fragmentation_seed.is_some()
+            || self.pressure_wave.is_some()
+            || self.artifacts
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct MemorySummary {
     #[serde(rename = "allocCount")]
@@ -135,6 +148,16 @@ impl MemoryRunReport {
             leaks: self.leaks.clone(),
             graph: self.graph.clone(),
         }
+    }
+
+    pub fn leak_within_budget(&self) -> bool {
+        self.options
+            .leak_budget_bytes
+            .is_some_and(|budget| self.summary.leaked_bytes <= budget)
+    }
+
+    pub fn leak_allowed_by_policy(&self) -> bool {
+        self.summary.leaked_bytes == 0 || (!self.options.fail_on_leak && self.leak_within_budget())
     }
 }
 

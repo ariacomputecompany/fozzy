@@ -272,11 +272,11 @@ impl TestOutcome {
     }
 
     fn record_run(&mut self, run: ScenarioRun) {
+        self.findings.extend(run.findings.clone());
         if run.status == ExitStatus::Pass {
             self.passed += 1;
         } else {
             self.failed += 1;
-            self.findings.extend(run.findings.clone());
         }
         if let Some(mem) = run.memory.as_ref() {
             self.has_memory = true;
@@ -335,4 +335,180 @@ fn gen_seed() -> u64 {
     let mut seed = [0u8; 8];
     rand_core::OsRng.fill_bytes(&mut seed);
     u64::from_le_bytes(seed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        FsBackend, HttpBackend, MemoryOptions, ProcBackend, ProfileCaptureLevel,
+        RecordCollisionPolicy, Reporter,
+    };
+
+    fn write_memory_leak_scenario(root: &Path, name: &str) -> PathBuf {
+        let path = root.join(name);
+        std::fs::write(
+            &path,
+            r#"{
+  "version": 1,
+  "name": "memory-leak",
+  "steps": [
+    { "type": "memory_alloc", "bytes": 256, "key": "leak" }
+  ]
+}"#,
+        )
+        .expect("write scenario");
+        path
+    }
+
+    fn write_multi_alloc_scenario(root: &Path, name: &str) -> PathBuf {
+        let path = root.join(name);
+        std::fs::write(
+            &path,
+            r#"{
+  "version": 1,
+  "name": "memory-multi-alloc",
+  "steps": [
+    { "type": "memory_alloc", "bytes": 64, "key": "a", "tag": "first" },
+    { "type": "memory_alloc", "bytes": 64, "key": "b", "tag": "second" }
+  ]
+}"#,
+        )
+        .expect("write scenario");
+        path
+    }
+
+    fn run_options(memory: MemoryOptions) -> RunOptions {
+        RunOptions {
+            det: true,
+            seed: Some(7),
+            timeout: None,
+            reporter: Reporter::Json,
+            record_trace_to: None,
+            filter: None,
+            jobs: None,
+            fail_fast: false,
+            record_collision: RecordCollisionPolicy::Overwrite,
+            profile_capture: ProfileCaptureLevel::Baseline,
+            proc_backend: ProcBackend::Scripted,
+            fs_backend: FsBackend::Virtual,
+            http_backend: HttpBackend::Scripted,
+            memory,
+        }
+    }
+
+    fn test_config(root: &Path) -> Config {
+        Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: ProcBackend::Scripted,
+            fs_backend: FsBackend::Virtual,
+            http_backend: HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        }
+    }
+
+    #[test]
+    fn memory_activity_is_reported_even_without_explicit_track_flag() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-test-memory-activity-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let scenario = write_memory_leak_scenario(&root, "memory.leak.fozzy.json");
+        let cfg = test_config(&root);
+
+        let run = run_tests(
+            &cfg,
+            &[scenario.display().to_string()],
+            &run_options(MemoryOptions {
+                track: false,
+                artifacts: false,
+                ..MemoryOptions::default()
+            }),
+        )
+        .expect("run tests");
+
+        assert_eq!(run.summary.status, ExitStatus::Fail);
+        assert_eq!(
+            run.summary.memory.as_ref().map(|m| m.leaked_bytes),
+            Some(256)
+        );
+        assert!(
+            run.summary
+                .findings
+                .iter()
+                .any(|f| f.title == "memory_leak")
+        );
+    }
+
+    #[test]
+    fn leak_budget_allows_bounded_leaks_without_warning_finding() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-test-memory-budget-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let scenario = write_memory_leak_scenario(&root, "memory.budget.fozzy.json");
+        let cfg = test_config(&root);
+
+        let run = run_tests(
+            &cfg,
+            &[scenario.display().to_string()],
+            &run_options(MemoryOptions {
+                track: false,
+                leak_budget_bytes: Some(512),
+                artifacts: false,
+                ..MemoryOptions::default()
+            }),
+        )
+        .expect("run tests");
+
+        assert_eq!(run.summary.status, ExitStatus::Pass);
+        assert_eq!(
+            run.summary.memory.as_ref().map(|m| m.leaked_bytes),
+            Some(256)
+        );
+        assert!(run.summary.findings.is_empty());
+    }
+
+    #[test]
+    fn memory_alloc_callsites_are_distinct_per_step() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-test-memory-callsite-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let scenario = write_multi_alloc_scenario(&root, "memory.callsite.fozzy.json");
+        let cfg = test_config(&root);
+
+        let run = run_scenario_inner(
+            &cfg,
+            RunMode::Run,
+            ScenarioPath::new(scenario),
+            7,
+            true,
+            None,
+            ProcBackend::Scripted,
+            FsBackend::Virtual,
+            HttpBackend::Scripted,
+            MemoryOptions {
+                track: false,
+                artifacts: false,
+                ..MemoryOptions::default()
+            },
+        )
+        .expect("run scenario");
+
+        let leaks = run.memory.expect("memory report").leaks;
+        assert_eq!(leaks.len(), 2);
+        assert_ne!(leaks[0].callsite_hash, leaks[1].callsite_hash);
+    }
 }

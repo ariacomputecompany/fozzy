@@ -2195,6 +2195,7 @@ fn trace_followup_commands_accept_bare_and_dot_relative_paths() {
             "run".into(),
             "example.fozzy.json".into(),
             "--det".into(),
+            "--mem-track".into(),
             "--record".into(),
             "artifacts/repro.trace.fozzy".into(),
             "--json".into(),

@@ -103,6 +103,38 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         ok: expected == got,
         detail: Some(format!("expected={expected} got={got}")),
     });
+    let expected_warning_messages = crate::pass_checker_warnings(&trace.summary)
+        .into_iter()
+        .map(|f| f.message.clone())
+        .collect::<Vec<_>>();
+    let actual_warning_messages = crate::pass_checker_warnings(&replay.summary)
+        .into_iter()
+        .map(|f| f.message.clone())
+        .collect::<Vec<_>>();
+    checks.push(CiCheck {
+        name: "replay_warning_parity".to_string(),
+        ok: expected_warning_messages == actual_warning_messages,
+        detail: Some(format!(
+            "expected={expected_warning_messages:?} got={actual_warning_messages:?}"
+        )),
+    });
+    checks.push(CiCheck {
+        name: "strict_warning_policy".to_string(),
+        ok: !opt.strict || expected_warning_messages.is_empty(),
+        detail: Some(format!(
+            "strict={} warnings={expected_warning_messages:?}",
+            opt.strict
+        )),
+    });
+    checks.push(CiCheck {
+        name: "replay_memory_parity".to_string(),
+        ok: trace.memory.as_ref().map(|m| &m.summary) == replay.summary.memory.as_ref(),
+        detail: Some(format!(
+            "expected={:?} got={:?}",
+            trace.memory.as_ref().map(|m| &m.summary),
+            replay.summary.memory.as_ref()
+        )),
+    });
     if let Some(memory) = trace.memory.as_ref() {
         let leak_ok = if memory.options.fail_on_leak {
             memory.summary.leaked_bytes == 0
@@ -228,31 +260,45 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        ExitStatus, MemoryOptions, MemorySummary, RunIdentity, RunMode, RunSummary, ScenarioV1Steps,
+    };
 
     #[test]
     fn ci_command_runs_core_checks() {
         let root = std::env::temp_dir().join(format!("fozzy-ci-cmd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("mkdir");
         let trace = root.join("trace.fozzy");
-        let raw = r#"{
-          "format":"fozzy-trace",
-          "version":2,
-          "engine":{"version":"0.1.0"},
-          "mode":"run",
-          "scenario_path":null,
-          "scenario":{"version":1,"name":"x","steps":[]},
-          "decisions":[],
-          "events":[],
-          "summary":{
-            "status":"pass",
-            "mode":"run",
-            "identity":{"runId":"r1","seed":1},
-            "startedAt":"2026-01-01T00:00:00Z",
-            "finishedAt":"2026-01-01T00:00:00Z",
-            "durationMs":0
-          }
-        }"#;
-        std::fs::write(&trace, raw).expect("write trace");
+        let trace_file = crate::TraceFile::new(
+            RunMode::Run,
+            None,
+            Some(ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            Vec::new(),
+            Vec::new(),
+            RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: None,
+                    report_path: None,
+                    artifacts_dir: None,
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+        );
+        trace_file.write_json(&trace).expect("write trace");
         let cfg = Config {
             base_dir: root.join(".fozzy"),
             reporter: Reporter::Json,
@@ -286,6 +332,8 @@ mod tests {
         assert!(out.ok);
         assert!(out.checks.iter().any(|c| c.name == "trace_verify"));
         assert!(out.checks.iter().any(|c| c.name == "replay_outcome_class"));
+        assert!(out.checks.iter().any(|c| c.name == "replay_warning_parity"));
+        assert!(out.checks.iter().any(|c| c.name == "replay_memory_parity"));
         assert!(
             out.checks
                 .iter()
@@ -349,5 +397,114 @@ mod tests {
         )
         .expect_err("must fail");
         assert!(err.to_string().contains("--flake-budget requires"));
+    }
+
+    #[test]
+    fn ci_strict_fails_when_trace_carries_warning_findings() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-ci-cmd-strict-warning-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace = root.join("trace.fozzy");
+        let memory = MemorySummary {
+            alloc_count: 1,
+            free_count: 0,
+            failed_alloc_count: 0,
+            in_use_bytes: 256,
+            peak_bytes: 256,
+            leaked_bytes: 256,
+            leaked_allocs: 1,
+        };
+        let mut trace_file = crate::TraceFile::new(
+            RunMode::Run,
+            None,
+            Some(ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            Vec::new(),
+            Vec::new(),
+            RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: None,
+                    report_path: None,
+                    artifacts_dir: None,
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(memory.clone()),
+                findings: vec![crate::Finding {
+                    kind: crate::FindingKind::Checker,
+                    title: "memory_leak".to_string(),
+                    message: "detected 1 leaked allocation(s), leaked_bytes=256".to_string(),
+                    location: None,
+                }],
+            },
+        );
+        trace_file.memory = Some(crate::MemoryTrace {
+            options: MemoryOptions {
+                track: true,
+                fail_on_leak: false,
+                leak_budget_bytes: None,
+                artifacts: true,
+                ..MemoryOptions::default()
+            },
+            summary: memory,
+            leaks: vec![crate::MemoryLeak {
+                alloc_id: 1,
+                bytes: 256,
+                callsite_hash: "abc".to_string(),
+                tag: None,
+            }],
+            graph: crate::MemoryGraph::default(),
+        });
+        trace_file.write_json(&trace).expect("write trace");
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let report = ci_evaluate(
+            &cfg,
+            &CiOptions {
+                trace,
+                flake_runs: Vec::new(),
+                flake_budget_pct: None,
+                perf_baseline: None,
+                max_p99_delta_pct: None,
+                strict: true,
+            },
+        )
+        .expect("ci evaluate");
+
+        assert!(!report.ok);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.name == "strict_warning_policy" && !c.ok)
+        );
     }
 }

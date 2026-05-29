@@ -28,8 +28,10 @@ pub(super) fn build_profile_timeline(trace: &TraceFile) -> Vec<ProfileEvent> {
         }
         let bytes = event
             .fields
-            .get("bytes")
+            .get("effective_bytes")
             .and_then(|v| v.as_u64())
+            .or_else(|| event.fields.get("effectiveBytes").and_then(|v| v.as_u64()))
+            .or_else(|| event.fields.get("bytes").and_then(|v| v.as_u64()))
             .or_else(|| event.fields.get("payload_size").and_then(|v| v.as_u64()));
         let task = event
             .fields

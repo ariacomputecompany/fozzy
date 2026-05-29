@@ -163,6 +163,17 @@ pub fn collapse_findings(findings: Vec<Finding>) -> Vec<Finding> {
         .collect()
 }
 
+pub fn pass_checker_warnings(summary: &RunSummary) -> Vec<&Finding> {
+    if summary.status != ExitStatus::Pass {
+        return Vec::new();
+    }
+    summary
+        .findings
+        .iter()
+        .filter(|f| f.kind == FindingKind::Checker)
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSummary {
     pub status: ExitStatus,

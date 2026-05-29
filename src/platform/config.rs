@@ -89,11 +89,11 @@ fn default_http_backend() -> crate::HttpBackend {
 }
 
 fn default_mem_track() -> bool {
-    true
+    false
 }
 
 fn default_mem_artifacts() -> bool {
-    true
+    false
 }
 
 impl Default for Config {
@@ -115,6 +115,18 @@ impl Default for Config {
             profile_heap_alloc_budget: None,
             profile_heap_in_use_budget: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_memory_contract_is_opt_in() {
+        let cfg = Config::default();
+        assert!(!cfg.mem_track);
+        assert!(!cfg.mem_artifacts);
     }
 }
 

@@ -388,6 +388,62 @@ fn heap_callsite_and_lifetime_histogram_aggregation_is_correct() {
 }
 
 #[test]
+fn heap_profile_prefers_effective_alloc_bytes() {
+    let mut trace = sample_trace();
+    trace.events = vec![
+        TraceEvent {
+            time_ms: 1,
+            name: "memory_alloc".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("alloc_id".to_string(), serde_json::json!(1)),
+                ("bytes".to_string(), serde_json::json!(64)),
+                ("effective_bytes".to_string(), serde_json::json!(96)),
+                ("callsite_hash".to_string(), serde_json::json!("cs:A")),
+            ]),
+        },
+        TraceEvent {
+            time_ms: 2,
+            name: "memory_alloc".to_string(),
+            fields: serde_json::Map::from_iter([
+                ("alloc_id".to_string(), serde_json::json!(2)),
+                ("bytes".to_string(), serde_json::json!(32)),
+                ("effective_bytes".to_string(), serde_json::json!(48)),
+                ("callsite_hash".to_string(), serde_json::json!("cs:A")),
+            ]),
+        },
+    ];
+    trace.memory = Some(crate::MemoryTrace {
+        options: crate::MemoryOptions {
+            track: true,
+            artifacts: true,
+            ..crate::MemoryOptions::default()
+        },
+        summary: crate::MemorySummary {
+            alloc_count: 2,
+            free_count: 0,
+            failed_alloc_count: 0,
+            in_use_bytes: 144,
+            peak_bytes: 144,
+            leaked_bytes: 144,
+            leaked_allocs: 2,
+        },
+        leaks: Vec::new(),
+        graph: crate::MemoryGraph::default(),
+    });
+    let timeline = build_profile_timeline(&trace);
+    let heap = build_heap_profile(&trace, &timeline);
+    let cs_a = heap
+        .hotspots
+        .iter()
+        .find(|h| h.callsite_hash == "cs:A")
+        .expect("cs:A");
+    assert_eq!(heap.total_alloc_bytes, 144);
+    assert_eq!(heap.in_use_bytes, 144);
+    assert_eq!(cs_a.alloc_bytes, 144);
+    assert_eq!(cs_a.in_use_bytes, 144);
+}
+
+#[test]
 fn diff_tie_breaking_is_deterministic() {
     let trace = sample_trace();
     let timeline = build_profile_timeline(&trace);

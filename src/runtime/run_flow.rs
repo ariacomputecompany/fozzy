@@ -164,11 +164,7 @@ pub fn replay_trace(
         ProcBackend::Scripted,
         FsBackend::Virtual,
         HttpBackend::Scripted,
-        trace
-            .memory
-            .as_ref()
-            .map(|m| m.options.clone())
-            .unwrap_or_default(),
+        replay_memory_options(&trace),
     )?;
 
     let finished_at = wall_time_iso_utc();
@@ -190,25 +186,49 @@ pub fn replay_trace(
             location: None,
         });
     }
-    if let (Some(expected), Some(actual)) = (trace.memory.as_ref(), run.memory.as_ref())
+    if trace.memory.is_some() != run.memory.is_some() {
+        findings.push(Finding {
+            kind: FindingKind::Checker,
+            title: "replay_memory_drift".to_string(),
+            message: format!(
+                "replay memory presence drift: expected_memory={} actual_memory={}",
+                trace.memory.is_some(),
+                run.memory.is_some()
+            ),
+            location: None,
+        });
+    } else if let (Some(expected), Some(actual)) = (trace.memory.as_ref(), run.memory.as_ref())
         && expected.summary != actual.summary
     {
         findings.push(Finding {
             kind: FindingKind::Checker,
             title: "replay_memory_drift".to_string(),
             message: format!(
-                "replay memory drift: expected leaked_bytes={} leaked_allocs={}, got leaked_bytes={} leaked_allocs={}",
+                "replay memory drift: expected leaked_bytes={} leaked_allocs={} peak_bytes={}, got leaked_bytes={} leaked_allocs={} peak_bytes={}",
                 expected.summary.leaked_bytes,
                 expected.summary.leaked_allocs,
+                expected.summary.peak_bytes,
                 actual.summary.leaked_bytes,
-                actual.summary.leaked_allocs
+                actual.summary.leaked_allocs,
+                actual.summary.peak_bytes
             ),
             location: None,
         });
     }
+    let replay_warning_drift = pass_checker_warning_drift(&trace.summary, &run.findings);
+    findings.extend(replay_warning_drift);
+    let replay_status = if findings
+        .iter()
+        .any(|f| f.kind == FindingKind::Checker && f.title.starts_with("replay_"))
+        && run.status == ExitStatus::Pass
+    {
+        ExitStatus::Fail
+    } else {
+        run.status
+    };
 
     let mut summary = build_run_summary(
-        run.status,
+        replay_status,
         RunMode::Replay,
         run_id,
         seed,
@@ -320,11 +340,7 @@ fn shrink_trace_inner(
         ProcBackend::Scripted,
         FsBackend::Virtual,
         HttpBackend::Scripted,
-        trace
-            .memory
-            .as_ref()
-            .map(|m| m.options.clone())
-            .unwrap_or_default(),
+        replay_memory_options(&trace),
     )?;
     if !crate::shrink_status_matches(target_status, best_run.status) {
         return Err(FozzyError::Trace(
@@ -363,11 +379,7 @@ fn shrink_trace_inner(
                 ProcBackend::Scripted,
                 FsBackend::Virtual,
                 HttpBackend::Scripted,
-                trace
-                    .memory
-                    .as_ref()
-                    .map(|m| m.options.clone())
-                    .unwrap_or_default(),
+                replay_memory_options(&trace),
             )?;
             if !crate::shrink_status_matches(target_status, res.status) {
                 i += chunk;
@@ -489,5 +501,141 @@ fn heap_budget_policy(config: &Config) -> HeapBudgetPolicy {
     HeapBudgetPolicy {
         alloc_bytes_budget: config.profile_heap_alloc_budget,
         in_use_bytes_budget: config.profile_heap_in_use_budget,
+    }
+}
+
+fn replay_memory_options(trace: &TraceFile) -> crate::MemoryOptions {
+    trace
+        .memory
+        .as_ref()
+        .map(|m| m.options.clone())
+        .unwrap_or(crate::MemoryOptions {
+            track: false,
+            artifacts: false,
+            ..crate::MemoryOptions::default()
+        })
+}
+
+fn pass_checker_warning_drift(
+    expected: &crate::RunSummary,
+    actual_findings: &[crate::Finding],
+) -> Vec<Finding> {
+    let expected_messages = crate::pass_checker_warnings(expected)
+        .into_iter()
+        .map(|f| f.message.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_messages = if expected.status == ExitStatus::Pass {
+        actual_findings
+            .iter()
+            .filter(|f| f.kind == FindingKind::Checker)
+            .map(|f| f.message.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    if expected_messages == actual_messages {
+        return Vec::new();
+    }
+    vec![Finding {
+        kind: FindingKind::Checker,
+        title: "replay_warning_drift".to_string(),
+        message: format!(
+            "replay warning drift: expected={:?} actual={:?}",
+            expected_messages, actual_messages
+        ),
+        location: None,
+    }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Reporter, RunIdentity, RunSummary, ScenarioV1Steps, TraceFile};
+
+    #[test]
+    fn shrink_non_memory_trace_preserves_absent_memory() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-shrink-nomem-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("input.fozzy");
+        let shrunk_path = root.join("shrunk.fozzy");
+        let trace = TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(ScenarioV1Steps {
+                version: 1,
+                name: "no-memory".to_string(),
+                steps: vec![crate::Step::TraceEvent {
+                    name: "noop".to_string(),
+                    fields: serde_json::Map::new(),
+                }],
+            }),
+            fuzz: None,
+            explore: None,
+            memory: None,
+            decisions: Vec::new(),
+            events: vec![crate::TraceEvent {
+                time_ms: 1,
+                name: "noop".to_string(),
+                fields: serde_json::Map::new(),
+            }],
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 7,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: None,
+                    artifacts_dir: None,
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&trace_path).expect("write trace");
+
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: ProcBackend::Scripted,
+            fs_backend: FsBackend::Virtual,
+            http_backend: HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let result = shrink_trace(
+            &cfg,
+            TracePath::new(trace_path.clone()),
+            &ShrinkOptions {
+                out_trace_path: Some(shrunk_path.clone()),
+                budget: None,
+                aggressive: false,
+                minimize: ShrinkMinimize::All,
+            },
+        )
+        .expect("shrink");
+
+        assert_eq!(result.result.summary.memory, None);
+        let shrunk = TraceFile::read_json(&shrunk_path).expect("read shrunk trace");
+        assert!(shrunk.memory.is_none());
     }
 }
