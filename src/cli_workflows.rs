@@ -458,20 +458,38 @@ fn memory_graph_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .unwrap_or_default();
     let node_count = nodes.len();
     let edge_count = edges.len();
-    let node_ids = nodes
-        .iter()
-        .filter_map(|node| node.get("id").and_then(|v| v.as_str()))
-        .collect::<std::collections::BTreeSet<_>>();
+    let mut node_ids = std::collections::BTreeSet::new();
+    let mut duplicate_nodes = 0usize;
+    for node in &nodes {
+        if let Some(id) = node.get("id").and_then(|v| v.as_str()) {
+            if !node_ids.insert(id.to_string()) {
+                duplicate_nodes += 1;
+            }
+        }
+    }
+    let mut edge_keys = std::collections::BTreeSet::new();
+    let mut duplicate_edges = 0usize;
     let mut invalid_edges = 0usize;
     for edge in &edges {
         let from = edge.get("from").and_then(|v| v.as_str());
         let to = edge.get("to").and_then(|v| v.as_str());
-        if from.is_none_or(|id| !node_ids.contains(id)) || to.is_none_or(|id| !node_ids.contains(id))
+        let kind = edge.get("kind").and_then(|v| v.as_str());
+        if let (Some(from), Some(to), Some(kind)) = (from, to, kind)
+            && !from.is_empty()
+            && !to.is_empty()
+            && !kind.is_empty()
+            && !edge_keys.insert(format!("{from}\u{0}{to}\u{0}{kind}"))
+        {
+            duplicate_edges += 1;
+        }
+        if from.is_none_or(|id| !node_ids.contains(id))
+            || to.is_none_or(|id| !node_ids.contains(id))
         {
             invalid_edges += 1;
         }
     }
-    let consistent = invalid_edges == 0 && node_ids.len() == node_count;
+    let consistent =
+        invalid_edges == 0 && duplicate_nodes == 0 && duplicate_edges == 0 && node_ids.len() == node_count;
     (
         if node_count == 0 && edge_count == 0 {
             FullStepStatus::Skipped
@@ -484,10 +502,12 @@ fn memory_graph_status(value: &serde_json::Value) -> (FullStepStatus, String) {
             format!("nodes={} edges={}", node_count, edge_count)
         } else {
             format!(
-                "nodes={} edges={} unique_nodes={} invalid_edges={} consistent={}",
+                "nodes={} edges={} unique_nodes={} duplicate_nodes={} duplicate_edges={} invalid_edges={} consistent={}",
                 node_count,
                 edge_count,
                 node_ids.len(),
+                duplicate_nodes,
+                duplicate_edges,
                 invalid_edges,
                 consistent
             )
@@ -3340,6 +3360,43 @@ mod tests {
         let (status, detail) = memory_graph_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_edges=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn memory_graph_status_rejects_duplicate_node_ids() {
+        let value = serde_json::json!({
+            "graph": {
+                "nodes": [
+                    {"id": "alloc:1", "kind": "alloc", "label": "a"},
+                    {"id": "alloc:1", "kind": "alloc", "label": "a-dup"}
+                ],
+                "edges": []
+            }
+        });
+        let (status, detail) = memory_graph_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_nodes=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn memory_graph_status_rejects_duplicate_edges() {
+        let value = serde_json::json!({
+            "graph": {
+                "nodes": [
+                    {"id": "alloc:1", "kind": "alloc", "label": "a"},
+                    {"id": "alloc:2", "kind": "alloc", "label": "b"}
+                ],
+                "edges": [
+                    {"from": "alloc:1", "to": "alloc:2", "kind": "owns"},
+                    {"from": "alloc:1", "to": "alloc:2", "kind": "owns"}
+                ]
+            }
+        });
+        let (status, detail) = memory_graph_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_edges=1"));
         assert!(detail.contains("consistent=false"));
     }
 
