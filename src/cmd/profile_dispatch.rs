@@ -484,6 +484,11 @@ pub(super) fn dispatch_profile_command(
                 .map(|p| p.to_path_buf())
                 .unwrap_or(artifacts_dir);
             write_profile_artifacts_from_trace(&shrunk_trace, &out_parent)?;
+            if let Ok(bytes) = std::fs::read(out_parent.join("report.json"))
+                && let Ok(summary) = serde_json::from_slice::<RunSummary>(&bytes)
+            {
+                crate::write_run_manifest(&summary, &out_parent)?;
+            }
             let direction_name = match direction {
                 ProfileDirection::Increase => "increase",
                 ProfileDirection::Decrease => "decrease",

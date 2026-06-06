@@ -620,6 +620,64 @@ fn profile_commands_support_run_id_with_profile_artifacts_only() {
 }
 
 #[test]
+fn profile_command_refreshes_manifest_after_lazy_profile_emit() {
+    let ws = temp_workspace("profile-manifest-refresh");
+    let base_dir = ws.join(".fozzy");
+    let run_id = "run-profile-manifest-refresh";
+    let run_dir = base_dir.join("runs").join(run_id);
+    std::fs::create_dir_all(&run_dir).expect("run dir");
+
+    let mut trace = sample_trace();
+    trace.summary.identity.run_id = run_id.to_string();
+    let trace_path = run_dir.join("trace.fozzy");
+    std::fs::write(
+        &trace_path,
+        serde_json::to_vec_pretty(&trace).expect("trace bytes"),
+    )
+    .expect("write trace");
+
+    let mut summary = trace.summary.clone();
+    summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
+    std::fs::write(
+        run_dir.join("report.json"),
+        serde_json::to_vec_pretty(&summary).expect("summary bytes"),
+    )
+    .expect("write report");
+    crate::write_run_manifest(&summary, &run_dir).expect("write initial manifest");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let cmd = ProfileCommand::Top {
+        run: run_id.to_string(),
+        cpu: false,
+        heap: true,
+        latency: false,
+        io: false,
+        sched: false,
+        limit: 5,
+    };
+    let out = profile_command(&cfg, &cmd, true).expect("profile top");
+    assert_eq!(out.get("run").and_then(|v| v.as_str()), Some(run_id));
+
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(run_dir.join("manifest.json")).expect("read manifest"),
+    )
+    .expect("manifest json");
+    let caps = manifest
+        .get("profileCapabilities")
+        .and_then(|v| v.as_array())
+        .expect("profile capabilities");
+    assert!(
+        caps.iter().any(|v| v.as_str() == Some("metrics")),
+        "manifest should refresh after lazy profile artifact generation"
+    );
+}
+
+#[test]
 fn explain_diff_keeps_primary_run_as_run_field() {
     let trace = sample_trace();
     let timeline = build_profile_timeline(&trace);

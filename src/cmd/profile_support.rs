@@ -10,6 +10,7 @@ pub(super) fn load_profile_bundle(
         if profile_artifacts_stale(&artifacts_dir, &trace_path)? {
             let trace = TraceFile::read_json(&trace_path)?;
             write_profile_artifacts_from_trace(&trace, &artifacts_dir)?;
+            refresh_manifest_for_profile_artifacts(&artifacts_dir)?;
         }
     } else if !profile_artifacts_exist(&artifacts_dir) {
         return Err(FozzyError::InvalidArgument(format!(
@@ -653,6 +654,16 @@ pub(super) fn resolve_profile_artifacts(
     }
 
     Ok((artifacts_dir, None))
+}
+
+fn refresh_manifest_for_profile_artifacts(artifacts_dir: &Path) -> FozzyResult<()> {
+    let report_path = artifacts_dir.join("report.json");
+    if !report_path.exists() {
+        return Ok(());
+    }
+    let summary: RunSummary = serde_json::from_slice(&std::fs::read(&report_path)?)?;
+    crate::write_run_manifest(&summary, artifacts_dir)?;
+    Ok(())
 }
 
 fn profile_artifacts_exist(artifacts_dir: &Path) -> bool {
