@@ -260,21 +260,22 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<RunSummary> {
         return Ok(summary);
     }
 
-    let input_path = crate::normalize_trace_path(&PathBuf::from(run));
-    let trace_path = if input_path.exists() {
-        let is_trace = input_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"));
-        if !is_trace {
-            return Err(FozzyError::Report(format!(
-                "invalid run identifier {run:?}: expected run id or .fozzy trace path"
-            )));
-        }
-        input_path
-    } else {
-        artifacts_dir.join("trace.fozzy")
-    };
+    let trace_path = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)?
+        .or_else(|| {
+            let input_path = crate::normalize_trace_path(&PathBuf::from(run));
+            let is_trace = input_path.exists()
+                && input_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"));
+            is_trace.then_some(input_path)
+        })
+        .ok_or_else(|| {
+            FozzyError::Report(format!(
+                "no report found for {run:?} (looked for {} and trace resolved from artifacts identity)",
+                report_json.display()
+            ))
+        })?;
     if trace_path.exists() {
         let trace = TraceFile::read_json(&trace_path)?;
         return Ok(trace.summary);
@@ -725,5 +726,93 @@ mod tests {
         let err =
             flaky_command(&cfg, &[a.clone(), a, b], None).expect_err("must reject duplicates");
         assert!(err.to_string().contains("duplicate run reference"));
+    }
+
+    #[test]
+    fn load_summary_uses_manifest_declared_external_trace_when_report_missing() {
+        let root = std::env::temp_dir().join(format!("fozzy-report-trace-{}", Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let external_trace = root.join("external.trace.fozzy");
+        let summary = RunSummary {
+            status: ExitStatus::Pass,
+            mode: RunMode::Run,
+            identity: RunIdentity {
+                run_id: "r1".to_string(),
+                seed: 1,
+                trace_path: Some(external_trace.to_string_lossy().to_string()),
+                report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+            },
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:00Z".to_string(),
+            duration_ms: 0,
+            duration_ns: 0,
+            tests: None,
+            memory: None,
+            findings: Vec::new(),
+        };
+        let trace = TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: None,
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: summary.clone(),
+            checksum: None,
+        };
+        trace.write_json(&external_trace).expect("write trace");
+        std::fs::write(
+            run_dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": "fozzy.run_manifest.v1",
+                "runId": "r1",
+                "mode": "run",
+                "status": "pass",
+                "seed": 1,
+                "startedAt": "2026-01-01T00:00:00Z",
+                "finishedAt": "2026-01-01T00:00:00Z",
+                "durationMs": 0,
+                "durationNs": 0,
+                "tracePath": external_trace,
+                "reportPath": run_dir.join("report.json"),
+                "artifactsDir": run_dir,
+                "findingsCount": 0
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let loaded = load_summary(&cfg, "r1").expect("load summary");
+        assert_eq!(loaded.identity.run_id, "r1");
+        assert_eq!(loaded.identity.trace_path.as_deref(), Some(external_trace.to_string_lossy().as_ref()));
     }
 }

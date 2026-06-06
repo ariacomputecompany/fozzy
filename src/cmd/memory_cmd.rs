@@ -169,40 +169,8 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
         });
     }
 
-    let trace_path = artifacts_dir.join("trace.fozzy");
-    if trace_path.exists() {
-        match load_from_trace(&trace_path, run) {
-            Ok(bundle) => return Ok(bundle),
-            Err(err) => {
-                if let Some(dir) = resolve_memory_alias_dir(config, run)? {
-                    let leaks_path = dir.join("memory.leaks.json");
-                    let graph_path = dir.join("memory.graph.json");
-                    if leaks_path.exists() || graph_path.exists() {
-                        let summary = load_summary_from_report(&dir)?;
-                        let leaks: Vec<MemoryLeak> = if leaks_path.exists() {
-                            serde_json::from_slice(&std::fs::read(leaks_path)?)?
-                        } else {
-                            Vec::new()
-                        };
-                        let graph: MemoryGraph = if graph_path.exists() {
-                            serde_json::from_slice(&std::fs::read(graph_path)?)?
-                        } else {
-                            MemoryGraph::default()
-                        };
-                        return Ok(MemoryBundle {
-                            summary,
-                            leaks,
-                            graph,
-                        });
-                    }
-                    let alt_trace = dir.join("trace.fozzy");
-                    if alt_trace.exists() {
-                        return load_from_trace(&alt_trace, run);
-                    }
-                }
-                return Err(err);
-            }
-        }
+    if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
+        return load_from_trace(&trace_path, run);
     }
 
     if let Some(dir) = resolve_memory_alias_dir(config, run)? {
@@ -226,8 +194,7 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
                 graph,
             });
         }
-        let trace_path = dir.join("trace.fozzy");
-        if trace_path.exists() {
+        if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&dir)? {
             return load_from_trace(&trace_path, run);
         }
     }
@@ -523,5 +490,85 @@ mod tests {
         let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
         assert_eq!(bundle.graph.nodes.len(), 1);
         assert_eq!(bundle.graph.nodes[0].id, "alloc:a");
+    }
+
+    #[test]
+    fn run_id_uses_report_declared_external_trace_path_for_memory_bundle() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-memory-runid-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let external_trace = root.join("external.trace.fozzy");
+        let trace = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary {
+                    leaked_bytes: 64,
+                    leaked_allocs: 1,
+                    peak_bytes: 128,
+                    ..MemorySummary::default()
+                },
+                leaks: vec![MemoryLeak {
+                    alloc_id: 7,
+                    bytes: 64,
+                    callsite_hash: "alloc:external".to_string(),
+                    tag: None,
+                }],
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(external_trace.to_string_lossy().to_string()),
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    leaked_bytes: 64,
+                    leaked_allocs: 1,
+                    peak_bytes: 128,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&external_trace).expect("write trace");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&trace.summary).expect("report json"),
+        )
+        .expect("write report");
+
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            ..Config::default()
+        };
+        let bundle = load_memory_bundle(&cfg, "r1").expect("bundle");
+        assert_eq!(bundle.summary.leaked_bytes, 64);
+        assert_eq!(bundle.leaks.len(), 1);
+        assert_eq!(bundle.leaks[0].alloc_id, 7);
     }
 }

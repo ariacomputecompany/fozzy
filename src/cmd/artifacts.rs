@@ -787,7 +787,9 @@ fn trace_declared_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf
         .filter(|path| path.exists() && path.is_dir()))
 }
 
-fn resolve_trace_path_from_artifacts_dir(artifacts_dir: &Path) -> FozzyResult<Option<PathBuf>> {
+pub(crate) fn resolve_trace_path_from_artifacts_dir(
+    artifacts_dir: &Path,
+) -> FozzyResult<Option<PathBuf>> {
     let local_trace = artifacts_dir.join("trace.fozzy");
     if local_trace.exists() {
         return Ok(Some(local_trace));

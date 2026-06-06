@@ -2876,15 +2876,16 @@ fn run_recorded_trace_shares_report_identity() {
 #[test]
 fn artifacts_run_id_uses_external_recorded_trace_identity() {
     let ws = temp_workspace("artifacts-external-trace");
-    let scenario = ws.join("example.fozzy.json");
-    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
     let requested = ws.join("external.trace.fozzy");
 
     let output = run_cli_in(
         &ws,
         &[
             "run".into(),
-            scenario.display().to_string(),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/memory.pass.fozzy.json")
+                .display()
+                .to_string(),
             "--det".into(),
             "--record".into(),
             requested.display().to_string(),
@@ -2930,6 +2931,28 @@ fn artifacts_run_id_uses_external_recorded_trace_identity() {
     assert_eq!(
         std::fs::canonicalize(trace_entry).expect("canonicalize listed trace"),
         std::fs::canonicalize(&requested).expect("canonicalize requested trace")
+    );
+
+    let memory = run_cli_in(
+        &ws,
+        &[
+            "memory".into(),
+            "top".into(),
+            run_id,
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        memory.status.code(),
+        Some(0),
+        "memory top stderr={}",
+        String::from_utf8_lossy(&memory.stderr)
+    );
+    let memory_doc = parse_json_stdout(&memory);
+    assert_eq!(
+        memory_doc.get("total").and_then(|v| v.as_u64()),
+        Some(0),
+        "external recorded run id should resolve trace-backed memory summary"
     );
 }
 
