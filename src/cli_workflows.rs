@@ -1306,7 +1306,8 @@ fn doctor_report_status(
                 .count()
         })
         .unwrap_or(0);
-    let derived_ok = report.issues.is_empty()
+    let derived_ok = runs > 0
+        && report.issues.is_empty()
         && invalid_issues == 0
         && duplicate_issues == 0
         && invalid_signals == 0
@@ -4030,6 +4031,21 @@ mod tests {
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("reported_ok=true"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_zero_run_count() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: Vec::new(),
+            nondeterminism_signals: None,
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 0);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("runs=0"));
         assert!(detail.contains("derived_ok=false"));
     }
 
