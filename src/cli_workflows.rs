@@ -350,6 +350,82 @@ fn corpus_minimize_status(value: &serde_json::Value) -> (FullStepStatus, String)
     )
 }
 
+fn artifacts_list_status(
+    output: &fozzy::ArtifactOutput,
+    fallback: &Path,
+) -> (FullStepStatus, String) {
+    match output {
+        fozzy::ArtifactOutput::List { entries } => (
+            if entries.is_empty() {
+                FullStepStatus::Failed
+            } else {
+                FullStepStatus::Passed
+            },
+            format!("entries={} run={}", entries.len(), fallback.display()),
+        ),
+        _ => (
+            FullStepStatus::Failed,
+            format!("unexpected artifacts ls payload for {}", fallback.display()),
+        ),
+    }
+}
+
+fn artifacts_diff_status(output: &fozzy::ArtifactOutput) -> (FullStepStatus, String) {
+    match output {
+        fozzy::ArtifactOutput::Diff { diff } => {
+            let evidence_count = diff.files.len()
+                + usize::from(diff.report.is_some())
+                + usize::from(diff.trace.is_some());
+            (
+                if evidence_count > 0 {
+                    FullStepStatus::Passed
+                } else {
+                    FullStepStatus::Failed
+                },
+                format!(
+                    "left={} right={} file_deltas={} report={} trace={}",
+                    diff.left,
+                    diff.right,
+                    diff.files.len(),
+                    diff.report.is_some(),
+                    diff.trace.is_some()
+                ),
+            )
+        }
+        _ => (
+            FullStepStatus::Failed,
+            "unexpected artifacts diff payload".to_string(),
+        ),
+    }
+}
+
+fn env_step_status(env: &fozzy::EnvInfo) -> (FullStepStatus, String) {
+    let proc_backend = env
+        .capabilities
+        .get("proc")
+        .map(|c| c.backend.as_str())
+        .unwrap_or("unknown");
+    let fs_backend = env
+        .capabilities
+        .get("fs")
+        .map(|c| c.backend.as_str())
+        .unwrap_or("unknown");
+    let http_backend = env
+        .capabilities
+        .get("http")
+        .map(|c| c.backend.as_str())
+        .unwrap_or("unknown");
+    let ok = proc_backend != "unknown" && fs_backend != "unknown" && http_backend != "unknown";
+    (
+        if ok {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!("proc={proc_backend} fs={fs_backend} http={http_backend}"),
+    )
+}
+
 fn clean_tree_step_status(detail: &str) -> FullStepStatus {
     if detail.contains("check skipped") {
         FullStepStatus::Skipped
@@ -1302,12 +1378,9 @@ pub(super) fn run_full_command(
                 run: trace.display().to_string(),
             },
         )
-        .map(|_| {
-            push(
-                "artifacts_ls",
-                FullStepStatus::Passed,
-                trace.display().to_string(),
-            )
+        .map(|output| {
+            let (status, detail) = artifacts_list_status(&output, trace);
+            push("artifacts_ls", status, detail)
         })
         .map_err(|err| push("artifacts_ls", FullStepStatus::Failed, err.to_string()));
 
@@ -1353,11 +1426,10 @@ pub(super) fn run_full_command(
                     right: min_trace.display().to_string(),
                 },
             ) {
-                Ok(_) => push(
-                    "artifacts_diff",
-                    FullStepStatus::Passed,
-                    format!("left={} right={}", trace.display(), min_trace.display()),
-                ),
+                Ok(output) => {
+                    let (status, detail) = artifacts_diff_status(&output);
+                    push("artifacts_diff", status, detail);
+                }
                 Err(err) => push("artifacts_diff", FullStepStatus::Failed, err.to_string()),
             }
         } else {
@@ -1816,25 +1888,8 @@ pub(super) fn run_full_command(
     }
 
     let env = fozzy::env_info(config);
-    push(
-        "env",
-        FullStepStatus::Passed,
-        format!(
-            "proc={} fs={} http={}",
-            env.capabilities
-                .get("proc")
-                .map(|c| c.backend.as_str())
-                .unwrap_or("unknown"),
-            env.capabilities
-                .get("fs")
-                .map(|c| c.backend.as_str())
-                .unwrap_or("unknown"),
-            env.capabilities
-                .get("http")
-                .map(|c| c.backend.as_str())
-                .unwrap_or("unknown")
-        ),
-    );
+    let (env_status, env_detail) = env_step_status(&env);
+    push("env", env_status, env_detail);
 
     apply_full_policy_filters(&mut steps, skip_steps, required_steps);
 
@@ -2219,6 +2274,28 @@ mod tests {
         let (status, detail) = corpus_minimize_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("files_before=0"));
+    }
+
+    #[test]
+    fn artifacts_list_status_rejects_empty_entries() {
+        let output = fozzy::ArtifactOutput::List { entries: Vec::new() };
+        let path = PathBuf::from("/tmp/example.trace.fozzy");
+        let (status, detail) = artifacts_list_status(&output, &path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("entries=0"));
+    }
+
+    #[test]
+    fn env_step_status_rejects_unknown_backends() {
+        let env = fozzy::EnvInfo {
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            fozzy: fozzy::version_info(),
+            capabilities: std::collections::BTreeMap::new(),
+        };
+        let (status, detail) = env_step_status(&env);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("proc=unknown"));
     }
 
     #[test]
