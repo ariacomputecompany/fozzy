@@ -791,6 +791,11 @@ fn profile_shrink_writes_dedicated_artifacts_without_mutating_source_run_dir() {
         run_dir.join("trace.min.profile-artifacts")
     );
     assert_ne!(artifacts_dir, run_dir);
+    let shrunk_trace = TraceFile::read_json(&out_trace).expect("read shrunk trace");
+    assert_eq!(
+        shrunk_trace.summary.identity.artifacts_dir.as_deref(),
+        Some(artifacts_dir.to_string_lossy().as_ref())
+    );
     assert!(artifacts_dir.join("profile.metrics.json").exists());
     assert!(artifacts_dir.join("profile.heap.json").exists());
     assert_eq!(

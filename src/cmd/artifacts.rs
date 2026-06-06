@@ -177,72 +177,93 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
     if run_path.exists() && run_path.is_file() && crate::is_trace_path(&run_path) {
         let mut out = Vec::new();
         push_if_exists(&mut out, ArtifactKind::Trace, run_path.clone())?;
-        if let Some(parent) = run_path.parent() {
+        let artifacts_dir = resolve_artifacts_dir(config, run)?;
+        if artifacts_dir != run_path {
             push_if_exists(
                 &mut out,
                 ArtifactKind::Timeline,
-                parent.join("timeline.json"),
+                artifacts_dir.join("timeline.json"),
             )?;
             push_if_exists(
                 &mut out,
                 ArtifactKind::Profile,
-                parent.join("profile.timeline.json"),
+                artifacts_dir.join("profile.timeline.json"),
             )?;
             push_if_exists(
                 &mut out,
                 ArtifactKind::Profile,
-                parent.join("profile.cpu.json"),
+                artifacts_dir.join("profile.cpu.json"),
             )?;
             push_if_exists(
                 &mut out,
                 ArtifactKind::Profile,
-                parent.join("profile.heap.json"),
+                artifacts_dir.join("profile.heap.json"),
             )?;
             push_if_exists(
                 &mut out,
                 ArtifactKind::Profile,
-                parent.join("profile.latency.json"),
+                artifacts_dir.join("profile.latency.json"),
             )?;
             push_if_exists(
                 &mut out,
                 ArtifactKind::Profile,
-                parent.join("profile.metrics.json"),
-            )?;
-            push_if_exists(&mut out, ArtifactKind::Profile, parent.join("symbols.json"))?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Memory,
-                parent.join("memory.timeline.json"),
+                artifacts_dir.join("profile.metrics.json"),
             )?;
             push_if_exists(
                 &mut out,
-                ArtifactKind::Memory,
-                parent.join("memory.leaks.json"),
+                ArtifactKind::Profile,
+                artifacts_dir.join("symbols.json"),
             )?;
             push_if_exists(
                 &mut out,
                 ArtifactKind::Memory,
-                parent.join("memory.graph.json"),
+                artifacts_dir.join("memory.timeline.json"),
             )?;
             push_if_exists(
                 &mut out,
                 ArtifactKind::Memory,
-                parent.join("memory.delta.json"),
+                artifacts_dir.join("memory.leaks.json"),
             )?;
-            push_if_exists(&mut out, ArtifactKind::Report, parent.join("report.json"))?;
-            push_if_exists(&mut out, ArtifactKind::Events, parent.join("events.json"))?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Memory,
+                artifacts_dir.join("memory.graph.json"),
+            )?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Memory,
+                artifacts_dir.join("memory.delta.json"),
+            )?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Report,
+                artifacts_dir.join("report.json"),
+            )?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Events,
+                artifacts_dir.join("events.json"),
+            )?;
             push_if_exists(
                 &mut out,
                 ArtifactKind::Coverage,
-                parent.join("coverage.json"),
+                artifacts_dir.join("coverage.json"),
             )?;
             push_if_exists(
                 &mut out,
                 ArtifactKind::Manifest,
-                parent.join("manifest.json"),
+                artifacts_dir.join("manifest.json"),
             )?;
-            push_if_exists(&mut out, ArtifactKind::Report, parent.join("report.html"))?;
-            push_if_exists(&mut out, ArtifactKind::Report, parent.join("junit.xml"))?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Report,
+                artifacts_dir.join("report.html"),
+            )?;
+            push_if_exists(
+                &mut out,
+                ArtifactKind::Report,
+                artifacts_dir.join("junit.xml"),
+            )?;
         }
         return Ok(out);
     }
@@ -425,6 +446,7 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
 fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
     let trace_path = resolve_trace_path(config, run)?;
     let trace_input = trace_path.to_string_lossy().to_string();
+    let artifacts_dir = resolve_artifacts_dir(config, run)?;
 
     let replay = crate::replay_trace(
         config,
@@ -451,12 +473,10 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
     let verify = crate::verify_trace_file(&trace_path)?;
 
     let mut files: Vec<PathBuf> = vec![trace_path.clone()];
-    if let Some(parent) = trace_path.parent() {
-        for name in ["report.json", "manifest.json"] {
-            let path = parent.join(name);
-            if path.exists() && path.is_file() {
-                files.push(path);
-            }
+    for name in ["report.json", "manifest.json"] {
+        let path = artifacts_dir.join(name);
+        if path.exists() && path.is_file() {
+            files.push(path);
         }
     }
 
@@ -736,6 +756,12 @@ pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<P
             return Ok(path);
         }
 
+        if path.is_file() && crate::is_trace_path(&path)
+            && let Some(artifacts_dir) = trace_declared_artifacts_dir(&path)?
+        {
+            return Ok(artifacts_dir);
+        }
+
         // A direct trace file, or any file within the artifacts dir.
         if let Some(parent) = path.parent() {
             return Ok(parent.to_path_buf());
@@ -747,6 +773,16 @@ pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<P
     }
 
     Ok(config.runs_dir().join(run))
+}
+
+fn trace_declared_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
+    let trace = TraceFile::read_json(trace_path)?;
+    Ok(trace
+        .summary
+        .identity
+        .artifacts_dir
+        .map(PathBuf::from)
+        .filter(|path| path.exists() && path.is_dir()))
 }
 
 fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
@@ -1530,6 +1566,79 @@ mod tests {
         assert!(last_pass.ends_with("r3"));
         let last_fail = resolve_artifacts_dir(&cfg, "last-fail").expect("last-fail");
         assert!(last_fail.ends_with("r2"));
+    }
+
+    #[test]
+    fn direct_trace_uses_declared_artifacts_dir_and_lists_detached_profile_files() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-trace-artifacts-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("root dir");
+        let trace = root.join("record.trace.min.fozzy");
+        let detached_artifacts = root.join("record.trace.min.profile-artifacts");
+        std::fs::create_dir_all(&detached_artifacts).expect("artifacts dir");
+        std::fs::write(
+            &trace,
+            format!(
+                r#"{{
+  "format":"fozzy-trace",
+  "version":4,
+  "engine":{{"version":"0.1.0"}},
+  "mode":"replay",
+  "scenario_path":null,
+  "scenario":{{"version":1,"name":"x","steps":[]}},
+  "decisions":[],
+  "events":[],
+  "summary":{{
+    "status":"pass",
+    "mode":"replay",
+    "identity":{{
+      "runId":"r1",
+      "seed":7,
+      "tracePath":"{}",
+      "artifactsDir":"{}"
+    }},
+    "startedAt":"2026-01-01T00:00:00Z",
+    "finishedAt":"2026-01-01T00:00:00Z",
+    "durationMs":1
+  }}
+}}"#,
+                trace.display(),
+                detached_artifacts.display()
+            ),
+        )
+        .expect("write trace");
+        std::fs::write(
+            detached_artifacts.join("profile.metrics.json"),
+            br#"{"schemaVersion":"fozzy.profile_metrics.v1"}"#,
+        )
+        .expect("write metrics");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let resolved =
+            resolve_artifacts_dir(&cfg, &trace.to_string_lossy()).expect("resolve artifacts dir");
+        assert_eq!(resolved, detached_artifacts);
+
+        let entries = artifacts_list(&cfg, &trace.to_string_lossy()).expect("artifacts list");
+        assert!(entries.iter().any(|entry| {
+            entry.path == detached_artifacts.join("profile.metrics.json").to_string_lossy()
+        }));
     }
 
     #[test]

@@ -490,7 +490,7 @@ pub(super) fn dispatch_profile_command(
                     Ok(keep)
                 },
             )?;
-            let shrunk_trace = TraceFile::read_json(Path::new(&shrunk.out_trace_path))?;
+            let mut shrunk_trace = TraceFile::read_json(Path::new(&shrunk.out_trace_path))?;
             let after = metric_value(*metric, &shrunk_trace)?;
             let preserved = match direction {
                 ProfileDirection::Increase => after >= baseline,
@@ -498,6 +498,9 @@ pub(super) fn dispatch_profile_command(
             };
             let shrink_artifacts_dir =
                 shrink_profile_artifacts_dir(Path::new(&shrunk.out_trace_path));
+            shrunk_trace.summary.identity.artifacts_dir =
+                Some(shrink_artifacts_dir.to_string_lossy().to_string());
+            shrunk_trace.write_json(Path::new(&shrunk.out_trace_path))?;
             write_profile_artifacts_from_trace(&shrunk_trace, &shrink_artifacts_dir)?;
             let direction_name = match direction {
                 ProfileDirection::Increase => "increase",
