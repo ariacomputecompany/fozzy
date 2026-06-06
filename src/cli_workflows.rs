@@ -671,12 +671,22 @@ fn corpus_list_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let entries = value.as_array().cloned().unwrap_or_default();
     let count = entries.len();
     let mut invalid = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for entry in &entries {
         let Some(path_str) = entry.as_str() else {
             invalid.push(format!("non-string entry: {}", entry));
             continue;
         };
-        if let Err(err) = listed_file_status(Path::new(path_str)) {
+        let trimmed = path_str.trim();
+        if trimmed.is_empty() {
+            invalid.push("blank entry path".to_string());
+            continue;
+        }
+        if !seen.insert(trimmed.to_string()) {
+            invalid.push(format!("duplicate entry path: {trimmed}"));
+            continue;
+        }
+        if let Err(err) = listed_file_status(Path::new(trimmed)) {
             invalid.push(err.to_string());
         }
     }
@@ -791,8 +801,18 @@ fn artifacts_list_status(
     match output {
         fozzy::ArtifactOutput::List { entries } => {
             let mut invalid = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
             for entry in entries {
-                let path = Path::new(&entry.path);
+                let trimmed = entry.path.trim();
+                if trimmed.is_empty() {
+                    invalid.push("blank artifact path".to_string());
+                    continue;
+                }
+                if !seen.insert(trimmed.to_string()) {
+                    invalid.push(format!("duplicate artifact path: {trimmed}"));
+                    continue;
+                }
+                let path = Path::new(trimmed);
                 match listed_file_status(path) {
                     Ok(size) => {
                         if let Some(reported) = entry.size_bytes
@@ -3042,6 +3062,35 @@ mod tests {
     }
 
     #[test]
+    fn corpus_list_status_rejects_duplicate_entry_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "fozzy-corpus-list-dup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create corpus dir");
+        let entry = dir.join("input.bin");
+        std::fs::write(&entry, b"seed").expect("write corpus entry");
+        let value = serde_json::json!([
+            entry.to_string_lossy().to_string(),
+            entry.to_string_lossy().to_string()
+        ]);
+        let (status, detail) = corpus_list_status(&value);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("files=2"));
+        assert!(detail.contains("duplicate entry path"));
+    }
+
+    #[test]
+    fn corpus_list_status_rejects_blank_entry_path() {
+        let value = serde_json::json!(["   "]);
+        let (status, detail) = corpus_list_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("files=1"));
+        assert!(detail.contains("blank entry path"));
+    }
+
+    #[test]
     fn corpus_import_status_rejects_missing_dir_path() {
         let value = serde_json::json!({});
         let (status, detail) = corpus_import_status(&value);
@@ -3112,6 +3161,54 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid="));
         assert!(detail.contains("definitely-missing-fozzy-artifact"));
+    }
+
+    #[test]
+    fn artifacts_list_status_rejects_duplicate_entry_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-list-dup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create artifact dir");
+        let artifact = dir.join("trace.fozzy");
+        std::fs::write(&artifact, b"trace").expect("write artifact");
+        let path_str = artifact.to_string_lossy().to_string();
+        let output = fozzy::ArtifactOutput::List {
+            entries: vec![
+                fozzy::ArtifactEntry {
+                    kind: fozzy::ArtifactKind::Trace,
+                    path: path_str.clone(),
+                    size_bytes: Some(5),
+                },
+                fozzy::ArtifactEntry {
+                    kind: fozzy::ArtifactKind::Trace,
+                    path: path_str,
+                    size_bytes: Some(5),
+                },
+            ],
+        };
+        let path = PathBuf::from("/tmp/example.trace.fozzy");
+        let (status, detail) = artifacts_list_status(&output, &path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("entries=2"));
+        assert!(detail.contains("duplicate artifact path"));
+    }
+
+    #[test]
+    fn artifacts_list_status_rejects_blank_entry_path() {
+        let output = fozzy::ArtifactOutput::List {
+            entries: vec![fozzy::ArtifactEntry {
+                kind: fozzy::ArtifactKind::Trace,
+                path: "   ".to_string(),
+                size_bytes: Some(5),
+            }],
+        };
+        let path = PathBuf::from("/tmp/example.trace.fozzy");
+        let (status, detail) = artifacts_list_status(&output, &path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("entries=1"));
+        assert!(detail.contains("blank artifact path"));
     }
 
     #[test]
