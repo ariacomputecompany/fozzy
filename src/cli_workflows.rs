@@ -167,6 +167,20 @@ fn profile_diff_status(
     let invalid_rows = regressions
         .iter()
         .filter(|row| {
+            let classification = row.get("classification").and_then(|v| v.as_str());
+            let is_regression = row.get("isRegression").and_then(|v| v.as_bool());
+            let is_significant = row.get("isSignificant").and_then(|v| v.as_bool());
+            let classification_invalid = !matches!(
+                classification,
+                Some("regression") | Some("improvement") | Some("stable")
+            );
+            let semantic_mismatch = match (classification, is_regression, is_significant) {
+                (Some("regression"), Some(true), Some(_)) => false,
+                (Some("improvement"), Some(false), Some(false)) => false,
+                (Some("stable"), Some(false), Some(false)) => false,
+                (Some("improvement"), Some(false), Some(true)) => false,
+                _ => true,
+            };
             row.get("domain")
                 .and_then(|v| v.as_str())
                 .is_none_or(|s| s.trim().is_empty())
@@ -182,6 +196,8 @@ fn profile_diff_status(
                     .get("classification")
                     .and_then(|v| v.as_str())
                     .is_none_or(|s| s.trim().is_empty())
+                || classification_invalid
+                || semantic_mismatch
         })
         .count();
     let mut seen_regressions = std::collections::BTreeSet::new();
@@ -3068,6 +3084,31 @@ mod tests {
                 "metric": "",
                 "timeDomain": "",
                 "classification": ""
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_rows=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_semantically_inconsistent_rows() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "domain": "cpu",
+                "metric": "cpu_time_ms",
+                "timeDomain": "cpu",
+                "classification": "improvement",
+                "isRegression": true,
+                "isSignificant": false
             }]
         });
         let (status, detail) = profile_diff_status(&value, false);
