@@ -173,16 +173,27 @@ fn load_memory_bundle_from_sidecars(
         validate_graph_against_summary(&summary, &graph, &graph_path)?;
     }
 
-    if (!leaks_path.exists() || !graph_path.exists())
+    let missing_leaks = !leaks_path.exists();
+    let missing_graph = !graph_path.exists();
+    let mut hydrated_missing_memory = false;
+    if (missing_leaks || missing_graph)
         && let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(artifacts_dir)?
     {
         let trace_bundle = load_from_trace(&trace_path, run)?;
-        if !leaks_path.exists() {
+        if missing_leaks {
             leaks = trace_bundle.leaks;
         }
-        if !graph_path.exists() {
+        if missing_graph {
             graph = trace_bundle.graph;
         }
+        hydrated_missing_memory = true;
+    }
+
+    if (missing_leaks || missing_graph) && !hydrated_missing_memory {
+        return Err(FozzyError::InvalidArgument(format!(
+            "partial memory sidecars in {} require a trusted trace artifact to supply missing memory evidence",
+            artifacts_dir.display()
+        )));
     }
 
     Ok(Some(MemoryBundle {
@@ -2008,6 +2019,105 @@ mod tests {
     }
 
     #[test]
+    fn run_id_with_only_memory_graph_sidecar_and_no_trace_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-runid-graph-only-no-trace-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let graph = MemoryGraph {
+            nodes: vec![
+                MemoryGraphNode {
+                    id: "alloc:11".to_string(),
+                    kind: "alloc".to_string(),
+                    label: "11".to_string(),
+                },
+                MemoryGraphNode {
+                    id: "callsite:graph-only".to_string(),
+                    kind: "callsite".to_string(),
+                    label: "graph-only".to_string(),
+                },
+            ],
+            edges: vec![crate::MemoryGraphEdge {
+                from: "callsite:graph-only".to_string(),
+                to: "alloc:11".to_string(),
+                kind: "allocates".to_string(),
+            }],
+        };
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: None,
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    leaked_bytes: 40,
+                    leaked_allocs: 1,
+                    peak_bytes: 96,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            })
+            .expect("report json"),
+        )
+        .expect("write report");
+        crate::write_run_manifest(
+            &RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: None,
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    leaked_bytes: 40,
+                    leaked_allocs: 1,
+                    peak_bytes: 96,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            },
+            &run_dir,
+        )
+        .expect("write manifest");
+        std::fs::write(
+            run_dir.join("memory.graph.json"),
+            serde_json::to_vec_pretty(&graph).expect("graph json"),
+        )
+        .expect("write graph");
+
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            ..Config::default()
+        };
+        let err = load_memory_bundle(&cfg, "r1").expect_err("must reject trace-less partial sidecar");
+        assert!(
+            err.to_string().contains("partial memory sidecars"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn run_id_uses_manifest_declared_external_trace_path_for_memory_bundle_without_report() {
         let root = std::env::temp_dir().join(format!(
             "fozzy-memory-runid-manifest-only-{}",
@@ -2253,6 +2363,92 @@ mod tests {
         assert_eq!(bundle.leaks.len(), 1);
         assert_eq!(bundle.graph.nodes.len(), 2);
         assert!(bundle.graph.nodes.iter().any(|node| node.id == "alloc:11"));
+    }
+
+    #[test]
+    fn run_id_with_only_memory_leaks_sidecar_and_no_trace_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-runid-leaks-only-no-trace-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let leaks = vec![MemoryLeak {
+            alloc_id: 11,
+            bytes: 40,
+            callsite_hash: "alloc:leaks-only".to_string(),
+            tag: None,
+        }];
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: None,
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    leaked_bytes: 40,
+                    leaked_allocs: 1,
+                    peak_bytes: 96,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            })
+            .expect("report json"),
+        )
+        .expect("write report");
+        crate::write_run_manifest(
+            &RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: None,
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    leaked_bytes: 40,
+                    leaked_allocs: 1,
+                    peak_bytes: 96,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            },
+            &run_dir,
+        )
+        .expect("write manifest");
+        std::fs::write(
+            run_dir.join("memory.leaks.json"),
+            serde_json::to_vec_pretty(&leaks).expect("leaks json"),
+        )
+        .expect("write leaks");
+
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            ..Config::default()
+        };
+        let err = load_memory_bundle(&cfg, "r1").expect_err("must reject trace-less partial sidecar");
+        assert!(
+            err.to_string().contains("partial memory sidecars"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
