@@ -126,11 +126,8 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
         write_test_traces(
             record_base,
             &outcome.trace_runs,
-            &summary.identity.run_id,
             seed,
             opt.record_collision,
-            &report_path,
-            &artifacts_dir,
         )?;
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
@@ -226,11 +223,8 @@ fn run_parallel_tests(
 fn write_test_traces(
     record_base: &Path,
     runs: &[ScenarioRun],
-    run_id: &str,
     seed: u64,
     policy: RecordCollisionPolicy,
-    report_path: &Path,
-    artifacts_dir: &Path,
 ) -> FozzyResult<()> {
     if runs.is_empty() {
         return Ok(());
@@ -240,12 +234,12 @@ fn write_test_traces(
         write_single_scenario_trace(
             record_base,
             run,
-            run_id,
+            &Uuid::new_v4().to_string(),
             seed,
             policy,
             RunMode::Test,
-            Some(report_path.to_string_lossy().to_string()),
-            Some(artifacts_dir.to_string_lossy().to_string()),
+            None,
+            None,
         )?;
         return Ok(());
     }
@@ -269,12 +263,12 @@ fn write_test_traces(
         write_single_scenario_trace(
             &out,
             run,
-            run_id,
+            &Uuid::new_v4().to_string(),
             seed,
             policy,
             RunMode::Test,
-            Some(report_path.to_string_lossy().to_string()),
-            Some(artifacts_dir.to_string_lossy().to_string()),
+            None,
+            None,
         )?;
     }
     Ok(())
@@ -373,6 +367,7 @@ mod tests {
     use crate::{
         FsBackend, HttpBackend, MemoryOptions, ProcBackend, ProfileCaptureLevel,
         RecordCollisionPolicy, Reporter,
+        TraceFile,
     };
 
     fn write_memory_leak_scenario(root: &Path, name: &str) -> PathBuf {
@@ -405,6 +400,16 @@ mod tests {
 }"#,
         )
         .expect("write scenario");
+        path
+    }
+
+    fn write_pass_scenario(root: &Path, name: &str) -> PathBuf {
+        let path = root.join(name);
+        let fixture = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/example.fozzy.json"),
+        )
+        .expect("read fixture");
+        std::fs::write(&path, fixture).expect("write scenario");
         path
     }
 
@@ -540,5 +545,56 @@ mod tests {
         let leaks = run.memory.expect("memory report").leaks;
         assert_eq!(leaks.len(), 2);
         assert_ne!(leaks[0].callsite_hash, leaks[1].callsite_hash);
+    }
+
+    #[test]
+    fn recorded_test_traces_are_standalone_and_do_not_reuse_aggregate_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-test-recorded-trace-identity-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let first = write_pass_scenario(&root, "first.fozzy.json");
+        let second = write_pass_scenario(&root, "second.fozzy.json");
+        let cfg = test_config(&root);
+        let record_base = root.join("recorded-test.fozzy");
+
+        let run = run_tests(
+            &cfg,
+            &[
+                first.display().to_string(),
+                second.display().to_string(),
+            ],
+            &RunOptions {
+                record_trace_to: Some(record_base.clone()),
+                ..run_options(MemoryOptions::default())
+            },
+        )
+        .expect("run tests");
+
+        let first_trace = TraceFile::read_json(&root.join("recorded-test.1.fozzy"))
+            .expect("read first trace");
+        let second_trace = TraceFile::read_json(&root.join("recorded-test.2.fozzy"))
+            .expect("read second trace");
+
+        assert_ne!(
+            first_trace.summary.identity.run_id,
+            run.summary.identity.run_id,
+            "recorded trace must not reuse aggregate test run id"
+        );
+        assert_ne!(
+            second_trace.summary.identity.run_id,
+            run.summary.identity.run_id,
+            "recorded trace must not reuse aggregate test run id"
+        );
+        assert_ne!(
+            first_trace.summary.identity.run_id,
+            second_trace.summary.identity.run_id,
+            "each recorded test trace must have its own execution identity"
+        );
+        assert!(first_trace.summary.identity.report_path.is_none());
+        assert!(first_trace.summary.identity.artifacts_dir.is_none());
+        assert!(second_trace.summary.identity.report_path.is_none());
+        assert!(second_trace.summary.identity.artifacts_dir.is_none());
     }
 }

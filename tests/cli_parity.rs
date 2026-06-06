@@ -2943,6 +2943,108 @@ fn run_recorded_trace_emits_profile_source_provenance() {
 }
 
 #[test]
+fn test_recorded_traces_are_standalone_and_do_not_reuse_aggregate_identity() {
+    let ws = temp_workspace("test-recorded-trace-identity");
+    let first = ws.join("first.fozzy.json");
+    let second = ws.join("second.fozzy.json");
+    std::fs::write(&first, fixture("example.fozzy.json")).expect("write first scenario");
+    std::fs::write(&second, fixture("example.fozzy.json")).expect("write second scenario");
+    let requested = ws.join("test.fozzy");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "test".into(),
+            "--det".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+            first.display().to_string(),
+            second.display().to_string(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "test should succeed");
+
+    let out = parse_json_stdout(&output);
+    let aggregate_run_id = out
+        .get("identity")
+        .and_then(|v| v.get("runId"))
+        .and_then(|v| v.as_str())
+        .expect("aggregate run id");
+
+    let first_trace: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(ws.join("test.1.fozzy")).expect("read first trace"),
+    )
+    .expect("first trace json");
+    let second_trace: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(ws.join("test.2.fozzy")).expect("read second trace"),
+    )
+    .expect("second trace json");
+
+    let first_identity = first_trace
+        .get("summary")
+        .and_then(|v| v.get("identity"))
+        .expect("first identity");
+    let second_identity = second_trace
+        .get("summary")
+        .and_then(|v| v.get("identity"))
+        .expect("second identity");
+
+    let first_run_id = first_identity
+        .get("runId")
+        .and_then(|v| v.as_str())
+        .expect("first run id");
+    let second_run_id = second_identity
+        .get("runId")
+        .and_then(|v| v.as_str())
+        .expect("second run id");
+
+    assert_ne!(first_run_id, aggregate_run_id);
+    assert_ne!(second_run_id, aggregate_run_id);
+    assert_ne!(first_run_id, second_run_id);
+    assert!(first_identity.get("reportPath").is_none());
+    assert!(first_identity.get("artifactsDir").is_none());
+    assert!(second_identity.get("reportPath").is_none());
+    assert!(second_identity.get("artifactsDir").is_none());
+}
+
+#[test]
+fn ci_accepts_one_trace_from_a_multi_trace_recording_directory() {
+    let ws = temp_workspace("test-recorded-trace-ci");
+    let first = ws.join("first.fozzy.json");
+    let second = ws.join("second.fozzy.json");
+    std::fs::write(&first, fixture("example.fozzy.json")).expect("write first scenario");
+    std::fs::write(&second, fixture("example.fozzy.json")).expect("write second scenario");
+    let requested = ws.join("test.fozzy");
+
+    let test_output = run_cli_in(
+        &ws,
+        &[
+            "test".into(),
+            "--det".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+            first.display().to_string(),
+            second.display().to_string(),
+        ],
+    );
+    assert_eq!(test_output.status.code(), Some(0), "test should succeed");
+
+    let ci_output = run_cli_in(
+        &ws,
+        &[
+            "ci".into(),
+            ws.join("test.1.fozzy").display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(ci_output.status.code(), Some(0), "ci should succeed");
+    let ci = parse_json_stdout(&ci_output);
+    assert_eq!(ci.get("ok").and_then(|v| v.as_bool()), Some(true));
+}
+
+#[test]
 fn artifacts_run_id_uses_external_recorded_trace_identity() {
     let ws = temp_workspace("artifacts-external-trace");
     let requested = ws.join("external.trace.fozzy");

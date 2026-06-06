@@ -903,7 +903,6 @@ fn has_untrusted_sibling_artifacts(trace_path: &Path) -> FozzyResult<bool> {
                 return None;
             }
             let name = path.file_name()?.to_string_lossy().to_string();
-            let is_trace = path.is_file() && crate::is_trace_path(&path);
             let is_artifact = matches!(
                 name.as_str(),
                 "timeline.json"
@@ -924,7 +923,7 @@ fn has_untrusted_sibling_artifacts(trace_path: &Path) -> FozzyResult<bool> {
                     | "report.html"
                     | "junit.xml"
             );
-            (is_trace || is_artifact).then_some(path)
+            is_artifact.then_some(path)
         })
         .next()
         .is_some();
@@ -2760,6 +2759,79 @@ mod tests {
             err.to_string()
                 .contains("report.json and manifest.json are required to trust sibling files")
         );
+    }
+
+    #[test]
+    fn direct_trace_list_ignores_standalone_sibling_traces() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-sibling-traces-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let explicit_trace = root.join("direct.trace.fozzy");
+        let sibling_trace = root.join("other.trace.fozzy");
+        for (path, run_id) in [(&explicit_trace, "explicit"), (&sibling_trace, "sibling")] {
+            crate::TraceFile {
+                format: crate::TRACE_FORMAT.to_string(),
+                version: crate::CURRENT_TRACE_VERSION,
+                engine: crate::version_info(),
+                mode: crate::RunMode::Run,
+                scenario_path: None,
+                scenario: Some(crate::ScenarioV1Steps {
+                    version: 1,
+                    name: "x".to_string(),
+                    steps: Vec::new(),
+                }),
+                fuzz: None,
+                explore: None,
+                memory: None,
+                decisions: Vec::new(),
+                events: Vec::new(),
+                summary: crate::RunSummary {
+                    status: crate::ExitStatus::Pass,
+                    mode: crate::RunMode::Run,
+                    identity: crate::RunIdentity {
+                        run_id: run_id.to_string(),
+                        seed: 1,
+                        trace_path: Some(path.to_string_lossy().to_string()),
+                        report_path: None,
+                        artifacts_dir: None,
+                    },
+                    started_at: "2026-01-01T00:00:00Z".to_string(),
+                    finished_at: "2026-01-01T00:00:00Z".to_string(),
+                    duration_ms: 0,
+                    duration_ns: 0,
+                    tests: None,
+                    memory: None,
+                    findings: Vec::new(),
+                },
+                checksum: None,
+            }
+            .write_json(path)
+            .expect("trace");
+        }
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let list =
+            artifacts_list(&cfg, &explicit_trace.to_string_lossy()).expect("list should succeed");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].path, explicit_trace.to_string_lossy());
     }
 
     #[test]
