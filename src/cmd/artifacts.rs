@@ -176,95 +176,48 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
     let run_path = PathBuf::from(crate::normalize_run_or_trace_selector(run));
     if run_path.exists() && run_path.is_file() && crate::is_trace_path(&run_path) {
         let mut out = Vec::new();
+        let mut files = vec![run_path.clone()];
         push_if_exists(&mut out, ArtifactKind::Trace, run_path.clone())?;
         let artifacts_dir = resolve_artifacts_dir(config, run)?;
         if artifacts_dir != run_path {
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Timeline,
-                artifacts_dir.join("timeline.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Profile,
-                artifacts_dir.join("profile.timeline.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Profile,
-                artifacts_dir.join("profile.cpu.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Profile,
-                artifacts_dir.join("profile.heap.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Profile,
-                artifacts_dir.join("profile.latency.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Profile,
-                artifacts_dir.join("profile.metrics.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Profile,
-                artifacts_dir.join("symbols.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Memory,
-                artifacts_dir.join("memory.timeline.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Memory,
-                artifacts_dir.join("memory.leaks.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Memory,
-                artifacts_dir.join("memory.graph.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Memory,
-                artifacts_dir.join("memory.delta.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Report,
-                artifacts_dir.join("report.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Events,
-                artifacts_dir.join("events.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Coverage,
-                artifacts_dir.join("coverage.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Manifest,
-                artifacts_dir.join("manifest.json"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Report,
-                artifacts_dir.join("report.html"),
-            )?;
-            push_if_exists(
-                &mut out,
-                ArtifactKind::Report,
-                artifacts_dir.join("junit.xml"),
-            )?;
+            for (kind, path) in [
+                (ArtifactKind::Timeline, artifacts_dir.join("timeline.json")),
+                (
+                    ArtifactKind::Profile,
+                    artifacts_dir.join("profile.timeline.json"),
+                ),
+                (ArtifactKind::Profile, artifacts_dir.join("profile.cpu.json")),
+                (ArtifactKind::Profile, artifacts_dir.join("profile.heap.json")),
+                (
+                    ArtifactKind::Profile,
+                    artifacts_dir.join("profile.latency.json"),
+                ),
+                (
+                    ArtifactKind::Profile,
+                    artifacts_dir.join("profile.metrics.json"),
+                ),
+                (ArtifactKind::Profile, artifacts_dir.join("symbols.json")),
+                (
+                    ArtifactKind::Memory,
+                    artifacts_dir.join("memory.timeline.json"),
+                ),
+                (ArtifactKind::Memory, artifacts_dir.join("memory.leaks.json")),
+                (ArtifactKind::Memory, artifacts_dir.join("memory.graph.json")),
+                (ArtifactKind::Memory, artifacts_dir.join("memory.delta.json")),
+                (ArtifactKind::Report, artifacts_dir.join("report.json")),
+                (ArtifactKind::Events, artifacts_dir.join("events.json")),
+                (ArtifactKind::Coverage, artifacts_dir.join("coverage.json")),
+                (ArtifactKind::Manifest, artifacts_dir.join("manifest.json")),
+                (ArtifactKind::Report, artifacts_dir.join("report.html")),
+                (ArtifactKind::Report, artifacts_dir.join("junit.xml")),
+            ] {
+                if path.exists() && path.is_file() {
+                    files.push(path.clone());
+                }
+                push_if_exists(&mut out, kind, path)?;
+            }
         }
+        validate_direct_trace_bundle(&files, run)?;
         return Ok(out);
     }
 
@@ -2282,6 +2235,56 @@ mod tests {
         assert!(
             err_export
                 .to_string()
+                .contains("report.json and manifest.json must appear together")
+        );
+    }
+
+    #[test]
+    fn direct_trace_list_rejects_partial_sibling_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-list-partial-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let artifacts_dir = root.join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).expect("artifacts dir");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json(
+                "r1",
+                &trace_path,
+                &artifacts_dir.join("report.json"),
+                &artifacts_dir,
+            ),
+        )
+        .expect("trace");
+        std::fs::write(
+            artifacts_dir.join("report.json"),
+            valid_report_json("r1", &artifacts_dir.join("report.json"), &artifacts_dir),
+        )
+        .expect("report");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        assert!(
+            err.to_string()
                 .contains("report.json and manifest.json must appear together")
         );
     }
