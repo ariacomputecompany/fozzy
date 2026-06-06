@@ -531,8 +531,9 @@ fn recorded_trace_status(
 ) -> (FullStepStatus, String) {
     let (summary_status, summary_detail) = run_summary_pass_status(summary, strict);
     let (file_status, file_detail) = file_artifact_status(trace_path);
-    let has_reported_trace = summary.identity.trace_path.is_some();
-    let status = if has_reported_trace
+    let reported_trace = summary.identity.trace_path.as_deref();
+    let reported_matches = reported_trace.is_some_and(|reported| Path::new(reported) == trace_path);
+    let status = if reported_matches
         && matches!(summary_status, FullStepStatus::Passed)
         && matches!(file_status, FullStepStatus::Passed)
     {
@@ -543,8 +544,11 @@ fn recorded_trace_status(
     (
         status,
         format!(
-            "{} trace_reported={} {}",
-            summary_detail, has_reported_trace, file_detail
+            "{} trace_reported={} trace_matches={} {}",
+            summary_detail,
+            reported_trace.is_some(),
+            reported_matches,
+            file_detail
         ),
     )
 }
@@ -2842,7 +2846,24 @@ mod tests {
         let (status, detail) = recorded_trace_status(&summary, true, &path);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("trace_reported=true"));
+        assert!(detail.contains("trace_matches=false"));
         assert!(detail.contains("missing"));
+    }
+
+    #[test]
+    fn recorded_trace_status_rejects_mismatched_reported_trace_path() {
+        let path = std::env::temp_dir().join(format!(
+            "fozzy-trace-match-{}.fozzy",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, b"trace").expect("write trace");
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.trace_path = Some("/tmp/other.trace.fozzy".to_string());
+        let (status, detail) = recorded_trace_status(&summary, true, &path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("trace_reported=true"));
+        assert!(detail.contains("trace_matches=false"));
+        std::fs::remove_file(path).ok();
     }
 
     #[test]
