@@ -68,6 +68,62 @@ fn profile_diff_status(
     )
 }
 
+fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let run_count = value.get("runCount").and_then(|v| v.as_u64()).unwrap_or(0);
+    let is_flaky = value
+        .get("isFlaky")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let flake_rate = value
+        .get("flakeRatePct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    (
+        if is_flaky {
+            FullStepStatus::Failed
+        } else {
+            FullStepStatus::Passed
+        },
+        format!("run_count={} is_flaky={} flake_rate_pct={}", run_count, is_flaky, flake_rate),
+    )
+}
+
+fn memory_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let total = value.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+    let shown = value
+        .get("leaks")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    (
+        if total > 0 {
+            FullStepStatus::Failed
+        } else {
+            FullStepStatus::Passed
+        },
+        format!("total_leaks={} shown={}", total, shown),
+    )
+}
+
+fn memory_diff_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let leaked = value
+        .get("deltaLeakedBytes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let peak = value
+        .get("deltaPeakBytes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    (
+        if leaked != 0 || peak != 0 {
+            FullStepStatus::Failed
+        } else {
+            FullStepStatus::Passed
+        },
+        format!("delta_leaked_bytes={} delta_peak_bytes={}", leaked, peak),
+    )
+}
+
 fn clean_tree_step_status(detail: &str) -> FullStepStatus {
     if detail.contains("check skipped") {
         FullStepStatus::Skipped
@@ -1200,16 +1256,10 @@ pub(super) fn run_full_command(
                     flake_budget: None,
                 },
             ) {
-                Ok(value) => push(
-                    "report_flaky",
-                    FullStepStatus::Passed,
-                    format!(
-                        "run_count={} is_flaky={} flake_rate_pct={}",
-                        value.get("runCount").and_then(|v| v.as_u64()).unwrap_or(0),
-                        value.get("isFlaky").and_then(|v| v.as_bool()).unwrap_or(false),
-                        value.get("flakeRatePct").and_then(|v| v.as_f64()).unwrap_or(0.0)
-                    ),
-                ),
+                Ok(value) => {
+                    let (status, detail) = flaky_report_status(&value);
+                    push("report_flaky", status, detail)
+                }
                 Err(err) => push("report_flaky", FullStepStatus::Failed, err.to_string()),
             }
         } else {
@@ -1227,18 +1277,10 @@ pub(super) fn run_full_command(
                 limit: 10,
             },
         ) {
-            Ok(value) => push(
-                "memory_top",
-                FullStepStatus::Passed,
-                format!(
-                    "total_leaks={} shown={}",
-                    value.get("total").and_then(|v| v.as_u64()).unwrap_or(0),
-                    value.get("leaks")
-                        .and_then(|v| v.as_array())
-                        .map(|v| v.len())
-                        .unwrap_or(0)
-                ),
-            ),
+            Ok(value) => {
+                let (status, detail) = memory_top_status(&value);
+                push("memory_top", status, detail)
+            }
             Err(err) => push("memory_top", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -1275,15 +1317,10 @@ pub(super) fn run_full_command(
                     right: min_trace.display().to_string(),
                 },
             ) {
-                Ok(value) => push(
-                    "memory_diff",
-                    FullStepStatus::Passed,
-                    format!(
-                        "delta_leaked_bytes={} delta_peak_bytes={}",
-                        value.get("deltaLeakedBytes").and_then(|v| v.as_i64()).unwrap_or(0),
-                        value.get("deltaPeakBytes").and_then(|v| v.as_i64()).unwrap_or(0)
-                    ),
-                ),
+                Ok(value) => {
+                    let (status, detail) = memory_diff_status(&value);
+                    push("memory_diff", status, detail)
+                }
                 Err(err) => push("memory_diff", FullStepStatus::Failed, err.to_string()),
             }
         } else {
@@ -1915,5 +1952,39 @@ mod tests {
 
         let (status_no_stable, _) = profile_diff_status(&value, false);
         assert!(matches!(status_no_stable, FullStepStatus::Passed));
+    }
+
+    #[test]
+    fn flaky_report_status_rejects_flaky_results() {
+        let value = serde_json::json!({
+            "runCount": 2,
+            "isFlaky": true,
+            "flakeRatePct": 50.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("is_flaky=true"));
+    }
+
+    #[test]
+    fn memory_top_status_rejects_leaks() {
+        let value = serde_json::json!({
+            "total": 1,
+            "leaks": [{"allocId": 1}]
+        });
+        let (status, detail) = memory_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("total_leaks=1"));
+    }
+
+    #[test]
+    fn memory_diff_status_rejects_contract_drift() {
+        let value = serde_json::json!({
+            "deltaLeakedBytes": 64,
+            "deltaPeakBytes": 0
+        });
+        let (status, detail) = memory_diff_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("delta_leaked_bytes=64"));
     }
 }
