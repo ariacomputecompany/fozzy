@@ -55,6 +55,17 @@ fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .iter()
         .filter(|warning| warning.as_str().is_none_or(|s| s.trim().is_empty()))
         .count();
+    let mut seen_warnings = std::collections::BTreeSet::new();
+    let duplicate_warnings = warnings
+        .iter()
+        .filter(|warning| {
+            warning
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some_and(|s| !seen_warnings.insert(s.to_string()))
+        })
+        .count();
     let invalid_empty_domains = empty_domains
         .iter()
         .filter(|item| {
@@ -67,18 +78,40 @@ fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
                 || item.get("empty").and_then(|v| v.as_bool()) != Some(true)
         })
         .count();
+    let mut seen_empty_domains = std::collections::BTreeSet::new();
+    let duplicate_empty_domains = empty_domains
+        .iter()
+        .filter(|item| {
+            let domain = item.get("domain").and_then(|v| v.as_str()).map(str::trim);
+            let reason = item.get("reason").and_then(|v| v.as_str()).map(str::trim);
+            match (domain, reason) {
+                (Some(domain), Some(reason)) if !domain.is_empty() && !reason.is_empty() => {
+                    !seen_empty_domains.insert(format!("{domain}\u{0}{reason}"))
+                }
+                _ => false,
+            }
+        })
+        .count();
     (
-        if warning_count > 0 || empty_count > 0 || invalid_warnings > 0 || invalid_empty_domains > 0
+        if warning_count > 0
+            || empty_count > 0
+            || invalid_warnings > 0
+            || duplicate_warnings > 0
+            || invalid_empty_domains > 0
+            || duplicate_empty_domains > 0
         {
             FullStepStatus::Failed
         } else {
             FullStepStatus::Passed
         },
         format!(
-            "{} invalid_warnings={} invalid_empty_domains={}",
+            "{} invalid_warnings={} duplicate_warnings={} invalid_empty_domains={} duplicate_empty_domains={}",
             summarize_profile_top(value),
             invalid_warnings,
+            duplicate_warnings,
             invalid_empty_domains
+            ,
+            duplicate_empty_domains
         ),
     )
 }
@@ -187,6 +220,17 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
         .iter()
         .filter(|pointer| pointer.as_str().is_none_or(|s| s.trim().is_empty()))
         .count();
+    let mut seen_pointers = std::collections::BTreeSet::new();
+    let duplicate_evidence_pointers = evidence_pointers
+        .iter()
+        .filter(|pointer| {
+            pointer
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some_and(|s| !seen_pointers.insert(s.to_string()))
+        })
+        .count();
     let evidence_count = evidence_pointers.len();
     let status = if cause_domain == "unknown"
         || cause_domain.trim().is_empty()
@@ -198,6 +242,7 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
         || regression_statement.starts_with("run ")
         || evidence_count == 0
         || invalid_evidence_pointers > 0
+        || duplicate_evidence_pointers > 0
     {
         FullStepStatus::Skipped
     } else {
@@ -206,8 +251,12 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
     (
         status,
         format!(
-            "cause_domain={} shifted_path={} evidence_pointers={} invalid_evidence_pointers={}",
-            cause_domain, shifted_path, evidence_count, invalid_evidence_pointers
+            "cause_domain={} shifted_path={} evidence_pointers={} invalid_evidence_pointers={} duplicate_evidence_pointers={}",
+            cause_domain,
+            shifted_path,
+            evidence_count,
+            invalid_evidence_pointers,
+            duplicate_evidence_pointers
         ),
     )
 }
@@ -2879,6 +2928,31 @@ mod tests {
     }
 
     #[test]
+    fn profile_top_status_rejects_duplicate_warning_rows() {
+        let value = serde_json::json!({
+            "warnings": ["cpu domain uses host-time sampling", "cpu domain uses host-time sampling"],
+            "emptyDomains": []
+        });
+        let (status, detail) = profile_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_warnings=1"));
+    }
+
+    #[test]
+    fn profile_top_status_rejects_duplicate_empty_domain_rows() {
+        let value = serde_json::json!({
+            "warnings": [],
+            "emptyDomains": [
+                {"domain": "heap", "empty": true, "reason": "no heap samples in trace"},
+                {"domain": "heap", "empty": true, "reason": "no heap samples in trace"}
+            ]
+        });
+        let (status, detail) = profile_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_empty_domains=1"));
+    }
+
+    #[test]
     fn profile_explain_status_skips_non_diagnostic_results() {
         let value = serde_json::json!({
             "regressionStatement": "no measurable regression shift found",
@@ -2958,6 +3032,19 @@ mod tests {
         let (status, detail) = profile_explain_status(&value);
         assert!(matches!(status, FullStepStatus::Skipped));
         assert!(detail.contains("invalid_evidence_pointers=2"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_duplicate_evidence_pointers() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "metric::p99_latency_ms",
+            "evidencePointers": ["profile.metrics.json", "profile.metrics.json"]
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("duplicate_evidence_pointers=1"));
     }
 
     fn sample_run_summary(status: ExitStatus) -> RunSummary {
