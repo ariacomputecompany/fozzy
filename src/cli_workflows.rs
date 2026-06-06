@@ -38,6 +38,14 @@ fn summarize_profile_top(value: &serde_json::Value) -> String {
     format!("warnings={warnings} empty_domains={empty_domains}")
 }
 
+fn clean_tree_step_status(detail: &str) -> FullStepStatus {
+    if detail.contains("check skipped") {
+        FullStepStatus::Skipped
+    } else {
+        FullStepStatus::Passed
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_gate_command(
     config: &Config,
@@ -59,7 +67,7 @@ pub(super) fn run_gate_command(
 
     if strict {
         match git_clean_tree_check() {
-            Ok(detail) => push("clean_tree", FullStepStatus::Passed, detail),
+            Ok(detail) => push("clean_tree", clean_tree_step_status(&detail), detail),
             Err(err) => push("clean_tree", FullStepStatus::Failed, err.to_string()),
         }
     } else {
@@ -515,7 +523,7 @@ pub(super) fn run_full_command(
 
     if strict {
         match git_clean_tree_check() {
-            Ok(detail) => push("clean_tree", FullStepStatus::Passed, detail),
+            Ok(detail) => push("clean_tree", clean_tree_step_status(&detail), detail),
             Err(err) => push("clean_tree", FullStepStatus::Failed, err.to_string()),
         }
     } else {

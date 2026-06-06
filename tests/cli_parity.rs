@@ -3044,6 +3044,11 @@ fn gate_targeted_profile_runs_scoped_strict_bundle() {
             .unwrap_or_default(),
         1
     );
+    assert_eq!(
+        full_step_status(&doc, "clean_tree").as_deref(),
+        Some("skipped"),
+        "clean_tree should be skipped outside a git repo"
+    );
     let profile_top = full_step_detail(&doc, "profile_top").expect("profile_top detail");
     assert!(
         profile_top.contains("warnings=<none>")
