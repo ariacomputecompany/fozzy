@@ -554,6 +554,9 @@ fn resolve_profile_trace_supports_run_with_report_trace_path() {
     let mut trace = sample_trace();
     trace.summary.identity.run_id = run_id.to_string();
     let external_trace = ws.join("external.trace.fozzy");
+    trace.summary.identity.trace_path = Some(external_trace.to_string_lossy().to_string());
+    trace.summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
     std::fs::write(
         &external_trace,
         serde_json::to_vec_pretty(&trace).expect("trace bytes"),
@@ -562,11 +565,14 @@ fn resolve_profile_trace_supports_run_with_report_trace_path() {
 
     let mut summary = trace.summary.clone();
     summary.identity.trace_path = Some(external_trace.to_string_lossy().to_string());
+    summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
     std::fs::write(
         run_dir.join("report.json"),
         serde_json::to_vec_pretty(&summary).expect("summary bytes"),
     )
     .expect("write report");
+    crate::write_run_manifest(&summary, &run_dir).expect("write manifest");
 
     let cfg = Config {
         base_dir: base_dir.clone(),
@@ -627,12 +633,16 @@ fn profile_commands_support_run_id_with_profile_artifacts_only() {
 
     let mut trace = sample_trace();
     trace.summary.identity.run_id = run_id.to_string();
+    trace.summary.identity.report_path =
+        Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
     write_profile_artifacts_from_trace(&trace, &run_dir).expect("profile artifacts");
     std::fs::write(
         run_dir.join("report.json"),
         serde_json::to_vec_pretty(&trace.summary).expect("summary bytes"),
     )
     .expect("write report");
+    crate::write_run_manifest(&trace.summary, &run_dir).expect("write manifest");
 
     let cfg = Config {
         base_dir: base_dir.clone(),
@@ -662,6 +672,9 @@ fn profile_command_refreshes_manifest_after_lazy_profile_emit() {
     let mut trace = sample_trace();
     trace.summary.identity.run_id = run_id.to_string();
     let trace_path = run_dir.join("trace.fozzy");
+    trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    trace.summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
     std::fs::write(
         &trace_path,
         serde_json::to_vec_pretty(&trace).expect("trace bytes"),
@@ -707,6 +720,40 @@ fn profile_command_refreshes_manifest_after_lazy_profile_emit() {
         caps.iter().any(|v| v.as_str() == Some("metrics")),
         "manifest should refresh after lazy profile artifact generation"
     );
+}
+
+#[test]
+fn profile_commands_reject_stale_report_without_manifest() {
+    let ws = temp_workspace("artifacts-only-stale-report");
+    let base_dir = ws.join(".fozzy");
+    let run_id = "run-artifacts-stale";
+    let run_dir = base_dir.join("runs").join(run_id);
+    std::fs::create_dir_all(&run_dir).expect("run dir");
+
+    let mut trace = sample_trace();
+    trace.summary.identity.run_id = run_id.to_string();
+    write_profile_artifacts_from_trace(&trace, &run_dir).expect("profile artifacts");
+    std::fs::write(
+        run_dir.join("report.json"),
+        serde_json::to_vec_pretty(&trace.summary).expect("summary bytes"),
+    )
+    .expect("write report");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let cmd = ProfileCommand::Top {
+        run: run_id.to_string(),
+        cpu: false,
+        heap: true,
+        latency: false,
+        io: false,
+        sched: false,
+        limit: 5,
+    };
+    let err = profile_command(&cfg, &cmd, true).expect_err("profile top must fail");
+    assert!(err.to_string().contains("missing required files: manifest.json"));
 }
 
 #[test]
@@ -794,7 +841,8 @@ fn profile_shrink_writes_dedicated_artifacts_without_mutating_source_run_dir() {
     let original_metrics_bytes =
         serde_json::to_vec_pretty(&original_metrics).expect("original metrics bytes");
     let original_metrics_path = run_dir.join("profile.metrics.json");
-    std::fs::write(&original_metrics_path, &original_metrics_bytes).expect("write original metrics");
+    std::fs::write(&original_metrics_path, &original_metrics_bytes)
+        .expect("write original metrics");
 
     let cfg = Config::default();
     let cmd = ProfileCommand::Shrink {
@@ -818,10 +866,7 @@ fn profile_shrink_writes_dedicated_artifacts_without_mutating_source_run_dir() {
     );
 
     assert_eq!(out_trace.parent(), Some(run_dir.as_path()));
-    assert_eq!(
-        artifacts_dir,
-        run_dir.join("trace.min.profile-artifacts")
-    );
+    assert_eq!(artifacts_dir, run_dir.join("trace.min.profile-artifacts"));
     assert_ne!(artifacts_dir, run_dir);
     let shrunk_trace = TraceFile::read_json(&out_trace).expect("read shrunk trace");
     assert_eq!(
@@ -863,7 +908,8 @@ fn shrink_cpu_metric_without_real_samples_is_rejected() {
     };
     let err = profile_command(&cfg, &cmd, true).expect_err("shrink should fail");
     assert!(
-        err.to_string().contains("cpu profiling requires real sample events"),
+        err.to_string()
+            .contains("cpu profiling requires real sample events"),
         "expected cpu sample contract error, got: {err}"
     );
 }
@@ -909,7 +955,8 @@ fn profile_env_reports_schema_and_domains() {
     );
     assert!(out.get("domains").is_some());
     assert_eq!(
-        out.pointer("/domains/cpu/available").and_then(|v| v.as_bool()),
+        out.pointer("/domains/cpu/available")
+            .and_then(|v| v.as_bool()),
         Some(false)
     );
 }
@@ -935,7 +982,8 @@ fn strict_mode_rejects_cpu_domain_without_real_samples() {
     };
     let err = profile_command(&cfg, &cmd, true).expect_err("top should fail");
     assert!(
-        err.to_string().contains("cpu profiling requires real sample events"),
+        err.to_string()
+            .contains("cpu profiling requires real sample events"),
         "expected real-sample cpu contract error, got: {err}"
     );
 }
@@ -1056,7 +1104,10 @@ fn profile_doctor_reports_schema() {
             })
         })
         .expect("shrink_cpu_increase check");
-    assert_eq!(shrink.get("status").and_then(|v| v.as_str()), Some("skipped"));
+    assert_eq!(
+        shrink.get("status").and_then(|v| v.as_str()),
+        Some("skipped")
+    );
     assert_eq!(shrink.get("ok").and_then(|v| v.as_bool()), Some(false));
 }
 
@@ -1116,7 +1167,10 @@ fn profile_doctor_marks_warning_checks_as_not_ok() {
         .iter()
         .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("flame_cpu"))
         .expect("flame_cpu check");
-    assert_eq!(flame_cpu.get("status").and_then(|v| v.as_str()), Some("warn"));
+    assert_eq!(
+        flame_cpu.get("status").and_then(|v| v.as_str()),
+        Some("warn")
+    );
     assert_eq!(flame_cpu.get("ok").and_then(|v| v.as_bool()), Some(false));
     let export = checks
         .iter()
@@ -1145,7 +1199,8 @@ fn profile_doctor_marks_warning_checks_as_not_ok() {
     assert_eq!(explain.get("ok").and_then(|v| v.as_bool()), Some(false));
     assert!(
         issues.iter().any(|v| {
-            v.as_str().is_some_and(|s| s.contains("explain: single-run explain is observational"))
+            v.as_str()
+                .is_some_and(|s| s.contains("explain: single-run explain is observational"))
         }),
         "expected explain warning in issues: {issues:?}"
     );
@@ -1157,8 +1212,7 @@ fn profile_doctor_reports_data_checks_for_full_profile_support() {
     let trace = ws.join("trace.fozzy");
     std::fs::write(
         &trace,
-        serde_json::to_vec_pretty(&sample_trace_with_full_profile_support())
-            .expect("trace bytes"),
+        serde_json::to_vec_pretty(&sample_trace_with_full_profile_support()).expect("trace bytes"),
     )
     .expect("trace");
 
@@ -1189,7 +1243,10 @@ fn profile_doctor_reports_data_checks_for_full_profile_support() {
         .iter()
         .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("flame_cpu"))
         .expect("flame_cpu check");
-    assert_eq!(flame_cpu.get("status").and_then(|v| v.as_str()), Some("pass"));
+    assert_eq!(
+        flame_cpu.get("status").and_then(|v| v.as_str()),
+        Some("pass")
+    );
     assert_eq!(flame_cpu.get("ok").and_then(|v| v.as_bool()), Some(true));
     assert!(
         out.get("issues")

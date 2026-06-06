@@ -311,7 +311,7 @@ pub(super) fn profile_doctor(
             latency: true,
             symbols: false,
         },
-        ) {
+    ) {
         Ok(bundle) => {
             checks.push(check(
                 "load_bundle",
@@ -379,7 +379,11 @@ pub(super) fn profile_doctor(
     let heap_folded = heap_folded(bundle.heap.as_ref().expect("heap loaded"));
     checks.push(check(
         "flame_heap",
-        if heap_folded.is_empty() { "warn" } else { "pass" },
+        if heap_folded.is_empty() {
+            "warn"
+        } else {
+            "pass"
+        },
         serde_json::json!(if heap_folded.is_empty() {
             "no heap samples in trace"
         } else {
@@ -478,7 +482,11 @@ pub(super) fn profile_doctor(
         .unwrap_or(0);
     checks.push(check(
         "export",
-        if speedscope_frames == 0 { "warn" } else { "pass" },
+        if speedscope_frames == 0 {
+            "warn"
+        } else {
+            "pass"
+        },
         serde_json::json!(format!("speedscope_frames={speedscope_frames}")),
     ));
 
@@ -557,7 +565,10 @@ pub(super) fn profile_doctor(
     }
 
     for check in &checks {
-        let status = check.get("status").and_then(|v| v.as_str()).unwrap_or("fail");
+        let status = check
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("fail");
         if status == "warn"
             && let (Some(name), Some(detail)) = (
                 check.get("name").and_then(|v| v.as_str()),
@@ -567,14 +578,12 @@ pub(super) fn profile_doctor(
             issues.push(format!("{name}: {detail}"));
         }
     }
-    let ok = checks
-        .iter()
-        .all(|c| {
-            matches!(
-                c.get("status").and_then(|v| v.as_str()),
-                Some("pass" | "skipped")
-            )
-        });
+    let ok = checks.iter().all(|c| {
+        matches!(
+            c.get("status").and_then(|v| v.as_str()),
+            Some("pass" | "skipped")
+        )
+    });
     Ok(serde_json::json!({
         "schemaVersion": "fozzy.profile_doctor.v1",
         "run": run_label,
@@ -633,6 +642,10 @@ pub(super) fn resolve_profile_artifacts(
     }
 
     let artifacts_dir = resolve_artifacts_dir(config, selector)?;
+    if artifacts_dir.join("report.json").exists() {
+        let _ =
+            crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, selector)?;
+    }
     if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
         return Ok((artifacts_dir, Some(trace_path)));
     }
@@ -641,11 +654,13 @@ pub(super) fn resolve_profile_artifacts(
 }
 
 fn refresh_manifest_for_profile_artifacts(artifacts_dir: &Path) -> FozzyResult<()> {
-    let report_path = artifacts_dir.join("report.json");
-    if !report_path.exists() {
+    let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
+        artifacts_dir,
+        &artifacts_dir.display().to_string(),
+    )?
+    else {
         return Ok(());
-    }
-    let summary: RunSummary = serde_json::from_slice(&std::fs::read(&report_path)?)?;
+    };
     crate::write_run_manifest(&summary, artifacts_dir)?;
     Ok(())
 }
@@ -766,7 +781,8 @@ pub(super) fn detect_cpu_collector_capability() -> CpuCollectorCapability {
             linux_perf_event_open: false,
             diagnostics: vec![
                 "mach thread cpu sampling is not wired into trace emission".to_string(),
-                "cpu domain remains unavailable until runtime sample events are recorded".to_string(),
+                "cpu domain remains unavailable until runtime sample events are recorded"
+                    .to_string(),
             ],
             sample_period_ms: 10,
         }

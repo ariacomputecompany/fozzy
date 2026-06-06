@@ -1335,11 +1335,23 @@ fn validate_manifest_integrity(files: &[PathBuf], run: &str) -> FozzyResult<()> 
                     actual_trace.display()
                 ))
             })?;
-            if trace.summary.identity.run_id != manifest.run_id
+            if trace.summary.identity.trace_path.as_ref() != Some(expected_trace) {
+                return Err(crate::FozzyError::InvalidArgument(format!(
+                    "invalid manifest for {run:?}: trace/report identity mismatch"
+                )));
+            }
+            if manifest.mode == crate::RunMode::Replay {
+                if trace.summary.status != manifest.status
+                    || trace.summary.identity.seed != manifest.seed
+                {
+                    return Err(crate::FozzyError::InvalidArgument(format!(
+                        "invalid manifest for {run:?}: replay source trace mismatch"
+                    )));
+                }
+            } else if trace.summary.identity.run_id != manifest.run_id
                 || trace.summary.mode != manifest.mode
                 || trace.summary.status != manifest.status
                 || trace.summary.identity.seed != manifest.seed
-                || trace.summary.identity.trace_path.as_ref() != Some(expected_trace)
                 || trace.summary.identity.report_path.as_ref() != Some(&report_path_string)
                 || trace.summary.identity.artifacts_dir.as_ref() != Some(&expected_artifacts_dir)
             {
@@ -2315,6 +2327,73 @@ mod tests {
             .expect("export should succeed");
         assert!(out_pack.exists());
         assert!(out_export.exists());
+    }
+
+    #[test]
+    fn checked_report_loader_allows_replay_runs_to_reference_source_trace() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-replay-source-trace-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let trace_path = root.join("source.trace.fozzy");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json(
+                "source-run",
+                &trace_path,
+                &root.join(".fozzy/runs/source-run/report.json"),
+                &root.join(".fozzy/runs/source-run"),
+            ),
+        )
+        .expect("write source trace");
+        let report_path = run_dir.join("report.json");
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "status": "pass",
+                "mode": "replay",
+                "identity": {
+                    "runId": "r1",
+                    "seed": 1,
+                    "tracePath": trace_path,
+                    "reportPath": report_path,
+                    "artifactsDir": run_dir
+                },
+                "startedAt": "2026-01-01T00:00:00Z",
+                "finishedAt": "2026-01-01T00:00:00Z",
+                "durationMs": 0,
+                "durationNs": 0,
+                "findings": []
+            }))
+            .expect("report json"),
+        )
+        .expect("write report");
+        std::fs::write(
+            run_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schemaVersion": "fozzy.run_manifest.v1",
+                "runId": "r1",
+                "mode": "replay",
+                "status": "pass",
+                "seed": 1,
+                "startedAt": "2026-01-01T00:00:00Z",
+                "finishedAt": "2026-01-01T00:00:00Z",
+                "durationMs": 0,
+                "durationNs": 0,
+                "tracePath": trace_path,
+                "reportPath": report_path,
+                "artifactsDir": run_dir,
+                "findingsCount": 0
+            }))
+            .expect("manifest json"),
+        )
+        .expect("write manifest");
+
+        let summary = load_checked_report_summary_from_artifacts_dir(&run_dir, "r1")
+            .expect("checked report load")
+            .expect("summary");
+        assert_eq!(summary.mode, crate::RunMode::Replay);
+        assert_eq!(summary.identity.run_id, "r1");
     }
 
     #[test]
