@@ -387,15 +387,16 @@ fn replay_summary_status(
         .map(|s| (s == ExitStatus::Pass) == (summary.status == ExitStatus::Pass))
         .unwrap_or(false);
     let strict_ok = enforce_strict_summary(strict, summary).is_ok();
+    let run_id_present = !summary.identity.run_id.trim().is_empty();
     (
-        if class_ok && strict_ok {
+        if class_ok && strict_ok && run_id_present {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
         format!(
-            "status={:?} class_ok={} strict_ok={}",
-            summary.status, class_ok, strict_ok
+            "status={:?} class_ok={} strict_ok={} run_id_present={}",
+            summary.status, class_ok, strict_ok, run_id_present
         ),
     )
 }
@@ -2824,6 +2825,15 @@ mod tests {
         let (status, detail) = replay_summary_status(Some(ExitStatus::Pass), &summary, true);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("class_ok=false"));
+    }
+
+    #[test]
+    fn replay_summary_status_rejects_missing_run_id() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.run_id = "".to_string();
+        let (status, detail) = replay_summary_status(Some(ExitStatus::Pass), &summary, true);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("run_id_present=false"));
     }
 
     #[test]
