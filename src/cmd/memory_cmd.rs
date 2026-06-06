@@ -78,6 +78,18 @@ struct MemoryBundle {
     graph: MemoryGraph,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedMemoryArtifacts {
+    artifacts_dir: PathBuf,
+    validated_bundle: Option<crate::ValidatedArtifactBundle>,
+}
+
+#[derive(Debug, Clone)]
+enum ResolvedMemorySource {
+    DirectTrace(PathBuf),
+    Artifacts(ResolvedMemoryArtifacts),
+}
+
 fn validate_leaks_against_summary(
     summary: &MemorySummary,
     leaks: &[MemoryLeak],
@@ -145,16 +157,17 @@ fn validate_graph_against_summary(
 }
 
 fn load_memory_bundle_from_sidecars(
-    artifacts_dir: &Path,
+    source: &ResolvedMemoryArtifacts,
     run: &str,
 ) -> FozzyResult<Option<MemoryBundle>> {
+    let artifacts_dir = &source.artifacts_dir;
     let leaks_path = artifacts_dir.join("memory.leaks.json");
     let graph_path = artifacts_dir.join("memory.graph.json");
     if !leaks_path.exists() && !graph_path.exists() {
         return Ok(None);
     }
 
-    let summary = load_summary_from_report(artifacts_dir)?;
+    let summary = load_summary_from_validated_artifacts(source)?;
     let mut leaks: Vec<MemoryLeak> = if leaks_path.exists() {
         serde_json::from_slice(&std::fs::read(&leaks_path)?)?
     } else {
@@ -177,9 +190,12 @@ fn load_memory_bundle_from_sidecars(
     let missing_graph = !graph_path.exists();
     let mut hydrated_missing_memory = false;
     if (missing_leaks || missing_graph)
-        && let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(artifacts_dir)?
+        && let Some(trace_path) = source
+            .validated_bundle
+            .as_ref()
+            .and_then(|bundle| bundle.trace_path.as_ref())
     {
-        let trace_bundle = load_from_trace(&trace_path, run)?;
+        let trace_bundle = load_from_trace(trace_path, run)?;
         if missing_leaks {
             leaks = trace_bundle.leaks;
         }
@@ -258,53 +274,42 @@ pub fn memory_command(config: &Config, command: &MemoryCommand) -> FozzyResult<s
 }
 
 fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
+    match resolve_memory_source(config, run)? {
+        ResolvedMemorySource::DirectTrace(trace_path) => load_from_trace(&trace_path, run),
+        ResolvedMemorySource::Artifacts(source) => {
+            if let Some(bundle) = load_memory_bundle_from_sidecars(&source, run)? {
+                return Ok(bundle);
+            }
+            if let Some(trace_path) = source
+                .validated_bundle
+                .as_ref()
+                .and_then(|bundle| bundle.trace_path.as_ref())
+            {
+                return load_from_trace(trace_path, run);
+            }
+            Err(FozzyError::InvalidArgument(format!(
+                "no memory data found for {run:?}"
+            )))
+        }
+    }
+}
+
+fn resolve_memory_source(config: &Config, run: &str) -> FozzyResult<ResolvedMemorySource> {
     let input = PathBuf::from(crate::normalize_run_or_trace_selector(run));
     if input.exists() && input.is_file() && crate::is_trace_path(&input) {
-        return load_from_trace(&input, run);
+        return Ok(ResolvedMemorySource::DirectTrace(input));
     }
 
-    let artifacts_dir = if is_memory_alias(run) {
-        if let Some(dir) = resolve_memory_alias_dir(config, run)? {
-            dir
-        } else {
-            crate::resolve_artifacts_dir(config, run)?
-        }
+    let artifacts_dir = if let Some(dir) = resolve_memory_alias_dir(config, run)? {
+        dir
     } else {
-        match crate::resolve_artifacts_dir(config, run) {
-            Ok(dir) => dir,
-            Err(err) => {
-                if let Some(dir) = resolve_memory_alias_dir(config, run)? {
-                    dir
-                } else {
-                    return Err(err);
-                }
-            }
-        }
+        crate::resolve_artifacts_dir(config, run)?
     };
-    if let Some(bundle) = load_memory_bundle_from_sidecars(&artifacts_dir, run)? {
-        return Ok(bundle);
-    }
-
-    if let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, run)?
-        && let Some(trace_path) = bundle.trace_path
-    {
-        return load_from_trace(&trace_path, run);
-    }
-
-    if let Some(dir) = resolve_memory_alias_dir(config, run)? {
-        if let Some(bundle) = load_memory_bundle_from_sidecars(&dir, run)? {
-            return Ok(bundle);
-        }
-        if let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(&dir, run)?
-            && let Some(trace_path) = bundle.trace_path
-        {
-            return load_from_trace(&trace_path, run);
-        }
-    }
-
-    Err(FozzyError::InvalidArgument(format!(
-        "no memory data found for {run:?}"
-    )))
+    let validated_bundle = crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, run)?;
+    Ok(ResolvedMemorySource::Artifacts(ResolvedMemoryArtifacts {
+        artifacts_dir,
+        validated_bundle,
+    }))
 }
 
 fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
@@ -374,16 +379,16 @@ fn trace_has_memory_data(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn load_summary_from_report(artifacts_dir: &Path) -> FozzyResult<MemorySummary> {
-    let selector = artifacts_dir.display().to_string();
-    let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(artifacts_dir, &selector)?
-    else {
+fn load_summary_from_validated_artifacts(
+    source: &ResolvedMemoryArtifacts,
+) -> FozzyResult<MemorySummary> {
+    let Some(bundle) = source.validated_bundle.as_ref() else {
         return Err(FozzyError::InvalidArgument(format!(
             "no coherent report/manifest pair found for memory artifacts in {}",
-            artifacts_dir.display()
+            source.artifacts_dir.display()
         )));
     };
-    Ok(bundle.summary.memory.unwrap_or_default())
+    Ok(bundle.summary.memory.clone().unwrap_or_default())
 }
 
 fn trusted_explicit_memory_graph_path(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
