@@ -287,6 +287,7 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
             artifacts_dir.display()
         )));
     }
+    validate_run_artifacts_for_listing(&artifacts_dir, run)?;
     let mut out = Vec::new();
 
     if let Some(trace_path) = resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
@@ -379,6 +380,27 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
     )?;
 
     Ok(out)
+}
+
+fn validate_run_artifacts_for_listing(artifacts_dir: &Path, run: &str) -> FozzyResult<()> {
+    let report = artifacts_dir.join("report.json");
+    let manifest = artifacts_dir.join("manifest.json");
+    if !report.exists() && !manifest.exists() {
+        return Ok(());
+    }
+
+    let mut files = Vec::new();
+    if report.exists() {
+        files.push(report);
+    }
+    if manifest.exists() {
+        files.push(manifest);
+    }
+    if let Some(trace) = resolve_trace_path_from_artifacts_dir(artifacts_dir)? {
+        files.push(trace);
+    }
+    validate_required_bundle_files(&files, run)?;
+    validate_manifest_integrity(&files, run)
 }
 
 fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
@@ -2030,48 +2052,16 @@ mod tests {
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
         let external_trace = root.join("external.trace.fozzy");
+        let report_path = run_dir.join("report.json");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&external_trace));
         std::fs::write(
             &external_trace,
-            format!(
-                r#"{{
-  "format":"fozzy-trace",
-  "version":4,
-  "engine":{{"version":"0.1.0"}},
-  "mode":"run",
-  "scenario_path":null,
-  "scenario":{{"version":1,"name":"x","steps":[]}},
-  "decisions":[],
-  "events":[],
-  "summary":{{
-    "status":"pass",
-    "mode":"run",
-    "identity":{{"runId":"r1","seed":1,"tracePath":"{}"}},
-    "startedAt":"2026-01-01T00:00:00Z",
-    "finishedAt":"2026-01-01T00:00:00Z",
-    "durationMs":0
-  }}
-}}"#,
-                external_trace.display()
-            ),
+            valid_trace_json("r1", &external_trace, &report_path, &run_dir),
         )
         .expect("trace");
-        std::fs::write(
-            run_dir.join("report.json"),
-            format!(
-                r#"{{
-  "status":"pass",
-  "mode":"run",
-  "identity":{{"runId":"r1","seed":1,"tracePath":"{}","artifactsDir":"{}"}},
-  "startedAt":"2026-01-01T00:00:00Z",
-  "finishedAt":"2026-01-01T00:00:00Z",
-  "durationMs":0
-}}"#,
-                external_trace.display(),
-                run_dir.display()
-            ),
-        )
-        .expect("report");
-        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1")).expect("manifest");
+        std::fs::write(&report_path, report).expect("report");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -2458,6 +2448,45 @@ mod tests {
             ..crate::Config::default()
         };
         let err = artifacts_diff(&cfg, "left", "right").expect_err("must reject stale left");
+        assert!(err.to_string().contains("missing required files: manifest.json"));
+    }
+
+    #[test]
+    fn artifacts_list_rejects_stale_report_without_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-stale-list-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let base_dir = root.join(".fozzy");
+        let run_dir = base_dir.join("runs").join("stale");
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "status": "pass",
+                "mode": "run",
+                "identity": {
+                    "runId": "stale",
+                    "seed": 1,
+                    "tracePath": "/tmp/missing-stale-list.trace.fozzy",
+                    "reportPath": run_dir.join("report.json"),
+                    "artifactsDir": run_dir
+                },
+                "startedAt": "2026-01-01T00:00:00Z",
+                "finishedAt": "2026-01-01T00:00:00Z",
+                "durationMs": 0,
+                "durationNs": 0,
+                "findings": []
+            }))
+            .expect("report json"),
+        )
+        .expect("write report");
+
+        let cfg = crate::Config {
+            base_dir,
+            ..crate::Config::default()
+        };
+        let err = artifacts_list(&cfg, "stale").expect_err("must reject stale list");
         assert!(err.to_string().contains("missing required files: manifest.json"));
     }
 
