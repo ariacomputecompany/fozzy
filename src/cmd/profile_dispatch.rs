@@ -1,6 +1,23 @@
 use super::profile_support::aggregate_metric_bundle;
 use super::*;
 
+pub(super) fn shrink_profile_artifacts_dir(out_trace_path: &Path) -> PathBuf {
+    let parent = out_trace_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let file_name = out_trace_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("trace.fozzy");
+    let dir_name = if let Some(stem) = file_name.strip_suffix(".fozzy") {
+        format!("{stem}.profile-artifacts")
+    } else {
+        format!("{file_name}.profile-artifacts")
+    };
+    parent.join(dir_name)
+}
+
 pub(super) fn dispatch_profile_command(
     config: &Config,
     command: &ProfileCommand,
@@ -439,7 +456,7 @@ pub(super) fn dispatch_profile_command(
             minimize,
         } => {
             let run_label = crate::normalize_run_or_trace_selector(run);
-            let (artifacts_dir, trace_path) = match resolve_profile_trace(config, run) {
+            let (_, trace_path) = match resolve_profile_trace(config, run) {
                 Ok(v) => v,
                 Err(err) => return profile_contract_or_error(strict, "shrink", run, err),
             };
@@ -479,16 +496,9 @@ pub(super) fn dispatch_profile_command(
                 ProfileDirection::Increase => after >= baseline,
                 ProfileDirection::Decrease => after <= baseline,
             };
-            let out_parent = Path::new(&shrunk.out_trace_path)
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or(artifacts_dir);
-            write_profile_artifacts_from_trace(&shrunk_trace, &out_parent)?;
-            if let Ok(bytes) = std::fs::read(out_parent.join("report.json"))
-                && let Ok(summary) = serde_json::from_slice::<RunSummary>(&bytes)
-            {
-                crate::write_run_manifest(&summary, &out_parent)?;
-            }
+            let shrink_artifacts_dir =
+                shrink_profile_artifacts_dir(Path::new(&shrunk.out_trace_path));
+            write_profile_artifacts_from_trace(&shrunk_trace, &shrink_artifacts_dir)?;
             let direction_name = match direction {
                 ProfileDirection::Increase => "increase",
                 ProfileDirection::Decrease => "decrease",
@@ -505,11 +515,12 @@ pub(super) fn dispatch_profile_command(
             let baseline_out = normalize_metric_value(baseline);
             let after_out = normalize_metric_value(after);
             Ok(serde_json::json!({
-                "schemaVersion": "fozzy.profile_shrink.v1",
+                "schemaVersion": "fozzy.profile_shrink.v2",
                 "status": status,
                 "run": run_label,
                 "trace": trace_path,
                 "outTrace": shrunk.out_trace_path,
+                "artifactsDir": shrink_artifacts_dir,
                 "metric": metric,
                 "direction": direction,
                 "minimize": shrink_minimize_name(*minimize),

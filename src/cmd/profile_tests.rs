@@ -733,6 +733,73 @@ fn shrink_missing_trace_is_invalid_argument() {
 }
 
 #[test]
+fn shrink_profile_artifacts_dir_derives_dedicated_sibling_directory() {
+    let out_trace = Path::new("/tmp/run/trace.min.fozzy");
+    let artifacts_dir = profile_dispatch::shrink_profile_artifacts_dir(out_trace);
+    assert_eq!(
+        artifacts_dir,
+        PathBuf::from("/tmp/run/trace.min.profile-artifacts")
+    );
+}
+
+#[test]
+fn profile_shrink_writes_dedicated_artifacts_without_mutating_source_run_dir() {
+    let ws = temp_workspace("profile-shrink-artifacts");
+    let run_dir = ws.join("run");
+    std::fs::create_dir_all(&run_dir).expect("run dir");
+
+    let trace_path = run_dir.join("trace.fozzy");
+    std::fs::write(
+        &trace_path,
+        serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"),
+    )
+    .expect("write trace");
+
+    let original_metrics = serde_json::json!({
+        "schemaVersion": "custom.profile.metrics.v1",
+        "marker": "original-run-artifacts"
+    });
+    let original_metrics_bytes =
+        serde_json::to_vec_pretty(&original_metrics).expect("original metrics bytes");
+    let original_metrics_path = run_dir.join("profile.metrics.json");
+    std::fs::write(&original_metrics_path, &original_metrics_bytes).expect("write original metrics");
+
+    let cfg = Config::default();
+    let cmd = ProfileCommand::Shrink {
+        run: trace_path.to_string_lossy().to_string(),
+        metric: ProfileMetric::AllocBytes,
+        direction: ProfileDirection::Increase,
+        budget: Some(crate::FozzyDuration(std::time::Duration::from_secs(1))),
+        minimize: ShrinkMinimize::All,
+    };
+    let out = profile_command(&cfg, &cmd, true).expect("profile shrink");
+
+    let out_trace = PathBuf::from(
+        out.get("outTrace")
+            .and_then(|v| v.as_str())
+            .expect("out trace path"),
+    );
+    let artifacts_dir = PathBuf::from(
+        out.get("artifactsDir")
+            .and_then(|v| v.as_str())
+            .expect("shrink artifacts dir"),
+    );
+
+    assert_eq!(out_trace.parent(), Some(run_dir.as_path()));
+    assert_eq!(
+        artifacts_dir,
+        run_dir.join("trace.min.profile-artifacts")
+    );
+    assert_ne!(artifacts_dir, run_dir);
+    assert!(artifacts_dir.join("profile.metrics.json").exists());
+    assert!(artifacts_dir.join("profile.heap.json").exists());
+    assert_eq!(
+        std::fs::read(&original_metrics_path).expect("read original metrics"),
+        original_metrics_bytes
+    );
+}
+
+#[test]
 fn format_metric_value_normalizes_negative_zero() {
     assert_eq!(format_metric_value(-0.0), "0");
     assert_eq!(format_metric_value(8.0), "8");

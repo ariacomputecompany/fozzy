@@ -414,13 +414,14 @@ pub fn schema_doc() -> SchemaDoc {
     profile_output_schemas.insert(
         "shrink",
         ProfileOutputSchema {
-            schema_version: "fozzy.profile_shrink.v1",
+            schema_version: "fozzy.profile_shrink.v2",
             required_fields: vec![
                 "schemaVersion",
                 "status",
                 "run",
                 "trace",
                 "outTrace",
+                "artifactsDir",
                 "metric",
                 "direction",
                 "minimize",
@@ -431,11 +432,12 @@ pub fn schema_doc() -> SchemaDoc {
             ],
             optional_fields: vec!["reason"],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_shrink.v1",
+                "schemaVersion":"fozzy.profile_shrink.v2",
                 "status":"no_feasible_shrink_found",
                 "run":"run-id-or-trace",
                 "trace":"/tmp/in.trace.fozzy",
                 "outTrace":"/tmp/in.min.fozzy",
+                "artifactsDir":"/tmp/in.min.profile-artifacts",
                 "metric":"cpu_time",
                 "direction":"increase",
                 "minimize":"all",
