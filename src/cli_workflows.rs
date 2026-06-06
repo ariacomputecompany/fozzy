@@ -1572,7 +1572,14 @@ fn doctor_report_status(
     )
 }
 
-fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus, String) {
+fn topology_coverage_status(
+    report: &fozzy::MapSuitesReport,
+    expected_root: &Path,
+    expected_scenario_root: &Path,
+    expected_profile: TopologyProfile,
+    expected_shrink_policy: ShrinkCoveragePolicy,
+    expected_base_min_risk: u8,
+) -> (FullStepStatus, String) {
     fn known_topology_suite(name: &str) -> bool {
         matches!(
             name,
@@ -1592,6 +1599,11 @@ fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus,
     } else {
         report.warnings.join("; ")
     };
+    let root_ok = report.root == expected_root.display().to_string();
+    let scenario_root_ok = report.scenario_root == expected_scenario_root.display().to_string();
+    let profile_ok = report.profile == expected_profile;
+    let shrink_policy_ok = report.shrink_policy == expected_shrink_policy;
+    let base_min_risk_ok = report.base_min_risk == expected_base_min_risk;
     let hotspot_math_ok = report.covered_hotspot_count <= report.required_hotspot_count
         && report.uncovered_hotspot_count
             == report
@@ -1763,6 +1775,11 @@ fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus,
     let ok = report.uncovered_hotspot_count == 0
         && report.required_hotspot_count > 0
         && report.warnings.is_empty()
+        && root_ok
+        && scenario_root_ok
+        && profile_ok
+        && shrink_policy_ok
+        && base_min_risk_ok
         && hotspot_math_ok
         && pagination_math_ok
         && report.returned_suites > 0
@@ -1774,10 +1791,15 @@ fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus,
             FullStepStatus::Failed
         },
         format!(
-            "required_hotspots={} covered={} uncovered={} hotspot_math_ok={} total_suites={} returned_suites={} offset={} limit={} truncated={} pagination_math_ok={} invalid_suites={} min_risk={} profile={} root={} scenario_root={} warnings={}",
+            "required_hotspots={} covered={} uncovered={} root_ok={} scenario_root_ok={} profile_ok={} shrink_policy_ok={} base_min_risk_ok={} hotspot_math_ok={} total_suites={} returned_suites={} offset={} limit={} truncated={} pagination_math_ok={} invalid_suites={} min_risk={} profile={} root={} scenario_root={} warnings={}",
             report.required_hotspot_count,
             report.covered_hotspot_count,
             report.uncovered_hotspot_count,
+            root_ok,
+            scenario_root_ok,
+            profile_ok,
+            shrink_policy_ok,
+            base_min_risk_ok,
             hotspot_math_ok,
             report.total_suites,
             report.returned_suites,
@@ -2347,7 +2369,14 @@ pub(super) fn run_full_command(
             max_matched_scenarios: 25,
         }) {
             Ok(report) => {
-                let (status, detail) = topology_coverage_status(&report);
+                let (status, detail) = topology_coverage_status(
+                    &report,
+                    root,
+                    scenario_root,
+                    topology_profile,
+                    topology_shrink_policy,
+                    topology_min_risk,
+                );
                 push("topology_coverage", status, detail);
             }
             Err(err) => push("topology_coverage", FullStepStatus::Failed, err.to_string()),
@@ -3374,6 +3403,19 @@ fn is_preferred_distributed_scenario(path: &Path) -> bool {
 mod tests {
     use super::*;
     use fozzy::{RunIdentity, RunMode};
+
+    fn topology_status_for_report(
+        report: &fozzy::MapSuitesReport,
+    ) -> (FullStepStatus, String) {
+        topology_coverage_status(
+            report,
+            Path::new(&report.root),
+            Path::new(&report.scenario_root),
+            report.profile,
+            report.shrink_policy,
+            report.base_min_risk,
+        )
+    }
 
     #[test]
     fn profile_diff_status_rejects_regressions() {
@@ -5046,10 +5088,70 @@ mod tests {
             truncated: false,
             suites: Vec::new(),
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("uncovered=0"));
         assert!(detail.contains("warnings=map scan skipped 1 source file(s); hotspot coverage is incomplete"));
+    }
+
+    #[test]
+    fn topology_coverage_status_rejects_mismatched_report_identities() {
+        let report = fozzy::MapSuitesReport {
+            schema_version: "fozzy.map_suites.v5".to_string(),
+            root: "/repo".to_string(),
+            scenario_root: "/repo/tests".to_string(),
+            scanned_files: 10,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
+            base_min_risk: 60,
+            effective_min_risk: 55,
+            scenario_count: 1,
+            skipped_source_files: Vec::new(),
+            unreadable_scenarios: Vec::new(),
+            warnings: Vec::new(),
+            required_hotspot_count: 1,
+            covered_hotspot_count: 1,
+            uncovered_hotspot_count: 0,
+            total_suites: 1,
+            returned_suites: 1,
+            offset: 0,
+            limit: 25,
+            truncated: false,
+            suites: vec![fozzy::SuiteRecommendation {
+                hotspot_id: "hs-1".to_string(),
+                component: "runtime".to_string(),
+                path: "src/runtime.rs".to_string(),
+                risk_score: 90,
+                required_by_policy: true,
+                covered: true,
+                coverage_hints: vec!["run_record_replay_ci".to_string()],
+                required_suites: vec!["run_record_replay_ci".to_string()],
+                covered_suites: vec!["run_record_replay_ci".to_string()],
+                coverage_evidence: vec![fozzy::SuiteCoverageEvidence {
+                    suite: "run_record_replay_ci".to_string(),
+                    matched_scenarios: vec!["tests/example.fozzy.json".to_string()],
+                    reason: "matched hotspot token".to_string(),
+                }],
+                missing_required_suites: Vec::new(),
+                why_required: vec!["policy hotspot".to_string()],
+                reasons: vec!["runtime risk".to_string()],
+                recommended_suites: vec!["run_record_replay_ci".to_string()],
+            }],
+        };
+        let (status, detail) = topology_coverage_status(
+            &report,
+            Path::new("/other"),
+            Path::new("/other/tests"),
+            TopologyProfile::Balanced,
+            ShrinkCoveragePolicy::FailureOnly,
+            50,
+        );
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("root_ok=false"));
+        assert!(detail.contains("scenario_root_ok=false"));
+        assert!(detail.contains("profile_ok=false"));
+        assert!(detail.contains("shrink_policy_ok=false"));
+        assert!(detail.contains("base_min_risk_ok=false"));
     }
 
     #[test]
@@ -5077,7 +5179,7 @@ mod tests {
             truncated: false,
             suites: Vec::new(),
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("returned_suites=0"));
     }
@@ -5126,7 +5228,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("required_hotspots=0"));
     }
@@ -5175,7 +5277,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("hotspot_math_ok=false"));
     }
@@ -5225,7 +5327,7 @@ mod tests {
             truncated: false,
             suites: vec![suite.clone(), suite],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5274,7 +5376,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5323,7 +5425,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5379,7 +5481,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5431,7 +5533,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5483,7 +5585,7 @@ mod tests {
                 ],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5532,7 +5634,7 @@ mod tests {
                 recommended_suites: vec!["unknown_suite".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5581,7 +5683,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5630,7 +5732,7 @@ mod tests {
                 recommended_suites: vec!["host_backends_run".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5679,7 +5781,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
@@ -5724,7 +5826,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Passed));
         assert!(detail.contains("invalid_suites=0"));
     }
@@ -5776,7 +5878,7 @@ mod tests {
                 recommended_suites: vec!["run_record_replay_ci".to_string()],
             }],
         };
-        let (status, detail) = topology_coverage_status(&report);
+        let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
     }
