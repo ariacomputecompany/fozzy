@@ -164,6 +164,43 @@ fn profile_diff_status(
             .then(|| row.get("metric").and_then(|v| v.as_str()))
             .flatten()
     });
+    let invalid_rows = regressions
+        .iter()
+        .filter(|row| {
+            row.get("domain")
+                .and_then(|v| v.as_str())
+                .is_none_or(|s| s.trim().is_empty())
+                || row
+                    .get("metric")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|s| s.trim().is_empty())
+                || row
+                    .get("timeDomain")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|s| s.trim().is_empty())
+                || row
+                    .get("classification")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|s| s.trim().is_empty())
+        })
+        .count();
+    let mut seen_regressions = std::collections::BTreeSet::new();
+    let duplicate_rows = regressions
+        .iter()
+        .filter(|row| {
+            let domain = row.get("domain").and_then(|v| v.as_str()).map(str::trim);
+            let metric = row.get("metric").and_then(|v| v.as_str()).map(str::trim);
+            let time_domain = row.get("timeDomain").and_then(|v| v.as_str()).map(str::trim);
+            match (domain, metric, time_domain) {
+                (Some(domain), Some(metric), Some(time_domain))
+                    if !domain.is_empty() && !metric.is_empty() && !time_domain.is_empty() =>
+                {
+                    !seen_regressions.insert(format!("{domain}\u{0}{metric}\u{0}{time_domain}"))
+                }
+                _ => false,
+            }
+        })
+        .count();
     let expected_verdict = if derived_significant > 0 {
         "regression_detected"
     } else if derived_regressions > 0 {
@@ -177,7 +214,9 @@ fn profile_diff_status(
         && improvement_count == derived_improvements
         && significant == derived_significant
         && verdict == expected_verdict
-        && top_regression_metric == derived_top_regression_metric;
+        && top_regression_metric == derived_top_regression_metric
+        && invalid_rows == 0
+        && duplicate_rows == 0;
     let known_non_regression = matches!(verdict, "stable" | "improvement");
     let status = if significant > 0
         || regression_count > 0
@@ -192,8 +231,14 @@ fn profile_diff_status(
     (
         status,
         format!(
-            "verdict={} regressions={} significant_regressions={} improvements={} consistent={}",
-            verdict, regression_count, significant, improvement_count, consistent
+            "verdict={} regressions={} significant_regressions={} improvements={} invalid_rows={} duplicate_rows={} consistent={}",
+            verdict,
+            regression_count,
+            significant,
+            improvement_count,
+            invalid_rows,
+            duplicate_rows,
+            consistent
         ),
     )
 }
@@ -2919,7 +2964,9 @@ mod tests {
                 "topRegressionMetric": null
             },
             "regressions": [{
+                "domain": "heap",
                 "metric": "alloc_bytes",
+                "timeDomain": "memory",
                 "classification": "improvement",
                 "isRegression": false,
                 "isSignificant": false
@@ -2968,6 +3015,64 @@ mod tests {
         });
         let (status, detail) = profile_diff_status(&value, false);
         assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_duplicate_regression_rows() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [
+                {
+                    "domain": "cpu",
+                    "metric": "cpu_time_ms",
+                    "timeDomain": "cpu",
+                    "classification": "regression",
+                    "isRegression": true,
+                    "isSignificant": false
+                },
+                {
+                    "domain": "cpu",
+                    "metric": "cpu_time_ms",
+                    "timeDomain": "cpu",
+                    "classification": "regression",
+                    "isRegression": true,
+                    "isSignificant": false
+                }
+            ]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_rows=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_invalid_regression_rows() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "domain": "",
+                "metric": "",
+                "timeDomain": "",
+                "classification": ""
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_rows=1"));
         assert!(detail.contains("consistent=false"));
     }
 
