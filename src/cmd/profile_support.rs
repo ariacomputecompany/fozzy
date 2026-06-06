@@ -646,15 +646,19 @@ pub(super) fn resolve_profile_artifacts(
     }
 
     let artifacts_dir = resolve_artifacts_dir(config, selector)?;
+    let report_exists = artifacts_dir.join("report.json").exists();
+    let manifest_exists = artifacts_dir.join("manifest.json").exists();
     let mut checked_summary = None;
-    if artifacts_dir.join("report.json").exists() {
+    if report_exists {
         checked_summary =
             crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, selector)?;
     }
     if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
         return Ok((artifacts_dir, Some(trace_path)));
     }
-    if checked_summary.is_none() && profile_artifacts_exist(&artifacts_dir) {
+    if checked_summary.is_none()
+        && (profile_artifacts_exist(&artifacts_dir) || report_exists || manifest_exists)
+    {
         return Err(FozzyError::InvalidArgument(format!(
             "no coherent report/manifest pair or trace found for profile artifacts in {}",
             artifacts_dir.display()
