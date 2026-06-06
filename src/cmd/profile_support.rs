@@ -334,6 +334,11 @@ pub(super) fn profile_doctor(
     };
 
     let top_domains = normalize_domains(false, false, false, false, false);
+    let top_cpu_contract = enforce_cpu_contract(
+        true,
+        top_domains.iter().any(|d| d == "cpu"),
+        &[bundle.cpu.as_ref().map(|cpu| cpu.sample_count).unwrap_or(0)],
+    );
     let top_has_any = !top_by_tag(
         bundle.timeline.as_ref().expect("timeline loaded"),
         ProfileEventKind::Io,
@@ -358,11 +363,17 @@ pub(super) fn profile_doctor(
             .expect("latency loaded")
             .critical_path
             .is_empty();
-    checks.push(check(
-        "top",
-        if top_has_any { "pass" } else { "warn" },
-        serde_json::json!(format!("default domains={top_domains:?}")),
-    ));
+    let top_status = if top_cpu_contract.is_err() || !top_has_any {
+        "warn"
+    } else {
+        "pass"
+    };
+    let top_detail = match top_cpu_contract {
+        Err(err) => err.to_string(),
+        Ok(()) if top_has_any => format!("default domains={top_domains:?}"),
+        Ok(()) => "default profile top returned no rows".to_string(),
+    };
+    checks.push(check("top", top_status, serde_json::json!(top_detail)));
 
     let heap_folded = heap_folded(bundle.heap.as_ref().expect("heap loaded"));
     checks.push(check(

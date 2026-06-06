@@ -936,6 +936,20 @@ fn profile_doctor_marks_warning_checks_as_not_ok() {
         .expect("env check");
     assert_eq!(env.get("status").and_then(|v| v.as_str()), Some("warn"));
     assert_eq!(env.get("ok").and_then(|v| v.as_bool()), Some(false));
+    let top = checks
+        .iter()
+        .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("top"))
+        .expect("top check");
+    assert_eq!(top.get("status").and_then(|v| v.as_str()), Some("warn"));
+    assert_eq!(top.get("ok").and_then(|v| v.as_bool()), Some(false));
+    assert!(
+        issues.iter().any(|v| {
+            v.as_str().is_some_and(|s| {
+                s.contains("top: invalid argument: cpu profiling requires real sample events")
+            })
+        }),
+        "expected top contract warning in issues: {issues:?}"
+    );
     let flame_cpu = checks
         .iter()
         .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("flame_cpu"))
