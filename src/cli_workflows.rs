@@ -536,17 +536,40 @@ fn corpus_import_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let path = Path::new(import_dir);
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => {
-            let entries = std::fs::read_dir(path)
-                .ok()
-                .map(|iter| iter.filter_map(Result::ok).count())
-                .unwrap_or(0);
+            let mut entries = 0usize;
+            let mut invalid = Vec::new();
+            match std::fs::read_dir(path) {
+                Ok(iter) => {
+                    for entry in iter {
+                        match entry {
+                            Ok(entry) => {
+                                entries += 1;
+                                if let Err(err) = listed_file_status(&entry.path()) {
+                                    invalid.push(err.to_string());
+                                }
+                            }
+                            Err(err) => invalid.push(format!("{} read_dir entry error: {err}", path.display())),
+                        }
+                    }
+                }
+                Err(err) => invalid.push(format!("{} read_dir error: {err}", path.display())),
+            }
             (
-                if entries > 0 {
+                if entries > 0 && invalid.is_empty() {
                     FullStepStatus::Passed
                 } else {
                     FullStepStatus::Failed
                 },
-                format!("path={} entries={}", path.display(), entries),
+                if invalid.is_empty() {
+                    format!("path={} entries={} invalid=<none>", path.display(), entries)
+                } else {
+                    format!(
+                        "path={} entries={} invalid={}",
+                        path.display(),
+                        entries,
+                        invalid.join("; ")
+                    )
+                },
             )
         }
         Ok(_) => (
@@ -2625,6 +2648,23 @@ mod tests {
         let (status, detail) = corpus_import_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("missing dir path"));
+    }
+
+    #[test]
+    fn corpus_import_status_rejects_empty_imported_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "fozzy-import-empty-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create import dir");
+        std::fs::write(dir.join("input-empty.bin"), b"").expect("write empty file");
+        let value = serde_json::json!({ "dir": dir.to_string_lossy().to_string() });
+        let (status, detail) = corpus_import_status(&value);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("entries=1"));
+        assert!(detail.contains("invalid="));
+        assert!(detail.contains("input-empty.bin"));
     }
 
     #[test]
