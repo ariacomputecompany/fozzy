@@ -215,6 +215,29 @@ fn file_artifact_status(path: &Path) -> (FullStepStatus, String) {
     }
 }
 
+fn directory_artifact_status(path: &Path) -> (FullStepStatus, String) {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            let entries = std::fs::read_dir(path)
+                .ok()
+                .map(|iter| iter.filter_map(Result::ok).count())
+                .unwrap_or(0);
+            (
+                FullStepStatus::Passed,
+                format!("path={} entries={}", path.display(), entries),
+            )
+        }
+        Ok(_) => (
+            FullStepStatus::Failed,
+            format!("path={} is not a directory", path.display()),
+        ),
+        Err(err) => (
+            FullStepStatus::Failed,
+            format!("path={} missing: {err}", path.display()),
+        ),
+    }
+}
+
 fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatus, String) {
     let strict_ok = enforce_strict_summary(strict, summary).is_ok();
     (
@@ -1524,16 +1547,18 @@ pub(super) fn run_full_command(
                 memory: memory.clone(),
             },
         ) {
-            Ok(fuzz_run) => push(
-                "fuzz",
-                FullStepStatus::Passed,
-                format!(
-                    "status={:?} run_id={} scenario={}",
-                    fuzz_run.summary.status,
-                    fuzz_run.summary.identity.run_id,
-                    primary.display()
-                ),
-            ),
+            Ok(fuzz_run) => {
+                let (status, detail) = run_summary_pass_status(&fuzz_run.summary, strict);
+                push(
+                    "fuzz",
+                    status,
+                    format!(
+                        "{detail} run_id={} scenario={}",
+                        fuzz_run.summary.identity.run_id,
+                        primary.display()
+                    ),
+                );
+            }
             Err(err) => push("fuzz", FullStepStatus::Failed, err.to_string()),
         }
     } else {
@@ -1565,15 +1590,14 @@ pub(super) fn run_full_command(
                 memory: memory.clone(),
             },
         ) {
-            Ok(explore) => push(
-                "explore",
-                FullStepStatus::Passed,
-                format!(
-                    "status={:?} scenario={}",
-                    explore.summary.status,
-                    distributed.display()
-                ),
-            ),
+            Ok(explore) => {
+                let (status, detail) = run_summary_pass_status(&explore.summary, strict);
+                push(
+                    "explore",
+                    status,
+                    format!("{detail} scenario={}", distributed.display()),
+                );
+            }
             Err(err) => push("explore", FullStepStatus::Failed, err.to_string()),
         }
     } else {
@@ -1675,28 +1699,28 @@ pub(super) fn run_full_command(
                 out: corpus_zip.clone(),
             },
         ) {
-            Ok(_) => push(
-                "corpus_export",
-                FullStepStatus::Passed,
-                corpus_zip.display().to_string(),
-            ),
+            Ok(_) => {
+                let (status, detail) = file_artifact_status(&corpus_zip);
+                push("corpus_export", status, detail);
+            }
             Err(err) => push("corpus_export", FullStepStatus::Failed, err.to_string()),
         }
         match fozzy::corpus_command(
             config,
             &CorpusCommand::Import {
                 zip: corpus_zip,
-                out: corpus_import_dir,
+                out: corpus_import_dir.clone(),
             },
         ) {
-            Ok(value) => push(
-                "corpus_import",
-                FullStepStatus::Passed,
-                value.get("dir")
+            Ok(value) => {
+                let import_dir = value
+                    .get("dir")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("imported corpus")
-                    .to_string(),
-            ),
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| corpus_import_dir.clone());
+                let (status, detail) = directory_artifact_status(&import_dir);
+                push("corpus_import", status, detail);
+            }
             Err(err) => push("corpus_import", FullStepStatus::Failed, err.to_string()),
         }
     }
@@ -2109,6 +2133,17 @@ mod tests {
         let (status, detail) = run_summary_pass_status(&summary, true);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("status=Fail"));
+    }
+
+    #[test]
+    fn directory_artifact_status_rejects_missing_output() {
+        let path = std::env::temp_dir().join(format!(
+            "fozzy-missing-dir-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let (status, detail) = directory_artifact_status(&path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("missing"));
     }
 
     #[test]
