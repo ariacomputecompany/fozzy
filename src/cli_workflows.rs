@@ -809,11 +809,14 @@ fn shrink_step_status(
     let run_id_present = !summary.identity.run_id.trim().is_empty();
     let (file_status, file_detail) = file_artifact_status(out_trace);
     let artifact_ok = matches!(file_status, FullStepStatus::Passed);
+    let reported_trace = summary.identity.trace_path.as_deref();
+    let reported_matches = reported_trace.is_some_and(|reported| Path::new(reported) == out_trace);
     if allow_expected_failures {
         match primary_status {
             Some(primary) => {
                 let class_ok = shrink_status_matches(primary, summary.status);
-                let classification = if class_ok && strict_ok && run_id_present && artifact_ok {
+                let classification =
+                    if class_ok && strict_ok && run_id_present && artifact_ok && reported_matches {
                     "expected_fail_class_preserved"
                 } else if !class_ok {
                     "expected_fail_class_mismatch"
@@ -821,18 +824,26 @@ fn shrink_step_status(
                     "run_identity_missing"
                 } else if !artifact_ok {
                     "out_trace_missing"
+                } else if !reported_matches {
+                    "out_trace_identity_mismatch"
                 } else {
                     "strict_policy_rejected"
                 };
                 (
-                    if class_ok && strict_ok && run_id_present && artifact_ok {
+                    if class_ok && strict_ok && run_id_present && artifact_ok && reported_matches {
                         FullStepStatus::Passed
                     } else {
                         FullStepStatus::Failed
                     },
                     format!(
-                        "status={:?} class_ok={} strict_ok={} run_id_present={} {}",
-                        summary.status, class_ok, strict_ok, run_id_present, file_detail
+                        "status={:?} class_ok={} strict_ok={} run_id_present={} trace_reported={} trace_matches={} {}",
+                        summary.status,
+                        class_ok,
+                        strict_ok,
+                        run_id_present,
+                        reported_trace.is_some(),
+                        reported_matches,
+                        file_detail
                     ),
                     classification.to_string(),
                 )
@@ -840,18 +851,33 @@ fn shrink_step_status(
             None => (
                 FullStepStatus::Failed,
                 format!(
-                    "status={:?} class_ok=false strict_ok={} run_id_present={} {}",
-                    summary.status, strict_ok, run_id_present, file_detail
+                    "status={:?} class_ok=false strict_ok={} run_id_present={} trace_reported={} trace_matches={} {}",
+                    summary.status,
+                    strict_ok,
+                    run_id_present,
+                    reported_trace.is_some(),
+                    reported_matches,
+                    file_detail
                 ),
                 "primary_status_missing".to_string(),
             ),
         }
-    } else if summary.status == ExitStatus::Pass && strict_ok && run_id_present && artifact_ok {
+    } else if summary.status == ExitStatus::Pass
+        && strict_ok
+        && run_id_present
+        && artifact_ok
+        && reported_matches
+    {
         (
             FullStepStatus::Passed,
             format!(
-                "status={:?} strict_ok={} run_id_present={} {}",
-                summary.status, strict_ok, run_id_present, file_detail
+                "status={:?} strict_ok={} run_id_present={} trace_reported={} trace_matches={} {}",
+                summary.status,
+                strict_ok,
+                run_id_present,
+                reported_trace.is_some(),
+                reported_matches,
+                file_detail
             ),
             "pass_required_policy".to_string(),
         )
@@ -862,14 +888,21 @@ fn shrink_step_status(
             "run_identity_missing"
         } else if !artifact_ok {
             "out_trace_missing"
+        } else if !reported_matches {
+            "out_trace_identity_mismatch"
         } else {
             "strict_policy_rejected"
         };
         (
             FullStepStatus::Failed,
             format!(
-                "status={:?} strict_ok={} run_id_present={} {}",
-                summary.status, strict_ok, run_id_present, file_detail
+                "status={:?} strict_ok={} run_id_present={} trace_reported={} trace_matches={} {}",
+                summary.status,
+                strict_ok,
+                run_id_present,
+                reported_trace.is_some(),
+                reported_matches,
+                file_detail
             ),
             classification.to_string(),
         )
@@ -4214,6 +4247,7 @@ mod tests {
         }];
         let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
         std::fs::write(&out_trace, b"trace").expect("write trace");
+        summary.identity.trace_path = Some(out_trace.display().to_string());
         let (status, detail, classification) = shrink_step_status(
             Some(ExitStatus::Pass),
             &summary,
@@ -4234,6 +4268,7 @@ mod tests {
         summary.identity.run_id.clear();
         let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
         std::fs::write(&out_trace, b"trace").expect("write trace");
+        summary.identity.trace_path = Some(out_trace.display().to_string());
         let (status, detail, classification) = shrink_step_status(
             Some(ExitStatus::Pass),
             &summary,
@@ -4249,13 +4284,35 @@ mod tests {
 
     #[test]
     fn shrink_step_status_rejects_missing_out_trace_artifact() {
-        let summary = sample_run_summary(ExitStatus::Pass);
+        let mut summary = sample_run_summary(ExitStatus::Pass);
         let missing = std::env::temp_dir().join(format!("missing-{}.fozzy", uuid::Uuid::new_v4()));
+        summary.identity.trace_path = Some(missing.display().to_string());
         let (status, detail, classification) =
             shrink_step_status(Some(ExitStatus::Pass), &summary, true, false, &missing);
         assert!(matches!(status, FullStepStatus::Failed));
         assert_eq!(classification, "out_trace_missing");
         assert!(detail.contains("missing"));
+    }
+
+    #[test]
+    fn shrink_step_status_rejects_mismatched_reported_trace_path() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
+        let other_trace = std::env::temp_dir().join(format!("other-{}.fozzy", uuid::Uuid::new_v4()));
+        std::fs::write(&out_trace, b"trace").expect("write trace");
+        summary.identity.trace_path = Some(other_trace.display().to_string());
+        let (status, detail, classification) = shrink_step_status(
+            Some(ExitStatus::Pass),
+            &summary,
+            true,
+            false,
+            &out_trace,
+        );
+        let _ = std::fs::remove_file(&out_trace);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert_eq!(classification, "out_trace_identity_mismatch");
+        assert!(detail.contains("trace_reported=true"));
+        assert!(detail.contains("trace_matches=false"));
     }
 
     #[test]
