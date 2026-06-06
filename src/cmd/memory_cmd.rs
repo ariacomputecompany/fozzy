@@ -78,6 +78,26 @@ struct MemoryBundle {
     graph: MemoryGraph,
 }
 
+fn validate_leaks_against_summary(
+    summary: &MemorySummary,
+    leaks: &[MemoryLeak],
+    source: &Path,
+) -> FozzyResult<()> {
+    let leaked_allocs = leaks.len() as u64;
+    let leaked_bytes: u64 = leaks.iter().map(|leak| leak.bytes).sum();
+    if leaked_allocs != summary.leaked_allocs || leaked_bytes != summary.leaked_bytes {
+        return Err(FozzyError::InvalidArgument(format!(
+            "memory leak sidecar {} does not match summary: summary leaked_bytes={} leaked_allocs={}, sidecar leaked_bytes={} leaked_allocs={}",
+            source.display(),
+            summary.leaked_bytes,
+            summary.leaked_allocs,
+            leaked_bytes,
+            leaked_allocs
+        )));
+    }
+    Ok(())
+}
+
 pub fn memory_command(config: &Config, command: &MemoryCommand) -> FozzyResult<serde_json::Value> {
     match command {
         MemoryCommand::Graph { run, out } => {
@@ -161,10 +181,13 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
     if leaks_path.exists() || graph_path.exists() {
         let summary = load_summary_from_report(&artifacts_dir)?;
         let leaks: Vec<MemoryLeak> = if leaks_path.exists() {
-            serde_json::from_slice(&std::fs::read(leaks_path)?)?
+            serde_json::from_slice(&std::fs::read(&leaks_path)?)?
         } else {
             Vec::new()
         };
+        if leaks_path.exists() {
+            validate_leaks_against_summary(&summary, &leaks, &leaks_path)?;
+        }
         let graph: MemoryGraph = if graph_path.exists() {
             serde_json::from_slice(&std::fs::read(graph_path)?)?
         } else {
@@ -191,10 +214,13 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
         if leaks_path.exists() || graph_path.exists() {
             let summary = load_summary_from_report(&dir)?;
             let leaks: Vec<MemoryLeak> = if leaks_path.exists() {
-                serde_json::from_slice(&std::fs::read(leaks_path)?)?
+                serde_json::from_slice(&std::fs::read(&leaks_path)?)?
             } else {
                 Vec::new()
             };
+            if leaks_path.exists() {
+                validate_leaks_against_summary(&summary, &leaks, &leaks_path)?;
+            }
             let graph: MemoryGraph = if graph_path.exists() {
                 serde_json::from_slice(&std::fs::read(graph_path)?)?
             } else {
@@ -497,7 +523,9 @@ fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
     let trusted_leaks = trusted_explicit_memory_leaks_path(path)?;
     let trusted_graph = trusted_explicit_memory_graph_path(path)?;
     let leaks = if let Some(leaks_path) = trusted_leaks {
-        serde_json::from_slice(&std::fs::read(leaks_path)?)?
+        let leaks: Vec<MemoryLeak> = serde_json::from_slice(&std::fs::read(&leaks_path)?)?;
+        validate_leaks_against_summary(&summary, &leaks, &leaks_path)?;
+        leaks
     } else {
         Vec::new()
     };
@@ -1148,6 +1176,88 @@ mod tests {
     }
 
     #[test]
+    fn direct_trace_rejects_mismatched_trusted_memory_leaks_sidecar() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-mismatched-sibling-leaks-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let report_path = root.join("report.json");
+
+        let trace = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary {
+                    leaked_bytes: 32,
+                    leaked_allocs: 1,
+                    ..MemorySummary::default()
+                },
+                leaks: Vec::new(),
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: Some(report_path.to_string_lossy().to_string()),
+                    artifacts_dir: Some(root.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&trace_path).expect("write trace");
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&trace.summary).expect("report bytes"),
+        )
+        .expect("write report");
+        crate::write_run_manifest(&trace.summary, &root).expect("write manifest");
+        std::fs::write(
+            root.join("memory.leaks.json"),
+            serde_json::to_vec_pretty(&vec![MemoryLeak {
+                alloc_id: 31,
+                bytes: 99,
+                callsite_hash: "alloc:stale".to_string(),
+                tag: None,
+            }])
+            .expect("leaks bytes"),
+        )
+        .expect("write leaks");
+
+        let err = load_from_trace(&trace_path, &trace_path.to_string_lossy())
+            .expect_err("must reject stale leaks");
+        assert!(
+            err.to_string().contains("does not match summary"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn direct_trace_ignores_coherent_foreign_sibling_memory_graph() {
         let root = std::env::temp_dir().join(format!(
             "fozzy-memory-foreign-sibling-{}",
@@ -1614,6 +1724,96 @@ mod tests {
         assert_eq!(bundle.summary.leaked_bytes, 40);
         assert_eq!(bundle.leaks.len(), 1);
         assert_eq!(bundle.leaks[0].alloc_id, 11);
+    }
+
+    #[test]
+    fn memory_run_id_rejects_mismatched_memory_leaks_sidecar() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-runid-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let external_trace = root.join("external.trace.fozzy");
+        let trace = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary {
+                    leaked_bytes: 40,
+                    leaked_allocs: 1,
+                    peak_bytes: 96,
+                    ..MemorySummary::default()
+                },
+                leaks: Vec::new(),
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(external_trace.to_string_lossy().to_string()),
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    leaked_bytes: 40,
+                    leaked_allocs: 1,
+                    peak_bytes: 96,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&external_trace).expect("write trace");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&trace.summary).expect("report json"),
+        )
+        .expect("write report");
+        crate::write_run_manifest(&trace.summary, &run_dir).expect("write manifest");
+        std::fs::write(
+            run_dir.join("memory.leaks.json"),
+            serde_json::to_vec_pretty(&vec![MemoryLeak {
+                alloc_id: 17,
+                bytes: 999,
+                callsite_hash: "alloc:stale".to_string(),
+                tag: None,
+            }])
+            .expect("leaks json"),
+        )
+        .expect("write leaks");
+
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            ..Config::default()
+        };
+        let err = load_memory_bundle(&cfg, "r1").expect_err("must reject stale leaks sidecar");
+        assert!(
+            err.to_string().contains("does not match summary"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
