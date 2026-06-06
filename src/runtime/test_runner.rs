@@ -123,7 +123,15 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
 
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if let Some(record_base) = &opt.record_trace_to {
-        write_test_traces(record_base, &outcome.trace_runs, seed, opt.record_collision)?;
+        write_test_traces(
+            record_base,
+            &outcome.trace_runs,
+            &summary.identity.run_id,
+            seed,
+            opt.record_collision,
+            &report_path,
+            &artifacts_dir,
+        )?;
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
 
@@ -217,15 +225,27 @@ fn run_parallel_tests(
 fn write_test_traces(
     record_base: &Path,
     runs: &[ScenarioRun],
+    run_id: &str,
     seed: u64,
     policy: RecordCollisionPolicy,
+    report_path: &Path,
+    artifacts_dir: &Path,
 ) -> FozzyResult<()> {
     if runs.is_empty() {
         return Ok(());
     }
     if runs.len() == 1 {
         let run = &runs[0];
-        write_single_scenario_trace(record_base, run, seed, policy, RunMode::Test)?;
+        write_single_scenario_trace(
+            record_base,
+            run,
+            run_id,
+            seed,
+            policy,
+            RunMode::Test,
+            Some(report_path.to_string_lossy().to_string()),
+            Some(artifacts_dir.to_string_lossy().to_string()),
+        )?;
         return Ok(());
     }
 
@@ -245,7 +265,16 @@ fn write_test_traces(
 
     for (idx, run) in runs.iter().enumerate() {
         let out = parent.join(format!("{base}.{}.fozzy", idx + 1));
-        write_single_scenario_trace(&out, run, seed, policy, RunMode::Test)?;
+        write_single_scenario_trace(
+            &out,
+            run,
+            run_id,
+            seed,
+            policy,
+            RunMode::Test,
+            Some(report_path.to_string_lossy().to_string()),
+            Some(artifacts_dir.to_string_lossy().to_string()),
+        )?;
     }
     Ok(())
 }

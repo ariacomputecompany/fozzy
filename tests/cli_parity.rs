@@ -2786,6 +2786,57 @@ fn run_recorded_trace_embeds_actual_written_trace_path() {
 }
 
 #[test]
+fn run_recorded_trace_shares_report_identity() {
+    let ws = temp_workspace("run-trace-report-identity");
+    let scenario = ws.join("example.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+    let requested = ws.join("trace.fozzy");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "run should succeed");
+    let out = parse_json_stdout(&output);
+    let trace_path = out
+        .get("identity")
+        .and_then(|v| v.get("tracePath"))
+        .and_then(|v| v.as_str())
+        .expect("trace path")
+        .to_string();
+    let trace_doc = read_trace_json(Path::new(&trace_path));
+    let trace_identity = trace_doc
+        .get("summary")
+        .and_then(|v| v.get("identity"))
+        .expect("trace identity");
+    assert_eq!(
+        trace_identity.get("runId").and_then(|v| v.as_str()),
+        out.get("identity")
+            .and_then(|v| v.get("runId"))
+            .and_then(|v| v.as_str())
+    );
+    assert_eq!(
+        trace_identity.get("reportPath").and_then(|v| v.as_str()),
+        out.get("identity")
+            .and_then(|v| v.get("reportPath"))
+            .and_then(|v| v.as_str())
+    );
+    assert_eq!(
+        trace_identity.get("artifactsDir").and_then(|v| v.as_str()),
+        out.get("identity")
+            .and_then(|v| v.get("artifactsDir"))
+            .and_then(|v| v.as_str())
+    );
+}
+
+#[test]
 fn replay_embedded_trace_without_scenario_path_reports_real_trace_file_location() {
     let ws = temp_workspace("replay-embedded-trace-location");
     let scenario = ws.join("example.fozzy.json");

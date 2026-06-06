@@ -107,8 +107,16 @@ pub fn run_scenario(
             .record_trace_to
             .clone()
             .unwrap_or_else(|| artifacts_dir.join("trace.fozzy"));
-        let written =
-            write_single_scenario_trace(&path, &run, seed, opt.record_collision, RunMode::Run)?;
+        let written = write_single_scenario_trace(
+            &path,
+            &run,
+            &run_id,
+            seed,
+            opt.record_collision,
+            RunMode::Run,
+            Some(report_path.to_string_lossy().to_string()),
+            Some(artifacts_dir.to_string_lossy().to_string()),
+        )?;
         trace_path = Some(written);
     }
 

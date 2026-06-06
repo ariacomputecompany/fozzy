@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use uuid::Uuid;
-
 use crate::engine::ScenarioRun;
 use crate::{
     ExitStatus, FozzyResult, MemorySummary, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
@@ -48,18 +46,21 @@ pub(crate) fn build_run_summary(
 pub(crate) fn build_single_scenario_trace(
     out_path: &Path,
     run: &ScenarioRun,
+    run_id: &str,
     seed: u64,
     mode: RunMode,
+    report_path: Option<String>,
+    artifacts_dir: Option<String>,
 ) -> TraceFile {
     let (started_at, finished_at, duration_ms, duration_ns) = trace_timing_for_run(run);
     let summary = build_run_summary(
         run.status,
         mode,
-        Uuid::new_v4().to_string(),
+        run_id.to_string(),
         seed,
         Some(out_path.to_string_lossy().to_string()),
-        None,
-        None,
+        report_path,
+        artifacts_dir,
         started_at,
         finished_at,
         duration_ms,
@@ -83,12 +84,23 @@ pub(crate) fn build_single_scenario_trace(
 pub(crate) fn write_single_scenario_trace(
     requested_path: &Path,
     run: &ScenarioRun,
+    run_id: &str,
     seed: u64,
     policy: RecordCollisionPolicy,
     mode: RunMode,
+    report_path: Option<String>,
+    artifacts_dir: Option<String>,
 ) -> FozzyResult<PathBuf> {
     let target = crate::resolve_record_target(requested_path, policy)?;
-    let trace = build_single_scenario_trace(&target, run, seed, mode);
+    let trace = build_single_scenario_trace(
+        &target,
+        run,
+        run_id,
+        seed,
+        mode,
+        report_path,
+        artifacts_dir,
+    );
     crate::write_trace_to_target(&trace, &target)?;
     Ok(target)
 }

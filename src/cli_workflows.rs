@@ -1012,6 +1012,31 @@ fn summary_artifact_identity_status(summary: &RunSummary) -> (bool, String) {
     )
 }
 
+fn trace_summary_identity_status(trace_path: &Path, summary: &RunSummary) -> (bool, String) {
+    let trace_exists = std::fs::metadata(trace_path)
+        .map(|metadata| metadata.is_file() && metadata.len() > 0)
+        .unwrap_or(false);
+    let trace_content_matches = std::fs::read(trace_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<fozzy::TraceFile>(&bytes).ok())
+        .is_some_and(|trace| {
+            trace.summary.identity.run_id == summary.identity.run_id
+                && trace.summary.identity.seed == summary.identity.seed
+                && trace.summary.mode == summary.mode
+                && trace.summary.status == summary.status
+                && trace.summary.identity.trace_path == summary.identity.trace_path
+                && trace.summary.identity.report_path == summary.identity.report_path
+                && trace.summary.identity.artifacts_dir == summary.identity.artifacts_dir
+        });
+    (
+        trace_exists && trace_content_matches,
+        format!(
+            "trace_exists={} trace_content_matches={}",
+            trace_exists, trace_content_matches
+        ),
+    )
+}
+
 fn run_summary_pass_status(
     summary: &RunSummary,
     strict: bool,
@@ -1059,11 +1084,14 @@ fn recorded_trace_status(
     let (summary_status, summary_detail) =
         run_summary_pass_status(summary, strict, expected_seed, expected_mode);
     let (file_status, file_detail) = file_artifact_status(trace_path);
+    let (trace_identity_ok, trace_identity_detail) =
+        trace_summary_identity_status(trace_path, summary);
     let reported_trace = summary.identity.trace_path.as_deref();
     let reported_matches = reported_trace.is_some_and(|reported| Path::new(reported) == trace_path);
     let status = if reported_matches
         && matches!(summary_status, FullStepStatus::Passed)
         && matches!(file_status, FullStepStatus::Passed)
+        && trace_identity_ok
     {
         FullStepStatus::Passed
     } else {
@@ -1072,11 +1100,12 @@ fn recorded_trace_status(
     (
         status,
         format!(
-            "{} trace_reported={} trace_matches={} {}",
+            "{} trace_reported={} trace_matches={} {} {}",
             summary_detail,
             reported_trace.is_some(),
             reported_matches,
-            file_detail
+            file_detail,
+            trace_identity_detail
         ),
     )
 }
@@ -1096,6 +1125,8 @@ fn shrink_step_status(
     let mode_matches = summary.mode == expected_mode;
     let (file_status, file_detail) = file_artifact_status(out_trace);
     let artifact_ok = matches!(file_status, FullStepStatus::Passed);
+    let (trace_identity_ok, trace_identity_detail) =
+        trace_summary_identity_status(out_trace, summary);
     let reported_trace = summary.identity.trace_path.as_deref();
     let reported_matches = reported_trace.is_some_and(|reported| Path::new(reported) == out_trace);
     if allow_expected_failures {
@@ -1110,6 +1141,7 @@ fn shrink_step_status(
                         && mode_matches
                         && artifact_ok
                         && reported_matches
+                        && trace_identity_ok
                 {
                     "expected_fail_class_preserved"
                 } else if !class_ok {
@@ -1124,6 +1156,8 @@ fn shrink_step_status(
                     "out_trace_missing"
                 } else if !reported_matches {
                     "out_trace_identity_mismatch"
+                } else if !trace_identity_ok {
+                    "out_trace_content_mismatch"
                 } else {
                     "strict_policy_rejected"
                 };
@@ -1135,13 +1169,14 @@ fn shrink_step_status(
                         && mode_matches
                         && artifact_ok
                         && reported_matches
+                        && trace_identity_ok
                     {
                         FullStepStatus::Passed
                     } else {
                         FullStepStatus::Failed
                     },
                     format!(
-                        "status={:?} class_ok={} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} trace_reported={} trace_matches={} {}",
+                        "status={:?} class_ok={} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} trace_reported={} trace_matches={} {} {}",
                         summary.status,
                         class_ok,
                         strict_ok,
@@ -1152,7 +1187,8 @@ fn shrink_step_status(
                         expected_mode,
                         reported_trace.is_some(),
                         reported_matches,
-                        file_detail
+                        file_detail,
+                        trace_identity_detail
                     ),
                     classification.to_string(),
                 )
@@ -1160,7 +1196,7 @@ fn shrink_step_status(
             None => (
                 FullStepStatus::Failed,
                 format!(
-                    "status={:?} class_ok=false strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} trace_reported={} trace_matches={} {}",
+                    "status={:?} class_ok=false strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} trace_reported={} trace_matches={} {} {}",
                     summary.status,
                     strict_ok,
                     run_id_present,
@@ -1170,7 +1206,8 @@ fn shrink_step_status(
                     expected_mode,
                     reported_trace.is_some(),
                     reported_matches,
-                    file_detail
+                    file_detail,
+                    trace_identity_detail
                 ),
                 "primary_status_missing".to_string(),
             ),
@@ -1182,11 +1219,12 @@ fn shrink_step_status(
         && mode_matches
         && artifact_ok
         && reported_matches
+        && trace_identity_ok
     {
         (
             FullStepStatus::Passed,
             format!(
-                "status={:?} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} trace_reported={} trace_matches={} {}",
+                "status={:?} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} trace_reported={} trace_matches={} {} {}",
                 summary.status,
                 strict_ok,
                 run_id_present,
@@ -1196,7 +1234,8 @@ fn shrink_step_status(
                 expected_mode,
                 reported_trace.is_some(),
                 reported_matches,
-                file_detail
+                file_detail,
+                trace_identity_detail
             ),
             "pass_required_policy".to_string(),
         )
@@ -1213,13 +1252,15 @@ fn shrink_step_status(
             "out_trace_missing"
         } else if !reported_matches {
             "out_trace_identity_mismatch"
+        } else if !trace_identity_ok {
+            "out_trace_content_mismatch"
         } else {
             "strict_policy_rejected"
         };
         (
             FullStepStatus::Failed,
             format!(
-                "status={:?} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} trace_reported={} trace_matches={} {}",
+                "status={:?} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} trace_reported={} trace_matches={} {} {}",
                 summary.status,
                 strict_ok,
                 run_id_present,
@@ -1229,7 +1270,8 @@ fn shrink_step_status(
                 expected_mode,
                 reported_trace.is_some(),
                 reported_matches,
-                file_detail
+                file_detail,
+                trace_identity_detail
             ),
             classification.to_string(),
         )
@@ -4313,6 +4355,22 @@ mod tests {
         summary
     }
 
+    fn write_trace_fixture(path: &Path, summary: &RunSummary) {
+        let trace = serde_json::json!({
+            "format": "fozzy-trace",
+            "version": 1,
+            "engine": {"version": "0.1.0"},
+            "mode": summary.mode,
+            "scenario_path": "tests/example.fozzy.json",
+            "scenario": {"version": 1, "name": "example", "steps": []},
+            "decisions": [],
+            "events": [],
+            "summary": serde_json::to_value(summary).expect("serialize trace summary")
+        });
+        std::fs::write(path, serde_json::to_vec(&trace).expect("serialize trace"))
+            .expect("write trace");
+    }
+
     #[test]
     fn replay_summary_status_rejects_class_mismatch() {
         let summary = sample_run_summary(ExitStatus::Fail);
@@ -4510,9 +4568,9 @@ mod tests {
             "fozzy-trace-match-{}.fozzy",
             uuid::Uuid::new_v4()
         ));
-        std::fs::write(&path, b"trace").expect("write trace");
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.identity.trace_path = Some("/tmp/other.trace.fozzy".to_string());
+        write_trace_fixture(&path, &summary);
         let (status, detail) = recorded_trace_status(&summary, true, 7, RunMode::Run, &path);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("trace_reported=true"));
@@ -4526,10 +4584,10 @@ mod tests {
             "fozzy-trace-seed-{}.fozzy",
             uuid::Uuid::new_v4()
         ));
-        std::fs::write(&path, b"trace").expect("write trace");
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.identity.seed = 99;
         summary.identity.trace_path = Some(path.display().to_string());
+        write_trace_fixture(&path, &summary);
         let (status, detail) = recorded_trace_status(&summary, true, 7, RunMode::Run, &path);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("seed_matches=false"));
@@ -4543,14 +4601,31 @@ mod tests {
             "fozzy-trace-mode-{}.fozzy",
             uuid::Uuid::new_v4()
         ));
-        std::fs::write(&path, b"trace").expect("write trace");
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.mode = RunMode::Test;
         summary.identity.trace_path = Some(path.display().to_string());
+        write_trace_fixture(&path, &summary);
         let (status, detail) = recorded_trace_status(&summary, true, 7, RunMode::Run, &path);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("mode_matches=false"));
         assert!(detail.contains("mode=Run"));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn recorded_trace_status_rejects_trace_content_mismatch() {
+        let path = std::env::temp_dir().join(format!(
+            "fozzy-trace-content-{}.fozzy",
+            uuid::Uuid::new_v4()
+        ));
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.trace_path = Some(path.display().to_string());
+        let mut trace_summary = summary.clone();
+        trace_summary.identity.run_id = "other-run".to_string();
+        write_trace_fixture(&path, &trace_summary);
+        let (status, detail) = recorded_trace_status(&summary, true, 7, RunMode::Run, &path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("trace_content_matches=false"));
         std::fs::remove_file(path).ok();
     }
 
@@ -6335,8 +6410,8 @@ mod tests {
             location: None,
         }];
         let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
-        std::fs::write(&out_trace, b"trace").expect("write trace");
         summary.identity.trace_path = Some(out_trace.display().to_string());
+        write_trace_fixture(&out_trace, &summary);
         let (status, detail, classification) = shrink_step_status(
             Some(ExitStatus::Pass),
             &summary,
@@ -6359,8 +6434,8 @@ mod tests {
         summary.mode = RunMode::Replay;
         summary.identity.run_id.clear();
         let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
-        std::fs::write(&out_trace, b"trace").expect("write trace");
         summary.identity.trace_path = Some(out_trace.display().to_string());
+        write_trace_fixture(&out_trace, &summary);
         let (status, detail, classification) = shrink_step_status(
             Some(ExitStatus::Pass),
             &summary,
@@ -6403,8 +6478,8 @@ mod tests {
         summary.mode = RunMode::Replay;
         let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
         let other_trace = std::env::temp_dir().join(format!("other-{}.fozzy", uuid::Uuid::new_v4()));
-        std::fs::write(&out_trace, b"trace").expect("write trace");
         summary.identity.trace_path = Some(other_trace.display().to_string());
+        write_trace_fixture(&out_trace, &summary);
         let (status, detail, classification) = shrink_step_status(
             Some(ExitStatus::Pass),
             &summary,
@@ -6427,8 +6502,8 @@ mod tests {
         summary.mode = RunMode::Replay;
         summary.identity.seed = 99;
         let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
-        std::fs::write(&out_trace, b"trace").expect("write trace");
         summary.identity.trace_path = Some(out_trace.display().to_string());
+        write_trace_fixture(&out_trace, &summary);
         let (status, detail, classification) = shrink_step_status(
             Some(ExitStatus::Pass),
             &summary,
@@ -6449,9 +6524,9 @@ mod tests {
     fn shrink_step_status_rejects_mode_mismatch() {
         let mut summary = sample_run_summary(ExitStatus::Pass);
         let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
-        std::fs::write(&out_trace, b"trace").expect("write trace");
         summary.mode = RunMode::Run;
         summary.identity.trace_path = Some(out_trace.display().to_string());
+        write_trace_fixture(&out_trace, &summary);
         let (status, detail, classification) = shrink_step_status(
             Some(ExitStatus::Pass),
             &summary,
@@ -6466,6 +6541,30 @@ mod tests {
         assert_eq!(classification, "mode_mismatch");
         assert!(detail.contains("mode_matches=false"));
         assert!(detail.contains("mode=Replay"));
+    }
+
+    #[test]
+    fn shrink_step_status_rejects_trace_content_mismatch() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.mode = RunMode::Replay;
+        let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
+        summary.identity.trace_path = Some(out_trace.display().to_string());
+        let mut trace_summary = summary.clone();
+        trace_summary.identity.run_id = "other-run".to_string();
+        write_trace_fixture(&out_trace, &trace_summary);
+        let (status, detail, classification) = shrink_step_status(
+            Some(ExitStatus::Pass),
+            &summary,
+            true,
+            7,
+            RunMode::Replay,
+            false,
+            &out_trace,
+        );
+        let _ = std::fs::remove_file(&out_trace);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert_eq!(classification, "out_trace_content_mismatch");
+        assert!(detail.contains("trace_content_matches=false"));
     }
 
     #[test]
