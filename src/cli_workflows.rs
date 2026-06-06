@@ -38,6 +38,10 @@ fn summarize_profile_top(value: &serde_json::Value) -> String {
     format!("warnings={warnings} empty_domains={empty_domains}")
 }
 
+fn known_profile_domain(domain: &str) -> bool {
+    matches!(domain, "cpu" | "heap" | "latency" | "io" | "sched")
+}
+
 fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let warnings = value
         .get("warnings")
@@ -71,7 +75,7 @@ fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .filter(|item| {
             item.get("domain")
                 .and_then(|v| v.as_str())
-                .is_none_or(|s| s.trim().is_empty())
+                .is_none_or(|s| s.trim().is_empty() || !known_profile_domain(s.trim()))
                 || item.get("reason")
                     .and_then(|v| v.as_str())
                     .is_none_or(|s| s.trim().is_empty())
@@ -170,6 +174,7 @@ fn profile_diff_status(
             let classification = row.get("classification").and_then(|v| v.as_str());
             let is_regression = row.get("isRegression").and_then(|v| v.as_bool());
             let is_significant = row.get("isSignificant").and_then(|v| v.as_bool());
+            let domain = row.get("domain").and_then(|v| v.as_str()).map(str::trim);
             let classification_invalid = !matches!(
                 classification,
                 Some("regression") | Some("improvement") | Some("stable")
@@ -181,9 +186,7 @@ fn profile_diff_status(
                 (Some("improvement"), Some(false), Some(true)) => false,
                 _ => true,
             };
-            row.get("domain")
-                .and_then(|v| v.as_str())
-                .is_none_or(|s| s.trim().is_empty())
+            domain.is_none_or(|s| s.is_empty() || !known_profile_domain(s))
                 || row
                     .get("metric")
                     .and_then(|v| v.as_str())
@@ -295,6 +298,7 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
     let evidence_count = evidence_pointers.len();
     let status = if cause_domain == "unknown"
         || cause_domain.trim().is_empty()
+        || !known_profile_domain(cause_domain.trim())
         || shifted_path == "n/a"
         || shifted_path.trim().is_empty()
         || shifted_path == "unknown"
@@ -3326,6 +3330,31 @@ mod tests {
     }
 
     #[test]
+    fn profile_diff_status_rejects_unknown_domains() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "domain": "mystery",
+                "metric": "cpu_time_ms",
+                "timeDomain": "cpu",
+                "classification": "stable",
+                "isRegression": false,
+                "isSignificant": false
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_rows=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
     fn profile_diff_status_rejects_semantically_inconsistent_rows() {
         let value = serde_json::json!({
             "summary": {
@@ -3379,6 +3408,17 @@ mod tests {
         let value = serde_json::json!({
             "warnings": [],
             "emptyDomains": [{"domain": "heap", "reason": "no heap samples in trace"}]
+        });
+        let (status, detail) = profile_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_empty_domains=1"));
+    }
+
+    #[test]
+    fn profile_top_status_rejects_unknown_empty_domain_rows() {
+        let value = serde_json::json!({
+            "warnings": [],
+            "emptyDomains": [{"domain": "mystery", "empty": true, "reason": "no mystery samples in trace"}]
         });
         let (status, detail) = profile_top_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
@@ -3446,6 +3486,19 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Skipped));
         assert!(detail.contains("cause_domain=latency"));
         assert!(detail.contains("shifted_path=metric::p99_ms"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_unknown_cause_domain() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "mystery",
+            "topShiftedPath": "metric::p99_latency_ms",
+            "evidencePointers": ["profile.metrics.json"]
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("cause_domain=mystery"));
     }
 
     #[test]
