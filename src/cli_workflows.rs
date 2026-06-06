@@ -622,6 +622,33 @@ fn doctor_report_status(
     )
 }
 
+fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus, String) {
+    let warnings = if report.warnings.is_empty() {
+        "<none>".to_string()
+    } else {
+        report.warnings.join("; ")
+    };
+    let ok = report.uncovered_hotspot_count == 0 && report.warnings.is_empty();
+    (
+        if ok {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!(
+            "required_hotspots={} covered={} uncovered={} min_risk={} profile={} root={} scenario_root={} warnings={}",
+            report.required_hotspot_count,
+            report.covered_hotspot_count,
+            report.uncovered_hotspot_count,
+            report.effective_min_risk,
+            format!("{:?}", report.profile).to_lowercase(),
+            report.root,
+            report.scenario_root,
+            warnings
+        ),
+    )
+}
+
 fn clean_tree_step_status(detail: &str) -> FullStepStatus {
     if detail.contains("check skipped") {
         FullStepStatus::Skipped
@@ -1174,25 +1201,8 @@ pub(super) fn run_full_command(
             max_matched_scenarios: 25,
         }) {
             Ok(report) => {
-                let ok = report.uncovered_hotspot_count == 0;
-                push(
-                    "topology_coverage",
-                    if ok {
-                        FullStepStatus::Passed
-                    } else {
-                        FullStepStatus::Failed
-                    },
-                    format!(
-                        "required_hotspots={} covered={} uncovered={} min_risk={} profile={} root={} scenario_root={}",
-                        report.required_hotspot_count,
-                        report.covered_hotspot_count,
-                        report.uncovered_hotspot_count,
-                        report.effective_min_risk,
-                        format!("{:?}", report.profile).to_lowercase(),
-                        root.display(),
-                        scenario_root.display()
-                    ),
-                );
+                let (status, detail) = topology_coverage_status(&report);
+                push("topology_coverage", status, detail);
             }
             Err(err) => push("topology_coverage", FullStepStatus::Failed, err.to_string()),
         }
@@ -2523,6 +2533,37 @@ mod tests {
         assert!(detail.contains("issues=1"));
         assert!(detail.contains("proc_unmatched_preflight: strict proc backend preflight found an undeclared subprocess"));
         assert!(detail.contains("Add a `proc_when` step"));
+    }
+
+    #[test]
+    fn topology_coverage_status_rejects_degraded_confidence_warnings() {
+        let report = fozzy::MapSuitesReport {
+            schema_version: "fozzy.map_suites.v5".to_string(),
+            root: "/repo".to_string(),
+            scenario_root: "/repo/tests".to_string(),
+            scanned_files: 10,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
+            base_min_risk: 60,
+            effective_min_risk: 55,
+            scenario_count: 1,
+            skipped_source_files: vec!["/repo/src/broken.rs: failed to open".to_string()],
+            unreadable_scenarios: Vec::new(),
+            warnings: vec!["map scan skipped 1 source file(s); hotspot coverage is incomplete".to_string()],
+            required_hotspot_count: 1,
+            covered_hotspot_count: 1,
+            uncovered_hotspot_count: 0,
+            total_suites: 1,
+            returned_suites: 1,
+            offset: 0,
+            limit: 25,
+            truncated: false,
+            suites: Vec::new(),
+        };
+        let (status, detail) = topology_coverage_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("uncovered=0"));
+        assert!(detail.contains("warnings=map scan skipped 1 source file(s); hotspot coverage is incomplete"));
     }
 
     #[test]
