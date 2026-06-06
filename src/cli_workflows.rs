@@ -75,7 +75,12 @@ fn profile_diff_status(
         .pointer("/summary/significantRegressionCount")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let status = if significant > 0 || regressions > 0 || (require_stable && verdict != "stable") {
+    let known_non_regression = matches!(verdict, "stable" | "improvement");
+    let status = if significant > 0
+        || regressions > 0
+        || !known_non_regression
+        || (require_stable && verdict != "stable")
+    {
         FullStepStatus::Failed
     } else {
         FullStepStatus::Passed
@@ -240,9 +245,8 @@ fn report_query_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .as_str()
         .map(|s| s.to_string())
         .unwrap_or_else(|| value.to_string());
-    let ok = matches!(status_value.as_str(), "pass" | "fail" | "error" | "skip");
     (
-        if ok {
+        if status_value == "pass" {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
@@ -2140,6 +2144,20 @@ mod tests {
     }
 
     #[test]
+    fn profile_diff_status_rejects_unknown_verdicts() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "unknown",
+                "regressionCount": 0,
+                "significantRegressionCount": 0
+            }
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("verdict=unknown"));
+    }
+
+    #[test]
     fn profile_top_status_rejects_empty_domains() {
         let value = serde_json::json!({
             "warnings": [],
@@ -2241,6 +2259,14 @@ mod tests {
         let (status, detail) = report_show_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("content_bytes=0"));
+    }
+
+    #[test]
+    fn report_query_status_rejects_non_pass_status() {
+        let value = serde_json::json!("fail");
+        let (status, detail) = report_query_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains(".status=fail"));
     }
 
     #[test]

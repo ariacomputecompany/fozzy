@@ -2217,6 +2217,53 @@ fn full_rejects_non_pass_primary_summaries_even_without_strict_warnings() {
 }
 
 #[test]
+fn full_report_query_rejects_non_pass_primary_status() {
+    let ws = temp_workspace("full-report-query-fail-status");
+    let scenario_root = ws.join("tests");
+    std::fs::create_dir_all(&scenario_root).expect("create tests dir");
+    std::fs::write(
+        scenario_root.join("fail.fozzy.json"),
+        r#"{
+          "version":1,
+          "name":"fail-fast",
+          "steps":[
+            {"type":"assert_ok","value":false}
+          ]
+        }"#,
+    )
+    .expect("write fail scenario");
+
+    let out = run_cli(&[
+        "full".into(),
+        "--scenario-root".into(),
+        scenario_root.to_string_lossy().to_string(),
+        "--scenario-filter".into(),
+        "fail.fozzy.json".into(),
+        "--seed".into(),
+        "7".into(),
+        "--doctor-runs".into(),
+        "2".into(),
+        "--fuzz-time".into(),
+        "10ms".into(),
+        "--required-steps".into(),
+        "run_record_trace,report_query".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "full should fail for non-pass primary scenario");
+    let doc = parse_json_stdout(&out);
+    assert_eq!(
+        full_step_status(&doc, "report_query").as_deref(),
+        Some("failed"),
+        "report_query should fail when the queried run status is non-pass"
+    );
+    assert_eq!(
+        full_step_detail(&doc, "report_query").as_deref(),
+        Some(".status=fail"),
+        "report_query should surface the queried fail status verbatim"
+    );
+}
+
+#[test]
 fn full_fails_when_no_scenarios_are_discovered() {
     let ws = temp_workspace("full-no-scenarios");
     let scenario_root = ws.join("tests");
