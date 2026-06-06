@@ -306,6 +306,63 @@ fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatu
     )
 }
 
+fn shrink_step_status(
+    primary_status: Option<ExitStatus>,
+    summary: &RunSummary,
+    strict: bool,
+    allow_expected_failures: bool,
+) -> (FullStepStatus, String, String) {
+    let strict_ok = enforce_strict_summary(strict, summary).is_ok();
+    if allow_expected_failures {
+        match primary_status {
+            Some(primary) => {
+                let class_ok = shrink_status_matches(primary, summary.status);
+                let classification = if class_ok && strict_ok {
+                    "expected_fail_class_preserved"
+                } else if !class_ok {
+                    "expected_fail_class_mismatch"
+                } else {
+                    "strict_policy_rejected"
+                };
+                (
+                    if class_ok && strict_ok {
+                        FullStepStatus::Passed
+                    } else {
+                        FullStepStatus::Failed
+                    },
+                    format!(
+                        "status={:?} class_ok={} strict_ok={}",
+                        summary.status, class_ok, strict_ok
+                    ),
+                    classification.to_string(),
+                )
+            }
+            None => (
+                FullStepStatus::Failed,
+                format!("status={:?} class_ok=false strict_ok={}", summary.status, strict_ok),
+                "primary_status_missing".to_string(),
+            ),
+        }
+    } else if summary.status == ExitStatus::Pass && strict_ok {
+        (
+            FullStepStatus::Passed,
+            format!("status={:?} strict_ok={}", summary.status, strict_ok),
+            "pass_required_policy".to_string(),
+        )
+    } else {
+        let classification = if summary.status != ExitStatus::Pass {
+            "policy_rejected_non_pass"
+        } else {
+            "strict_policy_rejected"
+        };
+        (
+            FullStepStatus::Failed,
+            format!("status={:?} strict_ok={}", summary.status, strict_ok),
+            classification.to_string(),
+        )
+    }
+}
+
 fn corpus_add_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let Some(added) = value.get("added").and_then(|v| v.as_str()) else {
         return (
@@ -1369,32 +1426,17 @@ pub(super) fn run_full_command(
             Ok(shrink) => {
                 shrunk_trace = Some(PathBuf::from(shrink.out_trace_path.clone()));
                 shrunk_status = Some(shrink.result.summary.status);
-                let status = if allow_expected_failures {
-                    if let Some(primary) = primary_status {
-                        if shrink_status_matches(primary, shrink.result.summary.status) {
-                            shrink_classification =
-                                Some("expected_fail_class_preserved".to_string());
-                            FullStepStatus::Passed
-                        } else {
-                            shrink_classification =
-                                Some("expected_fail_class_mismatch".to_string());
-                            FullStepStatus::Failed
-                        }
-                    } else {
-                        shrink_classification = Some("primary_status_missing".to_string());
-                        FullStepStatus::Passed
-                    }
-                } else if shrink.result.summary.status == ExitStatus::Pass {
-                    shrink_classification = Some("pass_required_policy".to_string());
-                    FullStepStatus::Passed
-                } else {
-                    shrink_classification = Some("policy_rejected_non_pass".to_string());
-                    FullStepStatus::Failed
-                };
+                let (status, detail, classification) = shrink_step_status(
+                    primary_status,
+                    &shrink.result.summary,
+                    strict,
+                    allow_expected_failures,
+                );
+                shrink_classification = Some(classification);
                 push(
                     "shrink",
                     status,
-                    format!("out_trace={}", shrink.out_trace_path),
+                    format!("{detail} out_trace={}", shrink.out_trace_path),
                 );
             }
             Err(err) => {
@@ -2448,6 +2490,23 @@ mod tests {
         assert!(detail.contains("issues=1"));
         assert!(detail.contains("proc_unmatched_preflight: strict proc backend preflight found an undeclared subprocess"));
         assert!(detail.contains("Add a `proc_when` step"));
+    }
+
+    #[test]
+    fn shrink_step_status_rejects_strict_warning_for_pass_summary() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.findings = vec![fozzy::Finding {
+            kind: fozzy::FindingKind::Checker,
+            title: "memory_leak".to_string(),
+            message: "detected 1 leaked allocation(s)".to_string(),
+            location: None,
+        }];
+        let (status, detail, classification) =
+            shrink_step_status(Some(ExitStatus::Pass), &summary, true, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert_eq!(classification, "strict_policy_rejected");
+        assert!(detail.contains("strict_ok=false"));
+        assert!(detail.contains("status=Pass"));
     }
 
     #[test]
