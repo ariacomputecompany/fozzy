@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::finalize::write_summary_report;
+use crate::finalize::{write_reporter_artifacts, write_summary_report};
 use crate::{
     Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind,
     MemoryRunReport, ProfileCaptureLevel, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
@@ -274,6 +274,7 @@ pub fn replay_explore_trace(
     config: &Config,
     trace: &TraceFile,
     trace_path: &std::path::Path,
+    opt: &crate::ReplayOptions,
 ) -> FozzyResult<crate::RunResult> {
     let Some(explore) = trace.explore.as_ref() else {
         return Err(FozzyError::Trace("not an explore trace".to_string()));
@@ -343,7 +344,10 @@ pub fn replay_explore_trace(
     }
 
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
-    if should_emit_heavy_artifacts(status, true) {
+    let explicit_capture = opt.dump_events;
+    let emit_heavy = should_emit_heavy_artifacts(status, explicit_capture)
+        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+    if emit_heavy {
         std::fs::write(
             artifacts_dir.join("events.json"),
             serde_json::to_vec(&events)?,
@@ -355,8 +359,11 @@ pub fn replay_explore_trace(
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
     }
-    profile_trace.summary = summary.clone();
-    write_profile_artifacts_from_trace_with_source(&profile_trace, None, &artifacts_dir)?;
+    if should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture) {
+        profile_trace.summary = summary.clone();
+        write_profile_artifacts_from_trace_with_source(&profile_trace, None, &artifacts_dir)?;
+    }
+    write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })

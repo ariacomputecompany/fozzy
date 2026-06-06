@@ -146,10 +146,10 @@ pub fn replay_trace(
 ) -> FozzyResult<RunResult> {
     let trace = TraceFile::read_json(trace_path.as_path())?;
     if trace.fuzz.is_some() && trace.scenario.is_none() {
-        return crate::replay_fuzz_trace(config, &trace, trace_path.as_path());
+        return crate::replay_fuzz_trace(config, &trace, trace_path.as_path(), opt);
     }
     if trace.explore.is_some() && trace.scenario.is_none() {
-        return crate::replay_explore_trace(config, &trace, trace_path.as_path());
+        return crate::replay_explore_trace(config, &trace, trace_path.as_path(), opt);
     }
 
     let seed = trace.summary.identity.seed;
@@ -296,6 +296,7 @@ pub fn replay_trace(
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace_with_source(&profile_trace, None, &artifacts_dir)?;
     }
+    write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
     Ok(RunResult { summary })
 }

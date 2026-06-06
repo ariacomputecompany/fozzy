@@ -12,7 +12,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::finalize::write_summary_report;
+use crate::finalize::{write_reporter_artifacts, write_summary_report};
 use crate::{
     Config, ExitStatus, Finding, FindingKind, MemoryOptions, MemoryState, ProfileCaptureLevel,
     RecordCollisionPolicy, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
@@ -498,6 +498,7 @@ pub fn replay_fuzz_trace(
     config: &Config,
     trace: &TraceFile,
     trace_path: &std::path::Path,
+    opt: &crate::ReplayOptions,
 ) -> FozzyResult<crate::RunResult> {
     let Some(fuzz) = trace.fuzz.as_ref() else {
         return Err(FozzyError::Trace("not a fuzz trace".to_string()));
@@ -594,15 +595,21 @@ pub fn replay_fuzz_trace(
     }
 
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
-    if should_emit_heavy_artifacts(replay_status, true) {
+    let explicit_capture = opt.dump_events;
+    let emit_heavy = should_emit_heavy_artifacts(replay_status, explicit_capture)
+        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+    if emit_heavy {
         std::fs::write(
             artifacts_dir.join("events.json"),
             serde_json::to_vec(&exec.events)?,
         )?;
         crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
+    }
+    if should_emit_profile_artifacts(opt.profile_capture, replay_status, explicit_capture) {
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace_with_source(&profile_trace, None, &artifacts_dir)?;
     }
+    write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
     Ok(crate::RunResult { summary })
 }
@@ -1057,8 +1064,8 @@ mod tests {
         FuzzTarget, crash_trace_output_path, execute_target, replay_fuzz_trace, with_numeric_suffix,
     };
     use crate::{
-        CURRENT_TRACE_VERSION, Config, MemoryOptions, Reporter, RunIdentity, RunMode, RunSummary,
-        TRACE_FORMAT, TraceFile,
+        CURRENT_TRACE_VERSION, Config, MemoryOptions, ProfileCaptureLevel, Reporter, RunIdentity,
+        RunMode, RunSummary, TRACE_FORMAT, TraceFile,
     };
     use std::path::{Path, PathBuf};
 
@@ -1211,8 +1218,19 @@ mod tests {
             checksum: None,
         };
         trace.write_json(&trace_path).expect("write trace");
-        let replayed =
-            replay_fuzz_trace(&cfg, &trace, &trace_path).expect("replay fuzz trace");
+        let replayed = replay_fuzz_trace(
+            &cfg,
+            &trace,
+            &trace_path,
+            &crate::ReplayOptions {
+                until: None,
+                step: false,
+                dump_events: false,
+                profile_capture: ProfileCaptureLevel::Baseline,
+                reporter: Reporter::Json,
+            },
+        )
+        .expect("replay fuzz trace");
         assert_eq!(
             replayed.summary.memory.as_ref().map(|m| m.leaked_bytes),
             Some(256)
