@@ -81,7 +81,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy fuzz".to_string(),
                 when: "Find new bugs automatically by mutating inputs and exploring states; use for robustness/security testing.".to_string(),
-                how: "fozzy fuzz scenario:tests/example.fozzy.json --mode coverage --time 30s --record /tmp/fuzz.fozzy (targets support fn:<id> and scenario:<path.fozzy.json>; built-in fn targets classify findings as target_behavior/input_invalid). Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
+                how: "fozzy fuzz scenario:tests/example.fozzy.json --mode coverage --time 30s --record /tmp/fuzz.fozzy. Scenario-backed fuzzing is the supported product surface. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy explore".to_string(),
@@ -91,7 +91,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy corpus".to_string(),
                 when: "Manage fuzz corpora: seed inputs, export/import to share failing cases across machines/CI.".to_string(),
-                how: "fozzy corpus add <dir> <file>; fozzy corpus list <dir>; fozzy corpus export <dir> --out corpus.zip.".to_string(),
+                how: "fozzy corpus add <dir> <file>; fozzy corpus list <dir>; fozzy corpus minimize <dir>; fozzy corpus export <dir> --out corpus.zip. `minimize` canonicalizes entries to content-addressed `input-<blake3>.bin` names and removes duplicate payloads.".to_string(),
             },
             UsageItem {
                 command: "fozzy artifacts".to_string(),
@@ -113,7 +113,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy profile".to_string(),
                 when: "Diagnose regressions with deterministic timeline/heap/latency, capability visibility, and one-shot profile health checks.".to_string(),
-                how: "fozzy run tests/example.fozzy.json --det --profile-capture sampled --record ./trace.fozzy --json; fozzy profile env --json; fozzy profile top <runId|trace> --heap --latency --io --sched --limit 20; fozzy profile flame <runId|trace> --cpu --format speedscope --out cpu.speedscope.json; fozzy profile diff <left> <right> --cpu --heap --latency --json; fozzy profile explain <runId|trace> --diff-with <baseline>; fozzy profile export <runId|trace> --format otlp --out profile.otlp.json; fozzy profile shrink <runId|trace> --metric p99_latency --direction increase --minimize all (returns status=no_feasible_shrink_found instead of hard error when contract preservation is impossible); fozzy profile doctor <runId|trace> --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
+                how: "fozzy run tests/example.fozzy.json --det --profile-capture full --record ./trace.fozzy --json; fozzy profile env --json; fozzy profile top <runId|trace> --heap --latency --io --sched --limit 20; fozzy profile diff <left> <right> --heap --latency --json; fozzy profile explain <runId|trace> --diff-with <baseline>; fozzy profile export <runId|trace> --format otlp --out profile.otlp.json; fozzy profile shrink <runId|trace> --metric p99_latency --direction increase --minimize all (returns status=no_feasible_shrink_found instead of hard error when contract preservation is impossible); fozzy profile doctor <runId|trace> --json. CPU profile commands are only valid for traces that already contain real `sample` events; span-derived pseudo-CPU profiles are not supported. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fozzy ci".to_string(),

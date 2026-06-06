@@ -1,10 +1,12 @@
 //! Fuzz corpus management.
 
 use clap::Subcommand;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use walkdir::WalkDir;
 
@@ -67,10 +69,7 @@ pub fn corpus_command(_config: &Config, command: &CorpusCommand) -> FozzyResult<
             Ok(serde_json::json!({"added": out_path.to_string_lossy().to_string()}))
         }
 
-        CorpusCommand::Minimize { dir, budget: _ } => {
-            // Placeholder: true corpus minimization depends on the target + coverage signals.
-            Ok(serde_json::json!({"ok": true, "dir": dir.to_string_lossy().to_string()}))
-        }
+        CorpusCommand::Minimize { dir, budget } => minimize_corpus(dir, *budget),
 
         CorpusCommand::Export { dir, out } => {
             export_zip(dir, out)?;
@@ -82,6 +81,146 @@ pub fn corpus_command(_config: &Config, command: &CorpusCommand) -> FozzyResult<
             Ok(serde_json::json!({"ok": true, "dir": out.to_string_lossy().to_string()}))
         }
     }
+}
+
+fn minimize_corpus(
+    dir: &Path,
+    budget: Option<crate::FozzyDuration>,
+) -> FozzyResult<serde_json::Value> {
+    if !dir.exists() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "corpus directory not found: {}",
+            dir.display()
+        )));
+    }
+    if !dir.is_dir() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "corpus minimize source is not a directory: {}",
+            dir.display()
+        )));
+    }
+
+    let started = Instant::now();
+    let budget_limit = budget.map(|d| d.0);
+    let check_budget = |phase: &str| -> FozzyResult<()> {
+        if let Some(limit) = budget_limit
+            && started.elapsed() > limit
+        {
+            return Err(FozzyError::InvalidArgument(format!(
+                "corpus minimize exceeded budget during {phase}: limit={}ms",
+                limit.as_millis()
+            )));
+        }
+        Ok(())
+    };
+
+    let mut files = Vec::<PathBuf>::new();
+    for entry in WalkDir::new(dir).min_depth(1).max_depth(1) {
+        check_budget("scan")?;
+        let entry = entry.map_err(|e| {
+            let msg = e.to_string();
+            FozzyError::Io(
+                e.into_io_error()
+                    .unwrap_or_else(|| std::io::Error::other(msg)),
+            )
+        })?;
+        if entry.file_type().is_symlink() {
+            return Err(FozzyError::InvalidArgument(format!(
+                "corpus minimize refuses symlinked input: {}",
+                entry.path().display()
+            )));
+        }
+        if entry.file_type().is_file() {
+            files.push(entry.path().to_path_buf());
+        }
+    }
+    files.sort();
+
+    if files.is_empty() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "corpus directory has no files to minimize: {}",
+            dir.display()
+        )));
+    }
+
+    let mut unique_by_hash = BTreeMap::<String, Vec<u8>>::new();
+    let mut duplicate_files = 0u64;
+    let mut duplicate_bytes = 0u64;
+    let mut original_bytes = 0u64;
+
+    for path in &files {
+        check_budget("read")?;
+        let bytes = std::fs::read(path)?;
+        original_bytes = original_bytes.saturating_add(bytes.len() as u64);
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        if unique_by_hash.contains_key(&hash) {
+            duplicate_files = duplicate_files.saturating_add(1);
+            duplicate_bytes = duplicate_bytes.saturating_add(bytes.len() as u64);
+        } else {
+            unique_by_hash.insert(hash, bytes);
+        }
+    }
+
+    let parent = dir.parent().unwrap_or_else(|| Path::new("."));
+    let staging = parent.join(format!(
+        ".corpus-minimize-{}.{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&staging)?;
+
+    let write_result = (|| -> FozzyResult<()> {
+        for (hash, bytes) in &unique_by_hash {
+            check_budget("write")?;
+            let name = format!("input-{hash}.bin");
+            std::fs::write(staging.join(name), bytes)?;
+        }
+        Ok(())
+    })();
+
+    if let Err(err) = write_result {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(err);
+    }
+
+    let swap_result = (|| -> FozzyResult<()> {
+        for path in &files {
+            check_budget("swap")?;
+            std::fs::remove_file(path)?;
+        }
+        for entry in WalkDir::new(&staging).min_depth(1).max_depth(1) {
+            check_budget("swap")?;
+            let entry = entry.map_err(|e| {
+                let msg = e.to_string();
+                FozzyError::Io(
+                    e.into_io_error()
+                        .unwrap_or_else(|| std::io::Error::other(msg)),
+                )
+            })?;
+            if entry.file_type().is_file() {
+                let name = entry.file_name().to_owned();
+                std::fs::rename(entry.path(), dir.join(name))?;
+            }
+        }
+        std::fs::remove_dir(&staging)?;
+        Ok(())
+    })();
+
+    if let Err(err) = swap_result {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(err);
+    }
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "dir": dir.to_string_lossy().to_string(),
+        "filesBefore": files.len(),
+        "filesAfter": unique_by_hash.len(),
+        "duplicatesRemoved": duplicate_files,
+        "bytesBefore": original_bytes,
+        "bytesAfter": original_bytes.saturating_sub(duplicate_bytes),
+        "bytesRemoved": duplicate_bytes
+    }))
 }
 
 fn export_zip(dir: &Path, out_zip: &Path) -> FozzyResult<()> {
@@ -1012,6 +1151,59 @@ mod tests {
                 .contains("unsafe archive entry path rejected")
         );
         assert!(!out.join("bad").exists(), "should fail before writes");
+    }
+
+    #[test]
+    fn minimize_deduplicates_and_canonicalizes_corpus_files() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-corpus-minimize-{}", uuid::Uuid::new_v4()));
+        let corpus = root.join("corpus");
+        std::fs::create_dir_all(&corpus).expect("corpus");
+        std::fs::write(corpus.join("a.bin"), b"alpha").expect("alpha 1");
+        std::fs::write(corpus.join("b.bin"), b"beta").expect("beta");
+        std::fs::write(corpus.join("nested-name.bin"), b"alpha").expect("alpha 2");
+
+        let out = minimize_corpus(&corpus, None).expect("minimize");
+        assert_eq!(out.get("filesBefore").and_then(|v| v.as_u64()), Some(3));
+        assert_eq!(out.get("filesAfter").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            out.get("duplicatesRemoved").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+
+        let mut names = std::fs::read_dir(&corpus)
+            .expect("read dir")
+            .map(|e| {
+                e.expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                format!("input-{}.bin", blake3::hash(b"alpha").to_hex()),
+                format!("input-{}.bin", blake3::hash(b"beta").to_hex())
+            ]
+        );
+    }
+
+    #[test]
+    fn minimize_rejects_empty_corpus_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-corpus-minimize-empty-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let corpus = root.join("corpus");
+        std::fs::create_dir_all(&corpus).expect("corpus");
+
+        let err = minimize_corpus(&corpus, None).expect_err("must reject empty corpus");
+        assert!(
+            err.to_string()
+                .contains("corpus directory has no files to minimize")
+        );
     }
 
     #[cfg(unix)]

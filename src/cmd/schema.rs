@@ -452,7 +452,7 @@ pub fn schema_doc() -> SchemaDoc {
     profile_output_schemas.insert(
         "env",
         ProfileOutputSchema {
-            schema_version: "fozzy.profile_env.v3",
+            schema_version: "fozzy.profile_env.v4",
             required_fields: vec![
                 "schemaVersion",
                 "strict",
@@ -463,12 +463,12 @@ pub fn schema_doc() -> SchemaDoc {
             ],
             optional_fields: vec![],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_env.v3",
+                "schemaVersion":"fozzy.profile_env.v4",
                 "strict":true,
                 "determinismContract":{"replayBoundTo":"deterministic_decisions_and_virtual_events"},
                 "host":{"os":"macos","arch":"aarch64"},
-                "backends":{"proc":"scripted","fs":"virtual","http":"scripted"},
-                "domains":{"cpu":{"available":true,"quality":"degraded","activeCollector":"in_process_sampler","diagnostics":[]}}
+                "backends":{"proc":"host","fs":"host","http":"host"},
+                "domains":{"cpu":{"available":false,"quality":"unsupported","activeCollector":"in_process_sampler","diagnostics":["cpu domain remains unavailable until runtime sample events are recorded"]}}
             }),
             notes: "Describes profiler domain capability/quality by host + backend setup."
                 .to_string(),
@@ -484,10 +484,13 @@ pub fn schema_doc() -> SchemaDoc {
                 "schemaVersion":"fozzy.profile_doctor.v1",
                 "run":"run-id-or-trace",
                 "ok":true,
-                "checks":[{"name":"load_bundle","ok":true,"status":"pass","detail":"..."}],
+                "checks":[
+                    {"name":"load_bundle","ok":true,"status":"pass","detail":"..."},
+                    {"name":"shrink_cpu_increase","ok":false,"status":"skipped","detail":"skipped (use --deep for shrink+contract checks)"}
+                ],
                 "issues":[]
             }),
-            notes: "One-shot sanity gate across top/flame/timeline/diff/explain/export/shrink readiness.".to_string(),
+            notes: "One-shot sanity gate across top/flame/timeline/diff/explain/export/shrink readiness. `ok=true` requires every executed check status to be `pass`; explicit `skipped` checks remain visible without flipping `ok=false`, while warning-class checks are surfaced in `issues` and do make `ok=false`. The `env` check warns when the current runtime reports unsupported profile domains.".to_string(),
         },
     );
 
@@ -525,7 +528,7 @@ pub fn schema_doc() -> SchemaDoc {
     profile_artifact_schemas.insert(
         "profile.cpu.json",
         ProfileArtifactSchema {
-            schema_version: "fozzy.profile_cpu.v2",
+            schema_version: "fozzy.profile_cpu.v3",
             required_fields: vec![
                 "schemaVersion",
                 "runId",
@@ -538,13 +541,13 @@ pub fn schema_doc() -> SchemaDoc {
             ],
             optional_fields: vec![],
             example: serde_json::json!({
-                "schemaVersion":"fozzy.profile_cpu.v2",
+                "schemaVersion":"fozzy.profile_cpu.v3",
                 "runId":"run-id",
-                "collector":{"domain":"host_time","primaryCollector":"perf_event_open","activeCollector":"in_process_sampler","diagnostics":[]},
+                "collector":{"domain":"host_time","primaryCollector":"perf_event_open","activeCollector":"perf_event_open","diagnostics":[]},
                 "samplePeriodMs":10,
                 "sampleCount":1,
-                "samples":[{"thread":"main","stack":["fozzy::runtime"],"weightMs":1}],
-                "foldedStacks":[{"stack":"fozzy::runtime","weight":1}],
+                "samples":[{"thread":"main","stack":["fozzy::runtime","step::cpu"],"weightMs":1}],
+                "foldedStacks":[{"stack":"fozzy::runtime;step::cpu","weight":1}],
                 "symbolsRef":"symbols.json"
             }),
             notes: "CPU profile payload; folded stacks are deterministically sorted."
@@ -704,7 +707,7 @@ pub fn schema_doc() -> SchemaDoc {
                 required_top_level_keys: vec!["version", "name", "suites"],
                 minimal_example: serde_json::json!({
                     "version": 1,
-                    "name": "suites-placeholder",
+                    "name": "suites-example",
                     "suites": {}
                 }),
             },

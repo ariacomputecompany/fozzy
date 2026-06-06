@@ -113,6 +113,10 @@ fn report_doc_with_profile(config: &Config, run: &str, summary: &RunSummary) -> 
     .ok();
     if let Some(obj) = value.as_object_mut()
         && let Some(explain) = explain
+        && explain
+            .get("schemaVersion")
+            .and_then(|v| v.as_str())
+            == Some("fozzy.profile_explain.v1")
     {
         obj.insert("profileDiagnosis".to_string(), explain);
     }

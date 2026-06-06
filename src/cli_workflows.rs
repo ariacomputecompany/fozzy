@@ -256,7 +256,11 @@ pub(super) fn run_gate_command(
                         verify.ok,
                         verify.checksum_present,
                         verify.checksum_valid,
-                        verify.warnings.len()
+                        if verify.warnings.is_empty() {
+                            "<none>".to_string()
+                        } else {
+                            verify.warnings.join("; ")
+                        }
                     ),
                 );
             }
@@ -324,7 +328,7 @@ pub(super) fn run_gate_command(
             config,
             &ProfileCommand::Top {
                 run: trace_path.display().to_string(),
-                cpu: true,
+                cpu: false,
                 heap: true,
                 latency: true,
                 io: true,
@@ -333,10 +337,20 @@ pub(super) fn run_gate_command(
             },
             strict,
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "profile_top",
                 FullStepStatus::Passed,
-                "profile top generated".to_string(),
+                format!(
+                    "warnings={} empty_domains={}",
+                    value.get("warnings")
+                        .and_then(|v| v.as_array())
+                        .map(|v| v.len())
+                        .unwrap_or(0),
+                    value.get("emptyDomains")
+                        .and_then(|v| v.as_array())
+                        .map(|v| v.len())
+                        .unwrap_or(0)
+                ),
             ),
             Err(err) => push("profile_top", FullStepStatus::Failed, err.to_string()),
         }
@@ -346,7 +360,7 @@ pub(super) fn run_gate_command(
                 &ProfileCommand::Diff {
                     left: trace_path.display().to_string(),
                     right: replay_run_id.clone(),
-                    cpu: true,
+                    cpu: false,
                     heap: true,
                     latency: true,
                     io: true,
@@ -354,10 +368,21 @@ pub(super) fn run_gate_command(
                 },
                 strict,
             ) {
-                Ok(_) => push(
+                Ok(value) => push(
                     "profile_diff",
                     FullStepStatus::Passed,
-                    "profile diff generated".to_string(),
+                    format!(
+                        "verdict={} regressions={} significant_regressions={}",
+                        value.pointer("/summary/verdict")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown"),
+                        value.pointer("/summary/regressionCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                        value.pointer("/summary/significantRegressionCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0)
+                    ),
                 ),
                 Err(err) => push("profile_diff", FullStepStatus::Failed, err.to_string()),
             }
@@ -376,10 +401,18 @@ pub(super) fn run_gate_command(
             },
             strict,
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "profile_explain",
                 FullStepStatus::Passed,
-                "profile explain generated".to_string(),
+                format!(
+                    "cause_domain={} shifted_path={}",
+                    value.get("likelyCauseDomain")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown"),
+                    value.get("topShiftedPath")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                ),
             ),
             Err(err) => push("profile_explain", FullStepStatus::Failed, err.to_string()),
         }
@@ -1038,11 +1071,22 @@ pub(super) fn run_full_command(
                 format: Reporter::Pretty,
             },
         ) {
-            Ok(_) => push(
-                "report_show",
-                FullStepStatus::Passed,
-                "generated pretty report envelope".to_string(),
-            ),
+            Ok(value) => {
+                let format = value
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("pretty");
+                let bytes = value
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.len())
+                    .unwrap_or(0);
+                push(
+                    "report_show",
+                    FullStepStatus::Passed,
+                    format!("format={format} content_bytes={bytes}"),
+                )
+            }
             Err(err) => push("report_show", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -1054,11 +1098,17 @@ pub(super) fn run_full_command(
                 list_paths: false,
             },
         ) {
-            Ok(_) => push(
-                "report_query",
-                FullStepStatus::Passed,
-                "queried .status".to_string(),
-            ),
+            Ok(value) => {
+                let status_value = value
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| value.to_string());
+                push(
+                    "report_query",
+                    FullStepStatus::Passed,
+                    format!(".status={status_value}"),
+                )
+            }
             Err(err) => push("report_query", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -1070,10 +1120,16 @@ pub(super) fn run_full_command(
                 list_paths: true,
             },
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "report_query_paths",
                 FullStepStatus::Passed,
-                "listed report paths".to_string(),
+                format!(
+                    "paths={}",
+                    value.get("paths")
+                        .and_then(|v| v.as_array())
+                        .map(|v| v.len())
+                        .unwrap_or(0)
+                ),
             ),
             Err(err) => push(
                 "report_query_paths",
@@ -1090,10 +1146,15 @@ pub(super) fn run_full_command(
                     flake_budget: None,
                 },
             ) {
-                Ok(_) => push(
+                Ok(value) => push(
                     "report_flaky",
                     FullStepStatus::Passed,
-                    "computed flaky report across primary/shrunk traces".to_string(),
+                    format!(
+                        "run_count={} is_flaky={} flake_rate_pct={}",
+                        value.get("runCount").and_then(|v| v.as_u64()).unwrap_or(0),
+                        value.get("isFlaky").and_then(|v| v.as_bool()).unwrap_or(false),
+                        value.get("flakeRatePct").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                    ),
                 ),
                 Err(err) => push("report_flaky", FullStepStatus::Failed, err.to_string()),
             }
@@ -1112,10 +1173,17 @@ pub(super) fn run_full_command(
                 limit: 10,
             },
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "memory_top",
                 FullStepStatus::Passed,
-                "memory diagnostics checked".to_string(),
+                format!(
+                    "total_leaks={} shown={}",
+                    value.get("total").and_then(|v| v.as_u64()).unwrap_or(0),
+                    value.get("leaks")
+                        .and_then(|v| v.as_array())
+                        .map(|v| v.len())
+                        .unwrap_or(0)
+                ),
             ),
             Err(err) => push("memory_top", FullStepStatus::Failed, err.to_string()),
         }
@@ -1127,10 +1195,20 @@ pub(super) fn run_full_command(
                 out: None,
             },
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "memory_graph",
                 FullStepStatus::Passed,
-                "allocation graph extracted".to_string(),
+                format!(
+                    "nodes={} edges={}",
+                    value.pointer("/graph/nodes")
+                        .and_then(|v| v.as_array())
+                        .map(|v| v.len())
+                        .unwrap_or(0),
+                    value.pointer("/graph/edges")
+                        .and_then(|v| v.as_array())
+                        .map(|v| v.len())
+                        .unwrap_or(0)
+                ),
             ),
             Err(err) => push("memory_graph", FullStepStatus::Failed, err.to_string()),
         }
@@ -1143,10 +1221,14 @@ pub(super) fn run_full_command(
                     right: min_trace.display().to_string(),
                 },
             ) {
-                Ok(_) => push(
+                Ok(value) => push(
                     "memory_diff",
                     FullStepStatus::Passed,
-                    "memory delta computed".to_string(),
+                    format!(
+                        "delta_leaked_bytes={} delta_peak_bytes={}",
+                        value.get("deltaLeakedBytes").and_then(|v| v.as_i64()).unwrap_or(0),
+                        value.get("deltaPeakBytes").and_then(|v| v.as_i64()).unwrap_or(0)
+                    ),
                 ),
                 Err(err) => push("memory_diff", FullStepStatus::Failed, err.to_string()),
             }
@@ -1171,10 +1253,20 @@ pub(super) fn run_full_command(
             },
             strict,
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "profile_top",
                 FullStepStatus::Passed,
-                "profile top diagnostics checked".to_string(),
+                format!(
+                    "warnings={} empty_domains={}",
+                    value.get("warnings")
+                        .and_then(|v| v.as_array())
+                        .map(|v| v.len())
+                        .unwrap_or(0),
+                    value.get("emptyDomains")
+                        .and_then(|v| v.as_array())
+                        .map(|v| v.len())
+                        .unwrap_or(0)
+                ),
             ),
             Err(err) => push("profile_top", FullStepStatus::Failed, err.to_string()),
         }
@@ -1193,10 +1285,21 @@ pub(super) fn run_full_command(
                 },
                 strict,
             ) {
-                Ok(_) => push(
+                Ok(value) => push(
                     "profile_diff",
                     FullStepStatus::Passed,
-                    "profile regression diff computed".to_string(),
+                    format!(
+                        "verdict={} regressions={} significant_regressions={}",
+                        value.pointer("/summary/verdict")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown"),
+                        value.pointer("/summary/regressionCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                        value.pointer("/summary/significantRegressionCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0)
+                    ),
                 ),
                 Err(err) => push("profile_diff", FullStepStatus::Failed, err.to_string()),
             }
@@ -1216,10 +1319,18 @@ pub(super) fn run_full_command(
             },
             strict,
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "profile_explain",
                 FullStepStatus::Passed,
-                "profile explanation generated".to_string(),
+                format!(
+                    "cause_domain={} shifted_path={}",
+                    value.get("likelyCauseDomain")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown"),
+                    value.get("topShiftedPath")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                ),
             ),
             Err(err) => push("profile_explain", FullStepStatus::Failed, err.to_string()),
         }
@@ -1253,42 +1364,54 @@ pub(super) fn run_full_command(
         }
     }
 
-    let full_fuzz_target: FuzzTarget = "fn:kv".parse().map_err(|e| anyhow::anyhow!("{e}"))?;
-    let fuzz_trace = register_temp(std::env::temp_dir().join(format!(
-        "fozzy-full-fuzz-{}.trace.fozzy",
-        uuid::Uuid::new_v4()
-    )));
-    match fozzy::fuzz(
-        config,
-        &full_fuzz_target,
-        &FuzzOptions {
-            det: false,
-            mode: FuzzMode::Coverage,
-            seed,
-            time: Some(fuzz_time),
-            runs: None,
-            max_input_bytes: 4096,
-            corpus_dir: None,
-            mutator: None,
-            shrink: true,
-            record_trace_to: Some(fuzz_trace.clone()),
-            reporter: Reporter::Json,
-            crash_only: false,
-            minimize: true,
-            record_collision: RecordCollisionPolicy::Overwrite,
-            profile_capture: ProfileCaptureLevel::Baseline,
-            memory: memory.clone(),
-        },
-    ) {
-        Ok(fuzz_run) => push(
-            "fuzz",
-            FullStepStatus::Passed,
-            format!(
-                "status={:?} run_id={}",
-                fuzz_run.summary.status, fuzz_run.summary.identity.run_id
+    if let Some(primary) = pick_step.as_ref() {
+        let full_fuzz_target = FuzzTarget::Scenario {
+            path: primary.clone(),
+        };
+        let fuzz_trace = register_temp(std::env::temp_dir().join(format!(
+            "fozzy-full-fuzz-{}.trace.fozzy",
+            uuid::Uuid::new_v4()
+        )));
+        match fozzy::fuzz(
+            config,
+            &full_fuzz_target,
+            &FuzzOptions {
+                det: false,
+                mode: FuzzMode::Coverage,
+                seed,
+                time: Some(fuzz_time),
+                runs: None,
+                max_input_bytes: 4096,
+                corpus_dir: None,
+                mutator: None,
+                shrink: true,
+                record_trace_to: Some(fuzz_trace.clone()),
+                reporter: Reporter::Json,
+                crash_only: false,
+                minimize: true,
+                record_collision: RecordCollisionPolicy::Overwrite,
+                profile_capture: ProfileCaptureLevel::Baseline,
+                memory: memory.clone(),
+            },
+        ) {
+            Ok(fuzz_run) => push(
+                "fuzz",
+                FullStepStatus::Passed,
+                format!(
+                    "status={:?} run_id={} scenario={}",
+                    fuzz_run.summary.status,
+                    fuzz_run.summary.identity.run_id,
+                    primary.display()
+                ),
             ),
-        ),
-        Err(err) => push("fuzz", FullStepStatus::Failed, err.to_string()),
+            Err(err) => push("fuzz", FullStepStatus::Failed, err.to_string()),
+        }
+    } else {
+        push(
+            "fuzz",
+            FullStepStatus::Skipped,
+            "no step scenario found for scenario-backed fuzz".to_string(),
+        );
     }
 
     if let Some(distributed) = pick_distributed.as_ref() {
@@ -1365,10 +1488,13 @@ pub(super) fn run_full_command(
                 file: seed_file.clone(),
             },
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "corpus_add",
                 FullStepStatus::Passed,
-                corpus_dir.display().to_string(),
+                value.get("added")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| corpus_dir.to_string_lossy().to_string()),
             ),
             Err(err) => push("corpus_add", FullStepStatus::Failed, err.to_string()),
         }
@@ -1378,10 +1504,13 @@ pub(super) fn run_full_command(
                 dir: corpus_dir.clone(),
             },
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "corpus_list",
                 FullStepStatus::Passed,
-                corpus_dir.display().to_string(),
+                format!(
+                    "files={}",
+                    value.as_array().map(|v| v.len()).unwrap_or_default()
+                ),
             ),
             Err(err) => push("corpus_list", FullStepStatus::Failed, err.to_string()),
         }
@@ -1392,11 +1521,21 @@ pub(super) fn run_full_command(
                 budget: None,
             },
         ) {
-            Ok(_) => push(
-                "corpus_minimize",
-                FullStepStatus::Passed,
-                "placeholder minimization executed".to_string(),
-            ),
+            Ok(value) => {
+                let before = value.get("filesBefore").and_then(|v| v.as_u64()).unwrap_or(0);
+                let after = value.get("filesAfter").and_then(|v| v.as_u64()).unwrap_or(0);
+                let removed = value
+                    .get("duplicatesRemoved")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                push(
+                    "corpus_minimize",
+                    FullStepStatus::Passed,
+                    format!(
+                        "files_before={before} files_after={after} duplicates_removed={removed}"
+                    ),
+                )
+            }
             Err(err) => push("corpus_minimize", FullStepStatus::Failed, err.to_string()),
         }
         match fozzy::corpus_command(
@@ -1420,10 +1559,13 @@ pub(super) fn run_full_command(
                 out: corpus_import_dir,
             },
         ) {
-            Ok(_) => push(
+            Ok(value) => push(
                 "corpus_import",
                 FullStepStatus::Passed,
-                "imported zip into temp directory".to_string(),
+                value.get("dir")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("imported corpus")
+                    .to_string(),
             ),
             Err(err) => push("corpus_import", FullStepStatus::Failed, err.to_string()),
         }
@@ -1465,11 +1607,25 @@ pub(super) fn run_full_command(
         );
     }
 
-    let _env = fozzy::env_info(config);
+    let env = fozzy::env_info(config);
     push(
         "env",
         FullStepStatus::Passed,
-        "environment capability snapshot collected".to_string(),
+        format!(
+            "proc={} fs={} http={}",
+            env.capabilities
+                .get("proc")
+                .map(|c| c.backend.as_str())
+                .unwrap_or("unknown"),
+            env.capabilities
+                .get("fs")
+                .map(|c| c.backend.as_str())
+                .unwrap_or("unknown"),
+            env.capabilities
+                .get("http")
+                .map(|c| c.backend.as_str())
+                .unwrap_or("unknown")
+        ),
     );
 
     apply_full_policy_filters(&mut steps, skip_steps, required_steps);

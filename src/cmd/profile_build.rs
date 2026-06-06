@@ -126,24 +126,7 @@ fn map_event_kind(name: &str) -> ProfileEventKind {
 pub(super) fn build_cpu_profile(trace: &TraceFile, timeline: &[ProfileEvent]) -> CpuProfile {
     let capability = detect_cpu_collector_capability();
     let mut stacks = HashMap::<String, u64>::new();
-    let mut samples = build_cpu_samples(timeline, capability.sample_period_ms);
-    if samples.is_empty() {
-        for event in timeline {
-            let stack_parts = vec![
-                "fozzy::runtime".to_string(),
-                format!(
-                    "event::{}",
-                    event.tags.get("name").cloned().unwrap_or_default()
-                ),
-            ];
-            let weight = event.cost.duration_ms.unwrap_or(1).max(1);
-            samples.push(CpuSample {
-                thread: event.thread.clone(),
-                stack: stack_parts,
-                weight_ms: weight,
-            });
-        }
-    }
+    let samples = build_cpu_samples(timeline, capability.sample_period_ms);
     for sample in &samples {
         let stack = sample.stack.join(";");
         *stacks.entry(stack).or_insert(0) += sample.weight_ms.max(1);
@@ -156,7 +139,7 @@ pub(super) fn build_cpu_profile(trace: &TraceFile, timeline: &[ProfileEvent]) ->
     folded_stacks.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.stack.cmp(&b.stack)));
 
     CpuProfile {
-        schema_version: "fozzy.profile_cpu.v2".to_string(),
+        schema_version: "fozzy.profile_cpu.v3".to_string(),
         run_id: trace.summary.identity.run_id.clone(),
         collector: CpuCollectorInfo {
             domain: "host_time".to_string(),
@@ -208,52 +191,6 @@ fn build_cpu_samples(timeline: &[ProfileEvent], sample_period_ms: u64) -> Vec<Cp
         samples.push(CpuSample {
             thread: event.thread.clone(),
             stack,
-            weight_ms: weight,
-        });
-    }
-
-    if !samples.is_empty() {
-        return samples;
-    }
-
-    let mut span_step_kind = HashMap::<String, String>::new();
-    for event in timeline {
-        if event.kind == ProfileEventKind::SpanStart
-            && let Some(span) = event.tags.get("span")
-        {
-            let step_kind = event
-                .tags
-                .get("step_kind")
-                .cloned()
-                .or_else(|| event.tags.get("task").cloned())
-                .or_else(|| event.tags.get("name").cloned())
-                .unwrap_or_else(|| "unknown".to_string());
-            span_step_kind.insert(span.clone(), step_kind);
-        }
-    }
-
-    for event in timeline {
-        if event.kind != ProfileEventKind::SpanEnd {
-            continue;
-        }
-        let step_kind = event
-            .tags
-            .get("span")
-            .and_then(|span| span_step_kind.get(span).cloned())
-            .or_else(|| event.tags.get("step_kind").cloned())
-            .or_else(|| event.tags.get("task").cloned())
-            .or_else(|| event.tags.get("name").cloned())
-            .unwrap_or_else(|| "unknown".to_string());
-        let weight = event
-            .tags
-            .get("duration_ms")
-            .and_then(|v| v.parse::<u64>().ok())
-            .or(event.cost.duration_ms)
-            .unwrap_or(sample_period_ms)
-            .max(1);
-        samples.push(CpuSample {
-            thread: event.thread.clone(),
-            stack: vec!["fozzy::runtime".to_string(), format!("step::{step_kind}")],
             weight_ms: weight,
         });
     }

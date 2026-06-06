@@ -190,6 +190,10 @@ fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
     serde_json::from_str(s.trim()).expect("stdout json")
 }
 
+fn read_trace_json(path: &Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(path).expect("read trace")).expect("trace json")
+}
+
 fn parse_first_json_stdout(output: &std::process::Output) -> serde_json::Value {
     let mut docs = serde_json::Deserializer::from_slice(&output.stdout).into_iter();
     docs.next()
@@ -212,6 +216,22 @@ fn full_step_status(doc: &serde_json::Value, name: &str) -> Option<String> {
             steps.iter().find_map(|step| {
                 if step.get("name").and_then(|v| v.as_str()) == Some(name) {
                     step.get("status")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+}
+
+fn full_step_detail(doc: &serde_json::Value, name: &str) -> Option<String> {
+    doc.get("steps")
+        .and_then(|v| v.as_array())
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                if step.get("name").and_then(|v| v.as_str()) == Some(name) {
+                    step.get("detail")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                 } else {
@@ -365,7 +385,7 @@ fn common_global_and_mode_flags_parse_across_run_like_commands() {
 
     let fuzz = run_cli(&[
         "fuzz".into(),
-        "fn:utf8".into(),
+        "scenario:example.fozzy.json".into(),
         "--seed".into(),
         "7".into(),
         "--runs".into(),
@@ -972,6 +992,269 @@ fn replay_uses_recorded_proc_decisions_from_host_backend_trace() {
     );
     let doc = parse_json_stdout(&replay);
     assert_eq!(doc.get("status").and_then(|v| v.as_str()), Some("pass"));
+}
+
+#[cfg(unix)]
+#[test]
+fn host_proc_trace_records_real_duration() {
+    let ws = temp_workspace("host-proc-duration");
+    let scenario = ws.join("host-proc-duration.fozzy.json");
+    let trace = ws.join("host-proc-duration.fozzy");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc-duration",
+      "steps":[
+        {"type":"proc_spawn","cmd":"/bin/sh","args":["-lc","sleep 1; echo done"],"expect_exit":0,"expect_stdout":"done\n"}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(run.status.code(), Some(0), "host duration run should pass");
+
+    let trace_doc = read_trace_json(&trace);
+    let summary_ms = trace_doc
+        .get("summary")
+        .and_then(|v| v.get("durationMs"))
+        .and_then(|v| v.as_u64())
+        .expect("trace summary duration");
+    assert!(
+        summary_ms >= 900,
+        "expected recorded trace summary duration to reflect wall time, got {summary_ms}"
+    );
+
+    let events = trace_doc
+        .get("events")
+        .and_then(|v| v.as_array())
+        .expect("events array");
+    let proc_event = events
+        .iter()
+        .find(|event| event.get("name").and_then(|v| v.as_str()) == Some("proc_spawn"))
+        .expect("proc_spawn event");
+    assert_eq!(
+        proc_event
+            .get("fields")
+            .and_then(|v| v.get("backend"))
+            .and_then(|v| v.as_str()),
+        Some("host")
+    );
+    let proc_time_ms = proc_event
+        .get("time_ms")
+        .and_then(|v| v.as_u64())
+        .expect("proc event time");
+    assert!(
+        proc_time_ms >= 900,
+        "expected proc event time to advance with host elapsed time, got {proc_time_ms}"
+    );
+
+    let capability_event = events
+        .iter()
+        .find(|event| event.get("name").and_then(|v| v.as_str()) == Some("capability_proc"))
+        .expect("capability_proc event");
+    let capability_duration = capability_event
+        .get("fields")
+        .and_then(|v| v.get("duration_ms"))
+        .and_then(|v| v.as_u64())
+        .expect("capability duration");
+    assert!(
+        capability_duration >= 900,
+        "expected capability duration to reflect host elapsed time, got {capability_duration}"
+    );
+
+    let span_end = events
+        .iter()
+        .find(|event| event.get("name").and_then(|v| v.as_str()) == Some("span_end"))
+        .expect("span_end event");
+    let span_duration = span_end
+        .get("fields")
+        .and_then(|v| v.get("duration_ms"))
+        .and_then(|v| v.as_u64())
+        .expect("span duration");
+    assert!(
+        span_duration >= 900,
+        "expected step span duration to reflect host elapsed time, got {span_duration}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn shrink_preserves_real_duration_in_output_trace() {
+    let ws = temp_workspace("host-proc-shrink-duration");
+    let scenario = ws.join("host-proc-shrink-duration.fozzy.json");
+    let trace = ws.join("host-proc-shrink-duration.fozzy");
+    let shrunk = ws.join("host-proc-shrink-duration.min.fozzy");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc-shrink-duration",
+      "steps":[
+        {"type":"proc_spawn","cmd":"/bin/sh","args":["-lc","sleep 1; echo done"],"expect_exit":0,"expect_stdout":"done\n"}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(run.status.code(), Some(0), "host shrink source run should pass");
+
+    let shrink = run_cli(&[
+        "shrink".into(),
+        trace.to_string_lossy().to_string(),
+        "--minimize".into(),
+        "all".into(),
+        "--out".into(),
+        shrunk.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(shrink.status.code(), Some(0), "shrink should pass");
+
+    let shrunk_doc = read_trace_json(&shrunk);
+    let summary_ms = shrunk_doc
+        .get("summary")
+        .and_then(|v| v.get("durationMs"))
+        .and_then(|v| v.as_u64())
+        .expect("shrunk trace summary duration");
+    assert!(
+        summary_ms >= 900,
+        "expected shrunk trace summary duration to preserve real runtime evidence, got {summary_ms}"
+    );
+}
+
+#[test]
+fn replay_fuzz_report_references_actual_trace_path() {
+    let ws = temp_workspace("replay-fuzz-trace-path");
+    let trace = ws.join("example-fuzz.fozzy");
+
+    let fuzz = run_cli(&[
+        "fuzz".into(),
+        "scenario:tests/example.fozzy.json".into(),
+        "--det".into(),
+        "--runs".into(),
+        "1".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(fuzz.status.code(), Some(0), "fuzz should pass");
+
+    let replay = run_cli(&[
+        "replay".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(replay.status.code(), Some(0), "replay should pass");
+    let doc = parse_json_stdout(&replay);
+    assert_eq!(
+        doc.get("identity")
+            .and_then(|v| v.get("tracePath"))
+            .and_then(|v| v.as_str()),
+        Some(trace.to_string_lossy().as_ref())
+    );
+}
+
+#[test]
+fn replay_explore_report_references_actual_trace_path() {
+    let ws = temp_workspace("replay-explore-trace-path");
+    let trace = ws.join("kv-explore.fozzy");
+
+    let explore = run_cli(&[
+        "explore".into(),
+        "tests/kv.explore.fozzy.json".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(explore.status.code(), Some(0), "explore should pass");
+
+    let replay = run_cli(&[
+        "replay".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(replay.status.code(), Some(0), "replay should pass");
+    let doc = parse_json_stdout(&replay);
+    assert_eq!(
+        doc.get("identity")
+            .and_then(|v| v.get("tracePath"))
+            .and_then(|v| v.as_str()),
+        Some(trace.to_string_lossy().as_ref())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn host_proc_backend_executes_real_command_even_with_proc_when_contract() {
+    let ws = temp_workspace("host-proc-when");
+    let scenario = ws.join("host-proc-when.fozzy.json");
+    let trace = ws.join("host-proc-when.fozzy");
+    let marker = ws.join("invoked.txt");
+    let command = format!(
+        "printf 'invoked\\n' >> {}; sleep 1; echo real-ok",
+        marker.display()
+    );
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-proc-when",
+      "steps":[
+        {{"type":"proc_when","cmd":"/bin/sh","args":["-lc","{command}"],"exit_code":0,"stdout":"real-ok\n","stderr":"","times":1}},
+        {{"type":"proc_spawn","cmd":"/bin/sh","args":["-lc","{command}"],"expect_exit":0,"expect_stdout":"real-ok\n"}}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli_in(
+        &ws,
+        &[
+            "--proc-backend".into(),
+            "host".into(),
+            "run".into(),
+            scenario.to_string_lossy().to_string(),
+            "--det".into(),
+            "--record".into(),
+            trace.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(run.status.code(), Some(0), "host proc_when run should pass");
+
+    let invocations = std::fs::read_to_string(&marker).expect("marker file should exist");
+    assert_eq!(invocations.lines().count(), 1, "host proc should run exactly once");
+
+    let trace_doc = read_trace_json(&trace);
+    let proc_event = trace_doc
+        .get("events")
+        .and_then(|v| v.as_array())
+        .and_then(|events| {
+            events
+                .iter()
+                .find(|event| event.get("name").and_then(|v| v.as_str()) == Some("proc_spawn"))
+        })
+        .expect("proc_spawn event");
+    assert_eq!(
+        proc_event
+            .get("fields")
+            .and_then(|v| v.get("backend"))
+            .and_then(|v| v.as_str()),
+        Some("host")
+    );
 }
 
 #[cfg(unix)]
@@ -2184,6 +2467,59 @@ fn run_recorded_trace_embeds_actual_written_trace_path() {
 }
 
 #[test]
+fn replay_embedded_trace_without_scenario_path_reports_real_trace_file_location() {
+    let ws = temp_workspace("replay-embedded-trace-location");
+    let scenario = ws.join("example.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+    let trace = ws.join("embedded-trace.fozzy");
+
+    let run = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--record".into(),
+            trace.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(run.status.code(), Some(0), "run should succeed");
+
+    let mut trace_doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&trace).expect("read trace")).expect("trace json");
+    trace_doc["scenario_path"] = serde_json::Value::Null;
+    trace_doc["scenario"]["steps"][3] = serde_json::json!({
+        "type": "proc_spawn",
+        "cmd": "echo",
+        "args": ["drift"],
+        "expect_exit": 0
+    });
+    trace_doc["checksum"] = serde_json::Value::Null;
+    std::fs::write(
+        &trace,
+        serde_json::to_vec_pretty(&trace_doc).expect("rewrite trace"),
+    )
+    .expect("write trace");
+
+    let replay = run_cli_in(
+        &ws,
+        &["replay".into(), trace.display().to_string(), "--json".into()],
+    );
+    assert_eq!(replay.status.code(), Some(1), "replay should fail");
+    let doc = parse_json_stdout(&replay);
+    assert_eq!(
+        doc.get("findings")
+            .and_then(|v| v.as_array())
+            .and_then(|v| v.first())
+            .and_then(|v| v.get("location"))
+            .and_then(|v| v.get("file"))
+            .and_then(|v| v.as_str()),
+        Some(trace.to_string_lossy().as_ref())
+    );
+}
+
+#[test]
 fn trace_followup_commands_accept_bare_and_dot_relative_paths() {
     let ws = temp_workspace("trace-relative-followup");
     let scenario = ws.join("example.fozzy.json");
@@ -2708,6 +3044,29 @@ fn gate_targeted_profile_runs_scoped_strict_bundle() {
             .unwrap_or_default(),
         1
     );
+    let profile_top = full_step_detail(&doc, "profile_top").expect("profile_top detail");
+    assert!(
+        profile_top.contains("warnings=") && profile_top.contains("empty_domains="),
+        "profile_top should report concrete profile evidence, got: {profile_top}"
+    );
+    let trace_verify = full_step_detail(&doc, "trace_verify").expect("trace_verify detail");
+    assert!(
+        trace_verify.contains("warnings=<none>"),
+        "trace_verify should report concrete warning detail, got: {trace_verify}"
+    );
+    let profile_diff = full_step_detail(&doc, "profile_diff").expect("profile_diff detail");
+    assert!(
+        profile_diff.contains("verdict=")
+            && profile_diff.contains("regressions=")
+            && profile_diff.contains("significant_regressions="),
+        "profile_diff should report concrete diff evidence, got: {profile_diff}"
+    );
+    let profile_explain =
+        full_step_detail(&doc, "profile_explain").expect("profile_explain detail");
+    assert!(
+        profile_explain.contains("cause_domain=") && profile_explain.contains("shifted_path="),
+        "profile_explain should report concrete explain evidence, got: {profile_explain}"
+    );
 }
 
 #[test]
@@ -2750,7 +3109,6 @@ fn profile_golden_run_top_flame_timeline_export_flow() {
             "profile".into(),
             "top".into(),
             trace.to_string_lossy().to_string(),
-            "--cpu".into(),
             "--heap".into(),
             "--latency".into(),
             "--io".into(),
@@ -2776,18 +3134,17 @@ fn profile_golden_run_top_flame_timeline_export_flow() {
             .unwrap_or_default(),
         "fozzy.profile_top.v1"
     );
-    assert!(top_doc.get("cpu").is_some());
     assert!(top_doc.get("heap").is_some());
     assert!(top_doc.get("latency").is_some());
 
-    let folded_out = ws.join("cpu.folded.txt");
+    let folded_out = ws.join("heap.folded.txt");
     let flame = run_cli_in(
         &ws,
         &[
             "profile".into(),
             "flame".into(),
             trace.to_string_lossy().to_string(),
-            "--cpu".into(),
+            "--heap".into(),
             "--format".into(),
             "folded".into(),
             "--out".into(),
@@ -2937,7 +3294,6 @@ fn profile_record_replay_diff_explain_and_artifact_parity_flow() {
             "diff".into(),
             left_trace.to_string_lossy().to_string(),
             right_trace.to_string_lossy().to_string(),
-            "--cpu".into(),
             "--heap".into(),
             "--latency".into(),
             "--config".into(),
@@ -3167,7 +3523,7 @@ fn profile_strict_and_unsafe_legacy_behavior_and_capture_mode_budgets() {
 
     let scenario = ws.join("example.fozzy.json");
     std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
-    for (level, expect_profile) in [("baseline", false), ("sampled", true), ("full", true)] {
+    for (level, expect_profile) in [("baseline", false), ("full", true)] {
         let out = run_cli_in(
             &ws,
             &[
@@ -3212,4 +3568,61 @@ fn profile_strict_and_unsafe_legacy_behavior_and_capture_mode_budgets() {
             );
         }
     }
+}
+
+#[test]
+fn report_show_omits_profile_diagnosis_when_only_contract_warning_is_available() {
+    let ws = temp_workspace("report-profile-diagnosis-contract-warning");
+    let cfg = ws.join("fozzy.toml");
+    std::fs::write(&cfg, "base_dir = \".fozzy\"\n").expect("write config");
+
+    let run_dir = ws.join(".fozzy/runs/legacy-report");
+    std::fs::create_dir_all(&run_dir).expect("legacy run dir");
+    std::fs::write(
+        run_dir.join("report.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "status": "pass",
+            "mode": "run",
+            "identity": {
+                "runId": "legacy-report",
+                "seed": 7
+            },
+            "startedAt": "2026-01-01T00:00:00Z",
+            "finishedAt": "2026-01-01T00:00:00Z",
+            "durationMs": 1,
+            "durationNs": 1000000
+        }))
+        .expect("report json"),
+    )
+    .expect("write report");
+    std::fs::write(
+        run_dir.join("profile.metrics.json"),
+        br#"{"schemaVersion":"fozzy.profile_metrics.v2","runId":"legacy-report","timeDomains":{"virtualTime":"deterministic","hostMonotonicTime":"host"},"virtualTimeMs":0,"hostTimeMs":0,"cpuTimeMs":0,"allocBytes":0,"inUseBytes":0,"p50LatencyMs":0,"p95LatencyMs":0,"p99LatencyMs":0,"maxLatencyMs":0,"ioOps":0,"schedOps":0}"#,
+    )
+    .expect("legacy metrics");
+
+    let out = run_cli_in(
+        &ws,
+        &[
+            "report".into(),
+            "show".into(),
+            "legacy-report".into(),
+            "--format".into(),
+            "json".into(),
+            "--config".into(),
+            cfg.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "report show stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = parse_json_stdout(&out);
+    assert!(
+        doc.get("profileDiagnosis").is_none(),
+        "contract warning should not be injected as profile diagnosis"
+    );
 }

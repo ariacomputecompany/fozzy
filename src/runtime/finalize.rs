@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::engine::ScenarioRun;
 use crate::{
     ExitStatus, FozzyResult, MemorySummary, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
-    RunSummary, TestCounts, TraceFile, wall_time_iso_utc,
+    RunSummary, TestCounts, TraceFile,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -51,6 +51,7 @@ pub(crate) fn build_single_scenario_trace(
     seed: u64,
     mode: RunMode,
 ) -> TraceFile {
+    let (started_at, finished_at, duration_ms, duration_ns) = trace_timing_for_run(run);
     let summary = build_run_summary(
         run.status,
         mode,
@@ -59,10 +60,10 @@ pub(crate) fn build_single_scenario_trace(
         Some(out_path.to_string_lossy().to_string()),
         None,
         None,
-        wall_time_iso_utc(),
-        wall_time_iso_utc(),
-        0,
-        0,
+        started_at,
+        finished_at,
+        duration_ms,
+        duration_ns,
         None,
         run.memory.as_ref().map(|m| m.summary.clone()),
         run.findings.clone(),
@@ -97,6 +98,7 @@ pub(crate) fn build_shrink_preview_trace(
     seed: u64,
     run: &ScenarioRun,
 ) -> TraceFile {
+    let (started_at, finished_at, duration_ms, duration_ns) = trace_timing_for_run(run);
     let summary = build_run_summary(
         run.status,
         RunMode::Run,
@@ -105,10 +107,10 @@ pub(crate) fn build_shrink_preview_trace(
         None,
         None,
         None,
-        String::new(),
-        String::new(),
-        0,
-        0,
+        started_at,
+        finished_at,
+        duration_ms,
+        duration_ns,
         None,
         run.memory.as_ref().map(|m| m.summary.clone()),
         run.findings.clone(),
@@ -153,4 +155,23 @@ pub(crate) fn write_reporter_artifacts(
         )?;
     }
     Ok(())
+}
+
+pub(crate) fn trace_timing_for_run(run: &ScenarioRun) -> (String, String, u64, u64) {
+    let timeline_ms = run.events.last().map(|event| event.time_ms).unwrap_or(0);
+    let duration_ms = run.duration_ms.max(timeline_ms);
+    let duration_ns = run.duration_ns.max(duration_ms.saturating_mul(1_000_000));
+    let finished_at = if duration_ms > run.duration_ms {
+        shifted_iso_utc(&run.started_at, duration_ms).unwrap_or_else(|| run.finished_at.clone())
+    } else {
+        run.finished_at.clone()
+    };
+    (run.started_at.clone(), finished_at, duration_ms, duration_ns)
+}
+
+fn shifted_iso_utc(started_at: &str, duration_ms: u64) -> Option<String> {
+    let fmt = &time::format_description::well_known::Rfc3339;
+    let started = time::OffsetDateTime::parse(started_at, fmt).ok()?;
+    let delta = time::Duration::milliseconds(duration_ms.min(i64::MAX as u64) as i64);
+    started.checked_add(delta)?.format(fmt).ok()
 }

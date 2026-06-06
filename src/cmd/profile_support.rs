@@ -204,13 +204,8 @@ pub(super) fn profile_env_report(config: &Config, strict: bool) -> serde_json::V
     let collector = detect_cpu_collector_capability();
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    let cpu_quality = if collector.active_collector == "perf_event_open" {
-        "high"
-    } else {
-        "degraded"
-    };
     serde_json::json!({
-        "schemaVersion": "fozzy.profile_env.v3",
+        "schemaVersion": "fozzy.profile_env.v4",
         "strict": strict,
         "determinismContract": {
             "replayBoundTo": "deterministic_decisions_and_virtual_events",
@@ -227,14 +222,14 @@ pub(super) fn profile_env_report(config: &Config, strict: bool) -> serde_json::V
         },
         "domains": {
             "cpu": {
-                "available": true,
-                "quality": cpu_quality,
+                "available": false,
+                "quality": "unsupported",
                 "primaryCollector": collector.primary_collector,
                 "activeCollector": collector.active_collector,
                 "linuxPerfEventOpen": collector.linux_perf_event_open,
                 "samplePeriodMs": collector.sample_period_ms,
                 "diagnostics": collector.diagnostics,
-                "notes": "host-time cpu sampling is non-deterministic; compare repeated deterministic runs statistically"
+                "notes": "CPU profiling is disabled for production traces until the runtime emits real sample events; span-derived pseudo-CPU profiles are rejected."
             },
             "heap": {
                 "available": true,
@@ -269,12 +264,41 @@ pub(super) fn profile_doctor(
     let run_label = crate::normalize_run_or_trace_selector(run);
     let mut checks = Vec::<serde_json::Value>::new();
     let mut issues = Vec::<String>::new();
-    checks.push(serde_json::json!({
-        "name": "env",
-        "ok": true,
-        "status": "pass",
-        "detail": profile_env_report(config, strict),
-    }));
+    let check = |name: &str, status: &str, detail: serde_json::Value| {
+        serde_json::json!({
+            "name": name,
+            "ok": status == "pass",
+            "status": status,
+            "detail": detail,
+        })
+    };
+    let env_report = profile_env_report(config, strict);
+    let unavailable_domains = env_report
+        .get("domains")
+        .and_then(|v| v.as_object())
+        .map(|domains| {
+            domains
+                .iter()
+                .filter_map(|(name, domain)| {
+                    let available = domain
+                        .get("available")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if available { None } else { Some(name.clone()) }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let env_status = if unavailable_domains.is_empty() {
+        "pass"
+    } else {
+        issues.push(format!(
+            "env: unsupported domains={}",
+            unavailable_domains.join(",")
+        ));
+        "warn"
+    };
+    checks.push(check("env", env_status, env_report));
 
     let bundle = match load_profile_bundle(
         config,
@@ -286,25 +310,19 @@ pub(super) fn profile_doctor(
             latency: true,
             symbols: false,
         },
-    ) {
+        ) {
         Ok(bundle) => {
-            checks.push(serde_json::json!({
-                "name": "load_bundle",
-                "ok": true,
-                "status": "pass",
-                "detail": "resolved run/trace and loaded profile artifacts",
-            }));
+            checks.push(check(
+                "load_bundle",
+                "pass",
+                serde_json::json!("resolved run/trace and loaded profile artifacts"),
+            ));
             bundle
         }
         Err(err) => {
             let detail = err.to_string();
             issues.push(detail.clone());
-            checks.push(serde_json::json!({
-                "name": "load_bundle",
-                "ok": false,
-                "status": "fail",
-                "detail": detail,
-            }));
+            checks.push(check("load_bundle", "fail", serde_json::json!(detail)));
             return Ok(serde_json::json!({
                 "schemaVersion": "fozzy.profile_doctor.v1",
                 "run": run_label,
@@ -340,33 +358,56 @@ pub(super) fn profile_doctor(
             .expect("latency loaded")
             .critical_path
             .is_empty();
-    checks.push(serde_json::json!({
-        "name": "top",
-        "ok": true,
-        "status": if top_has_any { "pass" } else { "warn" },
-        "detail": format!("default domains={top_domains:?}"),
-    }));
+    checks.push(check(
+        "top",
+        if top_has_any { "pass" } else { "warn" },
+        serde_json::json!(format!("default domains={top_domains:?}")),
+    ));
 
     let heap_folded = heap_folded(bundle.heap.as_ref().expect("heap loaded"));
-    checks.push(serde_json::json!({
-        "name": "flame_heap",
-        "ok": true,
-        "status": if heap_folded.is_empty() { "warn" } else { "pass" },
-        "detail": if heap_folded.is_empty() { "no heap samples in trace" } else { "heap flame data present" },
-    }));
-    checks.push(serde_json::json!({
-        "name": "flame_cpu",
-        "ok": true,
-        "status": if bundle.cpu.as_ref().expect("cpu loaded").folded_stacks.is_empty() { "warn" } else { "pass" },
-        "detail": if bundle.cpu.as_ref().expect("cpu loaded").folded_stacks.is_empty() { "no cpu samples in trace" } else { "cpu flame data present" },
-    }));
+    checks.push(check(
+        "flame_heap",
+        if heap_folded.is_empty() { "warn" } else { "pass" },
+        serde_json::json!(if heap_folded.is_empty() {
+            "no heap samples in trace"
+        } else {
+            "heap flame data present"
+        }),
+    ));
+    checks.push(check(
+        "flame_cpu",
+        if bundle
+            .cpu
+            .as_ref()
+            .expect("cpu loaded")
+            .folded_stacks
+            .is_empty()
+        {
+            "warn"
+        } else {
+            "pass"
+        },
+        serde_json::json!(if bundle
+            .cpu
+            .as_ref()
+            .expect("cpu loaded")
+            .folded_stacks
+            .is_empty()
+        {
+            "no cpu samples in trace"
+        } else {
+            "cpu flame data present"
+        }),
+    ));
 
-    checks.push(serde_json::json!({
-        "name": "timeline",
-        "ok": true,
-        "status": "pass",
-        "detail": format!("events={}", bundle.timeline.as_ref().expect("timeline loaded").len()),
-    }));
+    checks.push(check(
+        "timeline",
+        "pass",
+        serde_json::json!(format!(
+            "events={}",
+            bundle.timeline.as_ref().expect("timeline loaded").len()
+        )),
+    ));
     let diff = compute_diff(
         run,
         run,
@@ -380,32 +421,35 @@ pub(super) fn profile_doctor(
         1,
         1,
     );
-    checks.push(serde_json::json!({
-        "name": "diff",
-        "ok": true,
-        "status": "pass",
-        "detail": format!("regressions={}", diff.regressions.len()),
-    }));
+    checks.push(check(
+        "diff",
+        "pass",
+        serde_json::json!(format!("regressions={}", diff.regressions.len())),
+    ));
     let explain = explain_single(
         run,
         &bundle.artifacts_dir,
         &bundle.metrics,
         bundle.latency.as_ref().expect("latency loaded"),
     );
-    checks.push(serde_json::json!({
-        "name": "explain",
-        "ok": true,
-        "status": "pass",
-        "detail": explain.likely_cause_domain,
-    }));
+    checks.push(check(
+        "explain",
+        "pass",
+        serde_json::json!(explain.likely_cause_domain),
+    ));
     let speedscope: serde_json::Value =
         folded_to_speedscope(run, &bundle.cpu.as_ref().expect("cpu loaded").folded_stacks);
-    checks.push(serde_json::json!({
-        "name": "export",
-        "ok": true,
-        "status": "pass",
-        "detail": format!("speedscope_frames={}", speedscope.get("shared").and_then(|v| v.get("frames")).and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0)),
-    }));
+    let speedscope_frames = speedscope
+        .get("shared")
+        .and_then(|v| v.get("frames"))
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    checks.push(check(
+        "export",
+        if speedscope_frames == 0 { "warn" } else { "pass" },
+        serde_json::json!(format!("speedscope_frames={speedscope_frames}")),
+    ));
 
     if deep {
         let shrink_check = match resolve_profile_trace(config, run) {
@@ -432,31 +476,36 @@ pub(super) fn profile_doctor(
                         )?;
                         let after = metric_value(ProfileMetric::CpuTime, &shrunk_trace)?;
                         let preserved = after >= baseline;
-                        serde_json::json!({
-                            "name": "shrink_cpu_increase",
-                            "ok": true,
-                            "status": if preserved { "pass" } else { "warn" },
-                            "detail": if preserved {
-                                format!("preserved contract baseline={} after={}", format_metric_value(baseline), format_metric_value(after))
+                        check(
+                            "shrink_cpu_increase",
+                            if preserved { "pass" } else { "warn" },
+                            serde_json::json!(if preserved {
+                                format!(
+                                    "preserved contract baseline={} after={}",
+                                    format_metric_value(baseline),
+                                    format_metric_value(after)
+                                )
                             } else {
-                                format!("no feasible shrink found that preserves increase contract baseline={} after={}", format_metric_value(baseline), format_metric_value(after))
-                            }
-                        })
+                                format!(
+                                    "no feasible shrink found that preserves increase contract baseline={} after={}",
+                                    format_metric_value(baseline),
+                                    format_metric_value(after)
+                                )
+                            }),
+                        )
                     }
-                    Err(err) => serde_json::json!({
-                        "name": "shrink_cpu_increase",
-                        "ok": false,
-                        "status": "fail",
-                        "detail": err.to_string(),
-                    }),
+                    Err(err) => check(
+                        "shrink_cpu_increase",
+                        "fail",
+                        serde_json::json!(err.to_string()),
+                    ),
                 }
             }
-            Err(err) => serde_json::json!({
-                "name": "shrink_cpu_increase",
-                "ok": false,
-                "status": "fail",
-                "detail": err.to_string(),
-            }),
+            Err(err) => check(
+                "shrink_cpu_increase",
+                "fail",
+                serde_json::json!(err.to_string()),
+            ),
         };
         if shrink_check
             .get("ok")
@@ -469,17 +518,32 @@ pub(super) fn profile_doctor(
         }
         checks.push(shrink_check);
     } else {
-        checks.push(serde_json::json!({
-            "name": "shrink_cpu_increase",
-            "ok": true,
-            "status": "pass",
-            "detail": "skipped (use --deep for shrink+contract checks)",
-        }));
+        checks.push(check(
+            "shrink_cpu_increase",
+            "skipped",
+            serde_json::json!("skipped (use --deep for shrink+contract checks)"),
+        ));
     }
 
+    for check in &checks {
+        let status = check.get("status").and_then(|v| v.as_str()).unwrap_or("fail");
+        if status == "warn"
+            && let (Some(name), Some(detail)) = (
+                check.get("name").and_then(|v| v.as_str()),
+                check.get("detail").and_then(|v| v.as_str()),
+            )
+        {
+            issues.push(format!("{name}: {detail}"));
+        }
+    }
     let ok = checks
         .iter()
-        .all(|c| c.get("ok").and_then(|v| v.as_bool()).unwrap_or(false));
+        .all(|c| {
+            matches!(
+                c.get("status").and_then(|v| v.as_str()),
+                Some("pass" | "skipped")
+            )
+        });
     Ok(serde_json::json!({
         "schemaVersion": "fozzy.profile_doctor.v1",
         "run": run_label,
@@ -602,8 +666,21 @@ pub(super) fn normalize_domains(
     out
 }
 
-pub(super) fn enforce_cpu_contract(strict: bool, cpu_requested: bool) -> FozzyResult<()> {
-    let _ = (strict, cpu_requested);
+pub(super) fn enforce_cpu_contract(
+    strict: bool,
+    cpu_requested: bool,
+    sample_counts: &[usize],
+) -> FozzyResult<()> {
+    let _ = strict;
+    if !cpu_requested {
+        return Ok(());
+    }
+    let sample_count = sample_counts.iter().copied().min().unwrap_or(0);
+    if sample_count == 0 {
+        return Err(FozzyError::InvalidArgument(
+            "cpu profiling requires real sample events in the trace; current trace has none. rerun once production CPU sample capture is implemented, or use heap/latency/io/sched domains instead.".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -653,8 +730,8 @@ pub(super) fn detect_cpu_collector_capability() -> CpuCollectorCapability {
             active_collector: fallback,
             linux_perf_event_open: false,
             diagnostics: vec![
-                "mach_thread_sampler planned; using in_process_sampler fallback".to_string(),
-                "symbolization path planned via dSYM/atos parity".to_string(),
+                "mach thread cpu sampling is not wired into trace emission".to_string(),
+                "cpu domain remains unavailable until runtime sample events are recorded".to_string(),
             ],
             sample_period_ms: 10,
         }
@@ -665,7 +742,7 @@ pub(super) fn detect_cpu_collector_capability() -> CpuCollectorCapability {
             active_collector: fallback,
             linux_perf_event_open: false,
             diagnostics: vec![
-                "perf_event_open collector is Linux-only; using in_process_sampler fallback"
+                "cpu sample capture is not available on this platform in production traces"
                     .to_string(),
             ],
             sample_period_ms: 10,

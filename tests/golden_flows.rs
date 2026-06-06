@@ -148,7 +148,11 @@ fn golden_fuzz_record_replay_shrink_replay_min() {
         mem_pressure_wave: None,
     };
     let trace = ws.join("fuzz.trace.fozzy");
-    let target: FuzzTarget = "fn:utf8".parse().expect("target parse");
+    let scenario = ws.join("example.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+    let target: FuzzTarget = format!("scenario:{}", scenario.display())
+        .parse()
+        .expect("target parse");
 
     let run = fuzz(
         &cfg,

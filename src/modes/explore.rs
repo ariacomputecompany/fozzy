@@ -265,17 +265,23 @@ pub fn explore(
     Ok(crate::RunResult { summary })
 }
 
-pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<crate::RunResult> {
+pub fn replay_explore_trace(
+    config: &Config,
+    trace: &TraceFile,
+    trace_path: &std::path::Path,
+) -> FozzyResult<crate::RunResult> {
     let Some(explore) = trace.explore.as_ref() else {
         return Err(FozzyError::Trace("not an explore trace".to_string()));
     };
     let seed = trace.summary.identity.seed;
     let run_id = Uuid::new_v4().to_string();
     let started_at = wall_time_iso_utc();
-    let finished_at = wall_time_iso_utc();
+    let started = Instant::now();
 
     let (status, findings, events, _delivered, _decisions) =
         run_explore_replay_inner(&explore.scenario, seed, explore.schedule, &trace.decisions)?;
+    let finished_at = wall_time_iso_utc();
+    let (duration_ms, duration_ns) = crate::duration_fields(started.elapsed());
     let memory_report = trace.memory.as_ref().map(|m| MemoryRunReport {
         schema_version: "fozzy.memory_report.v1".to_string(),
         options: m.options.clone(),
@@ -305,14 +311,14 @@ pub fn replay_explore_trace(config: &Config, trace: &TraceFile) -> FozzyResult<c
         identity: RunIdentity {
             run_id,
             seed,
-            trace_path: Some("<embedded>".to_string()),
+            trace_path: Some(trace_path.to_string_lossy().to_string()),
             report_path: Some(report_path.to_string_lossy().to_string()),
             artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
         },
         started_at,
         finished_at,
-        duration_ms: 0,
-        duration_ns: 0,
+        duration_ms,
+        duration_ns,
         tests: None,
         memory: trace.memory.as_ref().map(|m| m.summary.clone()),
         findings,
@@ -464,6 +470,8 @@ pub fn shrink_explore_trace(
         .clone()
         .unwrap_or_else(|| crate::default_min_trace_path(trace_path.as_path()));
 
+    let replay_started_at = wall_time_iso_utc();
+    let replay_started = Instant::now();
     let (status, findings, events, _delivered, out_decisions) = if opt.minimize
         == crate::ShrinkMinimize::All
     {
@@ -482,9 +490,9 @@ pub fn shrink_explore_trace(
     } else {
         run_explore_replay_inner(&explore.scenario, seed, explore.schedule, &best_decisions)?
     };
+    let replay_finished_at = wall_time_iso_utc();
+    let (duration_ms, duration_ns) = crate::duration_fields(replay_started.elapsed());
 
-    let started_at = wall_time_iso_utc();
-    let finished_at = wall_time_iso_utc();
     let summary = RunSummary {
         status,
         mode: RunMode::Explore,
@@ -495,10 +503,10 @@ pub fn shrink_explore_trace(
             report_path: None,
             artifacts_dir: None,
         },
-        started_at,
-        finished_at,
-        duration_ms: 0,
-        duration_ns: 0,
+        started_at: replay_started_at,
+        finished_at: replay_finished_at,
+        duration_ms,
+        duration_ns,
         tests: None,
         memory: trace.memory.as_ref().map(|m| m.summary.clone()),
         findings,

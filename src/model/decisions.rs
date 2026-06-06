@@ -21,17 +21,25 @@ pub enum Decision {
     FsWrite {
         path: String,
         data_hex: String,
+        #[serde(default)]
+        duration_ms: u64,
     },
     FsReadAssert {
         path: String,
         data_hex: String,
+        #[serde(default)]
+        duration_ms: u64,
     },
     FsSnapshot {
         name: String,
         entries: BTreeMap<String, Option<String>>,
+        #[serde(default)]
+        duration_ms: u64,
     },
     FsRestore {
         name: String,
+        #[serde(default)]
+        duration_ms: u64,
     },
     HttpRequest {
         method: String,
@@ -40,10 +48,14 @@ pub enum Decision {
         #[serde(default)]
         headers: std::collections::BTreeMap<String, String>,
         body: String,
+        #[serde(default)]
+        duration_ms: u64,
     },
     HttpRequestTimeout {
         method: String,
         path: String,
+        #[serde(default)]
+        duration_ms: u64,
     },
     ProcSpawn {
         cmd: String,
@@ -51,12 +63,16 @@ pub enum Decision {
         exit_code: i32,
         stdout: String,
         stderr: String,
+        #[serde(default)]
+        duration_ms: u64,
     },
     ProcSpawnTimeout {
         cmd: String,
         args: Vec<String>,
         stdout: String,
         stderr: String,
+        #[serde(default)]
+        duration_ms: u64,
     },
     SchedulerPick {
         task_id: u64,

@@ -174,19 +174,17 @@ pub struct ReplayOptions {
 #[serde(rename_all = "snake_case")]
 pub enum ProfileCaptureLevel {
     Baseline,
-    Sampled,
     Full,
 }
 
 impl clap::ValueEnum for ProfileCaptureLevel {
     fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Baseline, Self::Sampled, Self::Full]
+        &[Self::Baseline, Self::Full]
     }
 
     fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         Some(match self {
             Self::Baseline => clap::builder::PossibleValue::new("baseline"),
-            Self::Sampled => clap::builder::PossibleValue::new("sampled"),
             Self::Full => clap::builder::PossibleValue::new("full"),
         })
     }
@@ -270,7 +268,7 @@ pub fn should_emit_profile_artifacts(
 ) -> bool {
     match capture {
         ProfileCaptureLevel::Baseline => should_emit_heavy_artifacts(status, explicit_request),
-        ProfileCaptureLevel::Sampled | ProfileCaptureLevel::Full => true,
+        ProfileCaptureLevel::Full => true,
     }
 }
 
@@ -291,6 +289,10 @@ pub(crate) struct ScenarioRun {
     pub(crate) events: Vec<TraceEvent>,
     pub(crate) scenario_path: PathBuf,
     pub(crate) scenario_embedded: ScenarioV1Steps,
+    pub(crate) started_at: String,
+    pub(crate) finished_at: String,
+    pub(crate) duration_ms: u64,
+    pub(crate) duration_ns: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -340,6 +342,7 @@ pub(crate) fn run_embedded_scenario_inner(
     http_backend: HttpBackend,
     memory: MemoryOptions,
 ) -> FozzyResult<ScenarioRun> {
+    let started_at = crate::wall_time_iso_utc();
     let started = Instant::now();
     let deadline = timeout.map(|t| started + t);
     let mut ctx = ExecCtx::new(
@@ -367,7 +370,13 @@ pub(crate) fn run_embedded_scenario_inner(
                 message: "scenario timed out".to_string(),
                 location: None,
             });
-            return Ok(ctx.finish(ExitStatus::Timeout, scenario_path, scenario));
+            return Ok(ctx.finish(
+                ExitStatus::Timeout,
+                scenario_path,
+                scenario,
+                started_at.clone(),
+                started.elapsed(),
+            ));
         }
 
         ctx.decisions.push(Decision::SchedulerPick {
@@ -423,7 +432,13 @@ pub(crate) fn run_embedded_scenario_inner(
                 ExitStatus::Fail
             };
             ctx.findings.push(finding);
-            return Ok(ctx.finish(status, scenario_path, scenario));
+            return Ok(ctx.finish(
+                status,
+                scenario_path,
+                scenario,
+                started_at.clone(),
+                started.elapsed(),
+            ));
         }
         let end_ms = ctx.clock.now_ms();
         ctx.events.push(TraceEvent {
@@ -446,11 +461,23 @@ pub(crate) fn run_embedded_scenario_inner(
                 message: "scenario timed out".to_string(),
                 location: None,
             });
-            return Ok(ctx.finish(ExitStatus::Timeout, scenario_path, scenario));
+            return Ok(ctx.finish(
+                ExitStatus::Timeout,
+                scenario_path,
+                scenario,
+                started_at.clone(),
+                started.elapsed(),
+            ));
         }
     }
 
-    Ok(ctx.finish(ExitStatus::Pass, scenario_path, scenario))
+    Ok(ctx.finish(
+        ExitStatus::Pass,
+        scenario_path,
+        scenario,
+        started_at,
+        started.elapsed(),
+    ))
 }
 
 pub(crate) fn run_embedded_steps_for_fuzz(
@@ -523,6 +550,7 @@ pub(crate) fn run_scenario_replay_inner<'a>(
         })
         .unwrap_or(false);
 
+    let started_at = crate::wall_time_iso_utc();
     let started = Instant::now();
     let deadline = until.map(|t| started + t);
     let mut ctx = ExecCtx::new(
@@ -559,6 +587,8 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                     ExitStatus::Timeout,
                     PathBuf::from(scenario_path),
                     scenario.clone(),
+                    started_at.clone(),
+                    started.elapsed(),
                 ));
             }
 
@@ -595,6 +625,7 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                     ),
                 ]),
             });
+            ctx.set_active_step(Path::new(scenario_path), idx);
             if let Err(finding) = ctx.exec_step(step_def) {
                 let end_ms = ctx.clock.now_ms();
                 ctx.events.push(TraceEvent {
@@ -615,7 +646,13 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                     ExitStatus::Fail
                 };
                 ctx.findings.push(finding);
-                return Ok(ctx.finish(status, PathBuf::from(scenario_path), scenario.clone()));
+                return Ok(ctx.finish(
+                    status,
+                    PathBuf::from(scenario_path),
+                    scenario.clone(),
+                    started_at.clone(),
+                    started.elapsed(),
+                ));
             }
             let end_ms = ctx.clock.now_ms();
             ctx.events.push(TraceEvent {
@@ -646,6 +683,8 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                     ExitStatus::Timeout,
                     PathBuf::from(scenario_path),
                     scenario.clone(),
+                    started_at.clone(),
+                    started.elapsed(),
                 ));
             }
 
@@ -682,6 +721,7 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                     ),
                 ]),
             });
+            ctx.set_active_step(Path::new(scenario_path), idx);
             if let Err(finding) = ctx.exec_step(step_def) {
                 let end_ms = ctx.clock.now_ms();
                 ctx.events.push(TraceEvent {
@@ -702,7 +742,13 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                     ExitStatus::Fail
                 };
                 ctx.findings.push(finding);
-                return Ok(ctx.finish(status, PathBuf::from(scenario_path), scenario.clone()));
+                return Ok(ctx.finish(
+                    status,
+                    PathBuf::from(scenario_path),
+                    scenario.clone(),
+                    started_at.clone(),
+                    started.elapsed(),
+                ));
             }
             let end_ms = ctx.clock.now_ms();
             ctx.events.push(TraceEvent {
@@ -736,6 +782,8 @@ pub(crate) fn run_scenario_replay_inner<'a>(
             ExitStatus::Fail,
             PathBuf::from(scenario_path),
             scenario.clone(),
+            started_at,
+            started.elapsed(),
         ));
     }
 
@@ -743,6 +791,8 @@ pub(crate) fn run_scenario_replay_inner<'a>(
         ExitStatus::Pass,
         PathBuf::from(scenario_path),
         scenario.clone(),
+        started_at,
+        started.elapsed(),
     ))
 }
 
@@ -873,6 +923,8 @@ impl<'a> ExecCtx<'a> {
         mut status: ExitStatus,
         scenario_path: PathBuf,
         embedded: ScenarioV1Steps,
+        started_at: String,
+        elapsed: Duration,
     ) -> ScenarioRun {
         let mut memory_report = None;
         if self.memory.options.tracking_requested() || self.memory.has_activity() {
@@ -911,6 +963,8 @@ impl<'a> ExecCtx<'a> {
             }
             memory_report = Some(report);
         }
+        let finished_at = crate::wall_time_iso_utc();
+        let (duration_ms, duration_ns) = crate::duration_fields(elapsed);
         ScenarioRun {
             status,
             findings: self.findings,
@@ -919,6 +973,16 @@ impl<'a> ExecCtx<'a> {
             events: self.events,
             scenario_path,
             scenario_embedded: embedded,
+            started_at,
+            finished_at,
+            duration_ms,
+            duration_ns,
+        }
+    }
+
+    fn advance_recorded_time(&mut self, duration_ms: u64) {
+        if duration_ms > 0 {
+            self.clock.advance(Duration::from_millis(duration_ms));
         }
     }
 
@@ -1456,6 +1520,7 @@ impl<'a> ExecCtx<'a> {
                 if let Some(Decision::FsWrite {
                     path: replay_path,
                     data_hex,
+                    duration_ms,
                 }) = self.replay_peek().cloned()
                 {
                     if replay_path != *path {
@@ -1488,12 +1553,15 @@ impl<'a> ExecCtx<'a> {
                     }
                     let _ = self.replay_take_if(|d| matches!(d, Decision::FsWrite { .. }));
                     self.replay_host_fs_write(path, data.as_bytes());
+                    self.advance_recorded_time(duration_ms);
                 } else if matches!(self.fs_backend, FsBackend::Host) {
-                    self.host_fs_write(path, data)?;
+                    let (_, duration_ms) = measure_duration_ms(|| self.host_fs_write(path, data))?;
                     self.decisions.push(Decision::FsWrite {
                         path: path.clone(),
                         data_hex: encode_hex(data.as_bytes()),
+                        duration_ms,
                     });
+                    self.advance_recorded_time(duration_ms);
                 } else {
                     self.fs.insert(path.clone(), data.clone());
                 }
@@ -1528,6 +1596,7 @@ impl<'a> ExecCtx<'a> {
                 if let Some(Decision::FsReadAssert {
                     path: replay_path,
                     data_hex,
+                    duration_ms,
                 }) = self.replay_peek().cloned()
                 {
                     if replay_path != *path {
@@ -1551,12 +1620,16 @@ impl<'a> ExecCtx<'a> {
                     let _ = self.replay_take_if(|d| matches!(d, Decision::FsReadAssert { .. }));
                     self.replay_host_fs_write(path, &bytes);
                     self.replay_host_fs_read_assert(path, equals)?;
+                    self.advance_recorded_time(duration_ms);
                 } else if matches!(self.fs_backend, FsBackend::Host) {
-                    self.host_fs_read_assert(path, equals)?;
+                    let (_, duration_ms) =
+                        measure_duration_ms(|| self.host_fs_read_assert(path, equals))?;
                     self.decisions.push(Decision::FsReadAssert {
                         path: path.clone(),
                         data_hex: encode_hex(equals.as_bytes()),
+                        duration_ms,
                     });
+                    self.advance_recorded_time(duration_ms);
                 } else {
                     let got = self.fs.get(path).cloned();
                     if got.as_deref() != Some(equals.as_str()) {
@@ -1599,6 +1672,7 @@ impl<'a> ExecCtx<'a> {
                 if let Some(Decision::FsSnapshot {
                     name: replay_name,
                     entries,
+                    duration_ms,
                 }) = self.replay_peek().cloned()
                 {
                     if replay_name != *name {
@@ -1613,8 +1687,9 @@ impl<'a> ExecCtx<'a> {
                     }
                     let _ = self.replay_take_if(|d| matches!(d, Decision::FsSnapshot { .. }));
                     self.apply_replay_host_fs_snapshot(name, &entries)?;
+                    self.advance_recorded_time(duration_ms);
                 } else if matches!(self.fs_backend, FsBackend::Host) {
-                    self.host_fs_snapshot(name)?;
+                    let (_, duration_ms) = measure_duration_ms(|| self.host_fs_snapshot(name))?;
                     let entries = self
                         .host_fs_snapshots
                         .get(name)
@@ -1631,7 +1706,9 @@ impl<'a> ExecCtx<'a> {
                     self.decisions.push(Decision::FsSnapshot {
                         name: name.clone(),
                         entries,
+                        duration_ms,
                     });
+                    self.advance_recorded_time(duration_ms);
                 } else {
                     self.fs_snapshots.insert(name.clone(), self.fs.clone());
                 }
@@ -1659,7 +1736,10 @@ impl<'a> ExecCtx<'a> {
 
             crate::Step::FsRestore { name } => {
                 let start_ms = self.clock.now_ms();
-                if let Some(Decision::FsRestore { name: replay_name }) = self.replay_peek().cloned()
+                if let Some(Decision::FsRestore {
+                    name: replay_name,
+                    duration_ms,
+                }) = self.replay_peek().cloned()
                 {
                     if replay_name != *name {
                         return Err(Finding {
@@ -1673,10 +1753,14 @@ impl<'a> ExecCtx<'a> {
                     }
                     let _ = self.replay_take_if(|d| matches!(d, Decision::FsRestore { .. }));
                     self.apply_replay_host_fs_restore(name)?;
+                    self.advance_recorded_time(duration_ms);
                 } else if matches!(self.fs_backend, FsBackend::Host) {
-                    self.host_fs_restore(name)?;
-                    self.decisions
-                        .push(Decision::FsRestore { name: name.clone() });
+                    let (_, duration_ms) = measure_duration_ms(|| self.host_fs_restore(name))?;
+                    self.decisions.push(Decision::FsRestore {
+                        name: name.clone(),
+                        duration_ms,
+                    });
+                    self.advance_recorded_time(duration_ms);
                 } else {
                     let Some(snapshot) = self.fs_snapshots.get(name).cloned() else {
                         return Err(Finding {
@@ -1799,6 +1883,7 @@ impl<'a> ExecCtx<'a> {
                         status_code,
                         headers,
                         body,
+                        duration_ms,
                     }) => {
                         if replay_method != *method || replay_path != *path {
                             return Err(Finding {
@@ -1811,11 +1896,13 @@ impl<'a> ExecCtx<'a> {
                             });
                         }
                         let _ = self.replay_take_if(|d| matches!(d, Decision::HttpRequest { .. }));
+                        self.advance_recorded_time(duration_ms);
                         (status_code, headers, body, "replay".to_string())
                     }
                     Some(Decision::HttpRequestTimeout {
                         method: replay_method,
                         path: replay_path,
+                        duration_ms,
                     }) => {
                         if replay_method != *method || replay_path != *path {
                             return Err(Finding {
@@ -1829,6 +1916,7 @@ impl<'a> ExecCtx<'a> {
                         }
                         let _ = self
                             .replay_take_if(|d| matches!(d, Decision::HttpRequestTimeout { .. }));
+                        self.advance_recorded_time(duration_ms);
                         return Err(Finding {
                             kind: FindingKind::Hang,
                             title: "timeout".to_string(),
@@ -1866,18 +1954,20 @@ impl<'a> ExecCtx<'a> {
                             });
                         }
                         let request_headers = canonical_headers(headers.as_ref())?;
-                        let response = dispatch_host_http(
-                            method,
-                            path,
-                            &request_headers,
-                            body.as_deref(),
-                            self.remaining_host_timeout(),
-                        )
-                        .map_err(|message| Finding {
-                            kind: FindingKind::Assertion,
-                            title: "http_host_request".to_string(),
-                            message,
-                            location: None,
+                        let (response, duration_ms) = measure_duration_ms(|| {
+                            dispatch_host_http(
+                                method,
+                                path,
+                                &request_headers,
+                                body.as_deref(),
+                                self.remaining_host_timeout(),
+                            )
+                            .map_err(|message| Finding {
+                                kind: FindingKind::Assertion,
+                                title: "http_host_request".to_string(),
+                                message,
+                                location: None,
+                            })
                         })?;
                         let response = match response {
                             HostHttpDispatch::Completed(response) => {
@@ -1887,14 +1977,18 @@ impl<'a> ExecCtx<'a> {
                                     status_code: response.status,
                                     headers: response.headers.clone(),
                                     body: response.body.clone(),
+                                    duration_ms,
                                 });
+                                self.advance_recorded_time(duration_ms);
                                 response
                             }
                             HostHttpDispatch::TimedOut => {
                                 self.decisions.push(Decision::HttpRequestTimeout {
                                     method: method.clone(),
                                     path: path.clone(),
+                                    duration_ms,
                                 });
+                                self.advance_recorded_time(duration_ms);
                                 return Err(Finding {
                                     kind: FindingKind::Hang,
                                     title: "timeout".to_string(),
@@ -2129,6 +2223,7 @@ impl<'a> ExecCtx<'a> {
                         exit_code,
                         stdout,
                         stderr,
+                        duration_ms,
                     }) => {
                         if replay_cmd != *cmd || replay_args != call_args {
                             return Err(Finding {
@@ -2142,18 +2237,13 @@ impl<'a> ExecCtx<'a> {
                             });
                         }
                         let _ = self.replay_take_if(|d| matches!(d, Decision::ProcSpawn { .. }));
-                        Some(ProcRule {
-                            cmd: cmd.clone(),
-                            args: call_args.clone(),
-                            exit_code,
-                            stdout,
-                            stderr,
-                            remaining: 0,
-                        })
+                        self.advance_recorded_time(duration_ms);
+                        Some((proc_rule(cmd, &call_args, exit_code, stdout, stderr), "replay"))
                     }
                     Some(Decision::ProcSpawnTimeout {
                         cmd: replay_cmd,
                         args: replay_args,
+                        duration_ms,
                         ..
                     }) => {
                         if replay_cmd != *cmd || replay_args != call_args {
@@ -2169,6 +2259,7 @@ impl<'a> ExecCtx<'a> {
                         }
                         let _ =
                             self.replay_take_if(|d| matches!(d, Decision::ProcSpawnTimeout { .. }));
+                        self.advance_recorded_time(duration_ms);
                         return Err(Finding {
                             kind: FindingKind::Hang,
                             title: "timeout".to_string(),
@@ -2179,43 +2270,80 @@ impl<'a> ExecCtx<'a> {
                     Some(_) | None => None,
                 };
 
-                let idx = self
+                let host_rule_idx = self
                     .proc_rules
                     .iter()
                     .position(|r| r.remaining > 0 && r.cmd == *cmd && r.args == call_args);
-                let rule = if let Some(rule) = replay_rule {
-                    rule
-                } else if let Some(idx) = idx {
-                    let mut rule = self.proc_rules[idx].clone();
-                    if rule.remaining != u64::MAX {
-                        rule.remaining = rule.remaining.saturating_sub(1);
-                    }
-                    self.proc_rules[idx] = rule.clone();
-                    rule
+                let (rule, backend) = if let Some((rule, backend)) = replay_rule {
+                    (rule, backend)
                 } else if matches!(self.proc_backend, ProcBackend::Host) {
-                    match dispatch_host_proc(cmd, &call_args, self.host_deadline).map_err(
-                        |message| Finding {
+                    if !self.proc_rules.is_empty() && host_rule_idx.is_none() {
+                        return Err(Finding {
                             kind: FindingKind::Assertion,
-                            title: "proc_spawn_host".to_string(),
-                            message,
-                            location: None,
-                        },
-                    )? {
-                        HostProcDispatch::Completed(output) => ProcRule {
-                            cmd: cmd.clone(),
-                            args: call_args.clone(),
-                            exit_code: output.exit_code,
-                            stdout: output.stdout,
-                            stderr: output.stderr,
-                            remaining: 0,
-                        },
+                            title: "proc_when_host_unmatched".to_string(),
+                            message: format!(
+                                "no proc_when matched host proc {cmd:?} {:?}. remediation: \
+                                 1) align proc_when.cmd/args with this invocation, \
+                                 2) remove proc_when if you want unrestricted host proc execution, \
+                                 3) run with --proc-backend scripted to use mocked responses.",
+                                call_args
+                            ),
+                            location: self.current_finding_location(),
+                        });
+                    }
+                    let (dispatch, duration_ms) = measure_duration_ms(|| {
+                        dispatch_host_proc(cmd, &call_args, self.host_deadline).map_err(
+                            |message| Finding {
+                                kind: FindingKind::Assertion,
+                                title: "proc_spawn_host".to_string(),
+                                message,
+                                location: None,
+                            },
+                        )
+                    })?;
+                    match dispatch {
+                        HostProcDispatch::Completed(output) => {
+                            let rule = proc_rule(
+                                cmd,
+                                &call_args,
+                                output.exit_code,
+                                output.stdout,
+                                output.stderr,
+                            );
+                            if let Some(idx) = host_rule_idx {
+                                let mut expected = self.proc_rules[idx].clone();
+                                if expected.remaining != u64::MAX {
+                                    expected.remaining = expected.remaining.saturating_sub(1);
+                                }
+                                self.proc_rules[idx] = expected.clone();
+                                assert_proc_when_matches_host(
+                                    cmd,
+                                    &call_args,
+                                    &expected,
+                                    &rule,
+                                    self.current_finding_location(),
+                                )?;
+                            }
+                            self.decisions.push(Decision::ProcSpawn {
+                                cmd: cmd.clone(),
+                                args: call_args.clone(),
+                                exit_code: rule.exit_code,
+                                stdout: rule.stdout.clone(),
+                                stderr: rule.stderr.clone(),
+                                duration_ms,
+                            });
+                            self.advance_recorded_time(duration_ms);
+                            (rule, "host")
+                        }
                         HostProcDispatch::TimedOut { stdout, stderr } => {
                             self.decisions.push(Decision::ProcSpawnTimeout {
                                 cmd: cmd.clone(),
                                 args: call_args.clone(),
                                 stdout,
                                 stderr,
+                                duration_ms,
                             });
+                            self.advance_recorded_time(duration_ms);
                             return Err(Finding {
                                 kind: FindingKind::Hang,
                                 title: "timeout".to_string(),
@@ -2224,6 +2352,21 @@ impl<'a> ExecCtx<'a> {
                             });
                         }
                     }
+                } else if let Some(idx) = host_rule_idx {
+                    let mut rule = self.proc_rules[idx].clone();
+                    if rule.remaining != u64::MAX {
+                        rule.remaining = rule.remaining.saturating_sub(1);
+                    }
+                    self.proc_rules[idx] = rule.clone();
+                    self.decisions.push(Decision::ProcSpawn {
+                        cmd: cmd.clone(),
+                        args: call_args.clone(),
+                        exit_code: rule.exit_code,
+                        stdout: rule.stdout.clone(),
+                        stderr: rule.stderr.clone(),
+                        duration_ms: 0,
+                    });
+                    (rule, "scripted")
                 } else {
                     let step_index = self.current_step_index.unwrap_or_default();
                     return Err(Finding {
@@ -2238,22 +2381,12 @@ impl<'a> ExecCtx<'a> {
                         location: self.current_finding_location(),
                     });
                 };
-                self.decisions.push(Decision::ProcSpawn {
-                    cmd: cmd.clone(),
-                    args: call_args.clone(),
-                    exit_code: rule.exit_code,
-                    stdout: rule.stdout.clone(),
-                    stderr: rule.stderr.clone(),
-                });
 
                 let mut proc_fields = serde_json::Map::new();
                 proc_fields.insert("cmd".to_string(), serde_json::Value::String(cmd.clone()));
                 proc_fields.insert(
                     "backend".to_string(),
-                    serde_json::Value::String(match self.proc_backend {
-                        ProcBackend::Scripted => "scripted".to_string(),
-                        ProcBackend::Host => "host".to_string(),
-                    }),
+                    serde_json::Value::String(backend.to_string()),
                 );
                 proc_fields.insert(
                     "exit_code".to_string(),
@@ -3029,6 +3162,23 @@ struct ProcRule {
     remaining: u64,
 }
 
+fn proc_rule(
+    cmd: &str,
+    args: &[String],
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+) -> ProcRule {
+    ProcRule {
+        cmd: cmd.to_string(),
+        args: args.to_vec(),
+        exit_code,
+        stdout,
+        stderr,
+        remaining: 0,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NetMessage {
     id: u64,
@@ -3076,6 +3226,53 @@ impl<'a> ReplayCursor<'a> {
 
 fn duration_to_ms(d: Duration) -> u64 {
     d.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn measure_duration_ms<T, E, F>(f: F) -> Result<(T, u64), E>
+where
+    F: FnOnce() -> Result<T, E>,
+{
+    let started = Instant::now();
+    let out = f()?;
+    let duration_ms = crate::duration_fields(started.elapsed()).0;
+    Ok((out, duration_ms))
+}
+
+fn assert_proc_when_matches_host(
+    cmd: &str,
+    args: &[String],
+    expected: &ProcRule,
+    actual: &ProcRule,
+    location: Option<FindingLocation>,
+) -> Result<(), Finding> {
+    if actual.exit_code != expected.exit_code {
+        return Err(Finding {
+            kind: FindingKind::Assertion,
+            title: "proc_when_host_exit".to_string(),
+            message: format!(
+                "host proc exit mismatch for {cmd:?} {:?}: expected {}, got {}",
+                args, expected.exit_code, actual.exit_code
+            ),
+            location,
+        });
+    }
+    if actual.stdout != expected.stdout {
+        return Err(Finding {
+            kind: FindingKind::Assertion,
+            title: "proc_when_host_stdout".to_string(),
+            message: format!("host proc stdout mismatch for {cmd:?} {:?}", args),
+            location,
+        });
+    }
+    if actual.stderr != expected.stderr {
+        return Err(Finding {
+            kind: FindingKind::Assertion,
+            title: "proc_when_host_stderr".to_string(),
+            message: format!("host proc stderr mismatch for {cmd:?} {:?}", args),
+            location,
+        });
+    }
+    Ok(())
 }
 
 fn encode_hex(bytes: &[u8]) -> String {

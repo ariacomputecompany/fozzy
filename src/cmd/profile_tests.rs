@@ -140,6 +140,66 @@ fn sample_trace_without_heap() -> TraceFile {
     }
 }
 
+fn sample_trace_with_cpu_samples() -> TraceFile {
+    let mut trace = sample_trace();
+    trace.events = vec![
+        TraceEvent {
+            time_ms: 1,
+            name: "sample".to_string(),
+            fields: serde_json::Map::from_iter([
+                (
+                    "stack".to_string(),
+                    serde_json::json!("fozzy::runtime;step::cpu"),
+                ),
+                ("weight_ms".to_string(), serde_json::json!(4)),
+            ]),
+        },
+        TraceEvent {
+            time_ms: 2,
+            name: "sample".to_string(),
+            fields: serde_json::Map::from_iter([
+                (
+                    "stack".to_string(),
+                    serde_json::json!("fozzy::runtime;step::cpu"),
+                ),
+                ("weight_ms".to_string(), serde_json::json!(6)),
+            ]),
+        },
+    ];
+    trace
+}
+
+fn sample_trace_with_full_profile_support() -> TraceFile {
+    let mut trace = sample_trace();
+    let mut sample_events = vec![
+        TraceEvent {
+            time_ms: 1,
+            name: "sample".to_string(),
+            fields: serde_json::Map::from_iter([
+                (
+                    "stack".to_string(),
+                    serde_json::json!("fozzy::runtime;step::cpu"),
+                ),
+                ("weight_ms".to_string(), serde_json::json!(4)),
+            ]),
+        },
+        TraceEvent {
+            time_ms: 2,
+            name: "sample".to_string(),
+            fields: serde_json::Map::from_iter([
+                (
+                    "stack".to_string(),
+                    serde_json::json!("fozzy::runtime;step::cpu"),
+                ),
+                ("weight_ms".to_string(), serde_json::json!(6)),
+            ]),
+        },
+    ];
+    sample_events.extend(trace.events);
+    trace.events = sample_events;
+    trace
+}
+
 #[test]
 fn timeline_builds_required_fields() {
     let trace = sample_trace();
@@ -622,8 +682,8 @@ fn format_metric_value_normalizes_negative_zero() {
 }
 
 #[test]
-fn shrink_contract_miss_returns_no_feasible_status() {
-    let ws = temp_workspace("shrink-contract-miss");
+fn shrink_cpu_metric_without_real_samples_is_rejected() {
+    let ws = temp_workspace("shrink-cpu-contract");
     let trace = ws.join("c.trace.fozzy");
     std::fs::write(
         &trace,
@@ -639,12 +699,11 @@ fn shrink_contract_miss_returns_no_feasible_status() {
         budget: Some(crate::FozzyDuration(std::time::Duration::from_secs(1))),
         minimize: ShrinkMinimize::All,
     };
-    let out = profile_command(&cfg, &cmd, true).expect("shrink output");
-    assert_eq!(
-        out.get("status").and_then(|v| v.as_str()),
-        Some("no_feasible_shrink_found")
+    let err = profile_command(&cfg, &cmd, true).expect_err("shrink should fail");
+    assert!(
+        err.to_string().contains("cpu profiling requires real sample events"),
+        "expected cpu sample contract error, got: {err}"
     );
-    assert_eq!(out.get("preserved").and_then(|v| v.as_bool()), Some(false));
 }
 
 #[test]
@@ -684,14 +743,18 @@ fn profile_env_reports_schema_and_domains() {
     let out = profile_command(&cfg, &ProfileCommand::Env, true).expect("env");
     assert_eq!(
         out.get("schemaVersion").and_then(|v| v.as_str()),
-        Some("fozzy.profile_env.v3")
+        Some("fozzy.profile_env.v4")
     );
     assert!(out.get("domains").is_some());
+    assert_eq!(
+        out.pointer("/domains/cpu/available").and_then(|v| v.as_bool()),
+        Some(false)
+    );
 }
 
 #[test]
-fn strict_mode_allows_cpu_domain() {
-    let ws = temp_workspace("cpu-strict");
+fn strict_mode_rejects_cpu_domain_without_real_samples() {
+    let ws = temp_workspace("cpu-strict-reject");
     let trace = ws.join("trace.fozzy");
     std::fs::write(
         &trace,
@@ -708,11 +771,34 @@ fn strict_mode_allows_cpu_domain() {
         sched: false,
         limit: 5,
     };
-    let out = profile_command(&cfg, &cmd, true).expect("top");
+    let err = profile_command(&cfg, &cmd, true).expect_err("top should fail");
     assert!(
-        out.get("cpu").is_some(),
-        "cpu domain should be available in strict mode"
+        err.to_string().contains("cpu profiling requires real sample events"),
+        "expected real-sample cpu contract error, got: {err}"
     );
+}
+
+#[test]
+fn strict_mode_allows_cpu_domain_with_real_samples() {
+    let ws = temp_workspace("cpu-strict-allow");
+    let trace = ws.join("trace.fozzy");
+    std::fs::write(
+        &trace,
+        serde_json::to_vec_pretty(&sample_trace_with_cpu_samples()).expect("trace bytes"),
+    )
+    .expect("trace");
+    let cfg = Config::default();
+    let cmd = ProfileCommand::Top {
+        run: trace.to_string_lossy().to_string(),
+        cpu: true,
+        heap: false,
+        latency: false,
+        io: false,
+        sched: false,
+        limit: 5,
+    };
+    let out = profile_command(&cfg, &cmd, true).expect("top");
+    assert!(out.get("cpu").is_some(), "cpu output should be present");
 }
 
 #[test]
@@ -799,6 +885,122 @@ fn profile_doctor_reports_schema() {
         Some("fozzy.profile_doctor.v1")
     );
     assert!(out.get("checks").and_then(|v| v.as_array()).is_some());
+    let shrink = out
+        .get("checks")
+        .and_then(|v| v.as_array())
+        .and_then(|checks| {
+            checks.iter().find(|check| {
+                check.get("name").and_then(|v| v.as_str()) == Some("shrink_cpu_increase")
+            })
+        })
+        .expect("shrink_cpu_increase check");
+    assert_eq!(shrink.get("status").and_then(|v| v.as_str()), Some("skipped"));
+    assert_eq!(shrink.get("ok").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn profile_doctor_marks_warning_checks_as_not_ok() {
+    let ws = temp_workspace("profile-doctor-warn");
+    let trace = ws.join("trace.fozzy");
+    std::fs::write(
+        &trace,
+        serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"),
+    )
+    .expect("trace");
+
+    let cfg = Config::default();
+    let cmd = ProfileCommand::Doctor {
+        run: trace.to_string_lossy().to_string(),
+        deep: false,
+    };
+    let out = profile_command(&cfg, &cmd, true).expect("doctor");
+    assert_eq!(out.get("ok").and_then(|v| v.as_bool()), Some(false));
+    let issues = out
+        .get("issues")
+        .and_then(|v| v.as_array())
+        .expect("issues array");
+    assert!(
+        issues.iter().any(|v| {
+            v.as_str()
+                .is_some_and(|s| s.contains("flame_cpu: no cpu samples in trace"))
+        }),
+        "expected flame_cpu warning in issues: {issues:?}"
+    );
+    let checks = out
+        .get("checks")
+        .and_then(|v| v.as_array())
+        .expect("checks array");
+    let env = checks
+        .iter()
+        .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("env"))
+        .expect("env check");
+    assert_eq!(env.get("status").and_then(|v| v.as_str()), Some("warn"));
+    assert_eq!(env.get("ok").and_then(|v| v.as_bool()), Some(false));
+    let flame_cpu = checks
+        .iter()
+        .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("flame_cpu"))
+        .expect("flame_cpu check");
+    assert_eq!(flame_cpu.get("status").and_then(|v| v.as_str()), Some("warn"));
+    assert_eq!(flame_cpu.get("ok").and_then(|v| v.as_bool()), Some(false));
+    let export = checks
+        .iter()
+        .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("export"))
+        .expect("export check");
+    assert_eq!(export.get("status").and_then(|v| v.as_str()), Some("warn"));
+    assert_eq!(export.get("ok").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn profile_doctor_reports_data_checks_for_full_profile_support() {
+    let ws = temp_workspace("profile-doctor-pass");
+    let trace = ws.join("trace.fozzy");
+    std::fs::write(
+        &trace,
+        serde_json::to_vec_pretty(&sample_trace_with_full_profile_support())
+            .expect("trace bytes"),
+    )
+    .expect("trace");
+
+    let cfg = Config::default();
+    let cmd = ProfileCommand::Doctor {
+        run: trace.to_string_lossy().to_string(),
+        deep: false,
+    };
+    let out = profile_command(&cfg, &cmd, true).expect("doctor");
+    assert_eq!(out.get("ok").and_then(|v| v.as_bool()), Some(false));
+    let checks = out
+        .get("checks")
+        .and_then(|v| v.as_array())
+        .expect("checks array");
+    let env = checks
+        .iter()
+        .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("env"))
+        .expect("env check");
+    assert_eq!(env.get("status").and_then(|v| v.as_str()), Some("warn"));
+    assert_eq!(env.get("ok").and_then(|v| v.as_bool()), Some(false));
+    let export = checks
+        .iter()
+        .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("export"))
+        .expect("export check");
+    assert_eq!(export.get("status").and_then(|v| v.as_str()), Some("pass"));
+    assert_eq!(export.get("ok").and_then(|v| v.as_bool()), Some(true));
+    let flame_cpu = checks
+        .iter()
+        .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("flame_cpu"))
+        .expect("flame_cpu check");
+    assert_eq!(flame_cpu.get("status").and_then(|v| v.as_str()), Some("pass"));
+    assert_eq!(flame_cpu.get("ok").and_then(|v| v.as_bool()), Some(true));
+    assert!(
+        out.get("issues")
+            .and_then(|v| v.as_array())
+            .is_some_and(|issues| {
+                issues.iter().any(|v| {
+                    v.as_str()
+                        .is_some_and(|s| s.contains("env: unsupported domains=cpu"))
+                })
+            }),
+        "expected env unsupported-domain issue"
+    );
 }
 
 #[test]
@@ -822,7 +1024,7 @@ fn relaxed_mode_returns_warning_for_missing_profile_inputs() {
 }
 
 #[test]
-fn relaxed_mode_emits_cpu_warning() {
+fn relaxed_mode_returns_contract_warning_for_cpu_without_real_samples() {
     let ws = temp_workspace("cpu-warn");
     let trace = ws.join("trace.fozzy");
     std::fs::write(
@@ -840,11 +1042,14 @@ fn relaxed_mode_emits_cpu_warning() {
         sched: false,
         limit: 5,
     };
-    let out = profile_command(&cfg, &cmd, false).expect("top");
-    let warnings = out
-        .get("warnings")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(!warnings.is_empty(), "expected warnings");
+    let out = profile_command(&cfg, &cmd, false).expect("relaxed warning");
+    assert_eq!(
+        out.get("schemaVersion").and_then(|v| v.as_str()),
+        Some("fozzy.profile_contract_warning.v1")
+    );
+    assert!(
+        out.get("detail")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.contains("cpu profiling requires real sample events"))
+    );
 }

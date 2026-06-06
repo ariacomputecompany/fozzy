@@ -508,14 +508,14 @@ mod tests {
         let findings = vec![
             Finding {
                 kind: FindingKind::Checker,
-                title: "http_when_backend".to_string(),
-                message: "http_when requires scripted backend".to_string(),
+                title: "production_contract".to_string(),
+                message: "host verification contract drift".to_string(),
                 location: None,
             },
             Finding {
                 kind: FindingKind::Checker,
-                title: "http_when_backend".to_string(),
-                message: "http_when requires scripted backend".to_string(),
+                title: "production_contract".to_string(),
+                message: "host verification contract drift".to_string(),
                 location: None,
             },
         ];

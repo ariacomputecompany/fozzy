@@ -31,7 +31,13 @@ pub(super) fn dispatch_profile_command(
                 Ok(v) => v,
                 Err(err) => return profile_contract_or_error(strict, "top", run, err),
             };
-            enforce_cpu_contract(strict, domains.contains(&"cpu".to_string()))?;
+            if let Err(err) = enforce_cpu_contract(
+                strict,
+                domains.iter().any(|d| d == "cpu"),
+                &[bundle.cpu.as_ref().map(|cpu| cpu.sample_count).unwrap_or(0)],
+            ) {
+                return profile_contract_or_error(strict, "top", run, err);
+            }
             let mut out = serde_json::Map::new();
             let mut empty_domains = Vec::<serde_json::Value>::new();
             let mut warnings = Vec::<String>::new();
@@ -153,7 +159,13 @@ pub(super) fn dispatch_profile_command(
                 Err(err) => return profile_contract_or_error(strict, "flame", run, err),
             };
             if *cpu {
-                enforce_cpu_contract(strict, true)?;
+                if let Err(err) = enforce_cpu_contract(
+                    strict,
+                    true,
+                    &[bundle.cpu.as_ref().map(|cpu| cpu.sample_count).unwrap_or(0)],
+                ) {
+                    return profile_contract_or_error(strict, "flame", run, err);
+                }
             }
             let folded = if use_heap {
                 heap_folded(bundle.heap.as_ref().expect("heap requested"))
@@ -254,9 +266,6 @@ pub(super) fn dispatch_profile_command(
             sched,
         } => {
             let domains = normalize_domains(*cpu, *heap, *latency, *io, *sched);
-            if domains.iter().any(|d| d == "cpu") {
-                enforce_cpu_contract(strict, true)?;
-            }
             let left_selectors = parse_selector_group(left);
             let right_selectors = parse_selector_group(right);
             let left_bundles = match load_profile_bundle_group(
@@ -281,6 +290,17 @@ pub(super) fn dispatch_profile_command(
                 Ok(v) => v,
                 Err(err) => return profile_contract_or_error(strict, "diff", right, err),
             };
+            if let Err(err) = enforce_cpu_contract(
+                strict,
+                domains.iter().any(|d| d == "cpu"),
+                &left_bundles
+                    .iter()
+                    .chain(right_bundles.iter())
+                    .map(|b| b.cpu.as_ref().map(|cpu| cpu.sample_count).unwrap_or(0))
+                    .collect::<Vec<_>>(),
+            ) {
+                return profile_contract_or_error(strict, "diff", left, err);
+            }
             let (l, l_stats) = aggregate_metric_bundle(&left_bundles)?;
             let (r, r_stats) = aggregate_metric_bundle(&right_bundles)?;
             let l_heap = left_bundles.first().and_then(|b| b.heap.as_ref());
@@ -354,13 +374,16 @@ pub(super) fn dispatch_profile_command(
                 Ok(v) => v,
                 Err(err) => return profile_contract_or_error(strict, "export", run, err),
             };
-            enforce_cpu_contract(
+            if let Err(err) = enforce_cpu_contract(
                 strict,
                 matches!(
                     format,
                     ProfileExportFormat::Speedscope | ProfileExportFormat::Pprof
                 ),
-            )?;
+                &[bundle.cpu.as_ref().map(|cpu| cpu.sample_count).unwrap_or(0)],
+            ) {
+                return profile_contract_or_error(strict, "export", run, err);
+            }
             let warnings = if let Some(warn) = relaxed_cpu_warning(
                 strict,
                 matches!(
@@ -421,6 +444,13 @@ pub(super) fn dispatch_profile_command(
                 Err(err) => return profile_contract_or_error(strict, "shrink", run, err),
             };
             let input = TraceFile::read_json(&trace_path)?;
+            if matches!(metric, ProfileMetric::CpuTime) {
+                let timeline = build_profile_timeline(&input);
+                let cpu = build_cpu_profile(&input, &timeline);
+                if let Err(err) = enforce_cpu_contract(strict, true, &[cpu.sample_count]) {
+                    return profile_contract_or_error(strict, "shrink", run, err);
+                }
+            }
             let baseline = metric_value(*metric, &input)?;
             let baseline_for_predicate = baseline;
             let metric_for_predicate = *metric;

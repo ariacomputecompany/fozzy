@@ -10,8 +10,8 @@ use crate::engine::{
     run_scenario_replay_inner,
 };
 use crate::finalize::{
-    build_run_summary, build_shrink_preview_trace, write_reporter_artifacts,
-    write_single_scenario_trace, write_summary_report,
+    build_run_summary, build_shrink_preview_trace, trace_timing_for_run,
+    write_reporter_artifacts, write_single_scenario_trace, write_summary_report,
 };
 use crate::{
     Config, ExitStatus, Finding, FindingKind, FozzyError, FozzyResult, HeapBudgetPolicy,
@@ -131,10 +131,10 @@ pub fn replay_trace(
 ) -> FozzyResult<RunResult> {
     let trace = TraceFile::read_json(trace_path.as_path())?;
     if trace.fuzz.is_some() && trace.scenario.is_none() {
-        return crate::replay_fuzz_trace(config, &trace);
+        return crate::replay_fuzz_trace(config, &trace, trace_path.as_path());
     }
     if trace.explore.is_some() && trace.scenario.is_none() {
-        return crate::replay_explore_trace(config, &trace);
+        return crate::replay_explore_trace(config, &trace, trace_path.as_path());
     }
 
     let seed = trace.summary.identity.seed;
@@ -147,7 +147,7 @@ pub fn replay_trace(
     let scenario_path = trace
         .scenario_path
         .clone()
-        .unwrap_or_else(|| "<embedded>".to_string());
+        .unwrap_or_else(|| trace_path.as_path().to_string_lossy().to_string());
 
     let started_at = wall_time_iso_utc();
     let started = Instant::now();
@@ -329,19 +329,47 @@ fn shrink_trace_inner(
 
     let budget = opt.budget.unwrap_or(Duration::from_secs(15));
     let deadline = Instant::now() + budget;
+    let trace_uses_host_backends = trace.events.iter().any(|event| {
+        matches!(event.name.as_str(), "proc_spawn" | "http_request" | "capability_fs")
+            && event
+                .fields
+                .get("backend")
+                .and_then(|value| value.as_str())
+                .is_some_and(|backend| backend == "host")
+    });
 
     let mut candidate = scenario.steps.clone();
-    let mut best_run = run_embedded_scenario_inner(
-        scenario.clone(),
-        PathBuf::from("<shrink-baseline>"),
-        seed,
-        true,
-        None,
-        ProcBackend::Scripted,
-        FsBackend::Virtual,
-        HttpBackend::Scripted,
-        replay_memory_options(&trace),
-    )?;
+    let run_candidate = |steps: ScenarioV1Steps, label: &str| -> FozzyResult<crate::ScenarioRun> {
+        if trace_uses_host_backends {
+            run_scenario_replay_inner(
+                config,
+                RunMode::Replay,
+                &steps,
+                label,
+                seed,
+                Some(&trace.decisions),
+                None,
+                false,
+                ProcBackend::Scripted,
+                FsBackend::Virtual,
+                HttpBackend::Scripted,
+                replay_memory_options(&trace),
+            )
+        } else {
+            run_embedded_scenario_inner(
+                steps,
+                PathBuf::from(label),
+                seed,
+                true,
+                None,
+                ProcBackend::Scripted,
+                FsBackend::Virtual,
+                HttpBackend::Scripted,
+                replay_memory_options(&trace),
+            )
+        }
+    };
+    let mut best_run = run_candidate(scenario.clone(), "<shrink-baseline>")?;
     if !crate::shrink_status_matches(target_status, best_run.status) {
         return Err(FozzyError::Trace(
             "baseline trace no longer matches shrink target status".to_string(),
@@ -370,17 +398,7 @@ fn shrink_trace_inner(
                 steps: trial.clone(),
             };
 
-            let res = run_embedded_scenario_inner(
-                trial_scenario.clone(),
-                PathBuf::from("<shrunk>"),
-                seed,
-                true,
-                None,
-                ProcBackend::Scripted,
-                FsBackend::Virtual,
-                HttpBackend::Scripted,
-                replay_memory_options(&trace),
-            )?;
+            let res = run_candidate(trial_scenario.clone(), "<shrunk>")?;
             if !crate::shrink_status_matches(target_status, res.status) {
                 i += chunk;
                 continue;
@@ -417,8 +435,7 @@ fn shrink_trace_inner(
         .unwrap_or_else(|| crate::default_min_trace_path(trace_path.as_path()));
 
     let run_id = Uuid::new_v4().to_string();
-    let started_at = wall_time_iso_utc();
-    let finished_at = wall_time_iso_utc();
+    let (started_at, finished_at, duration_ms, duration_ns) = trace_timing_for_run(&best_run);
     let summary = build_run_summary(
         best_run.status,
         RunMode::Run,
@@ -429,8 +446,8 @@ fn shrink_trace_inner(
         None,
         started_at,
         finished_at,
-        0,
-        0,
+        duration_ms,
+        duration_ns,
         None,
         best_run.memory.as_ref().map(|m| m.summary.clone()),
         best_run.findings.clone(),

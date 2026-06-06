@@ -205,7 +205,7 @@ fn init_guide_markdown(selected: &[InitTestType]) -> String {
         lines.push("- Run distributed explore: `fozzy explore tests/distributed.pass.fozzy.json --schedule coverage_guided --nodes 3 --steps 200 --json`".to_string());
     }
     if selected.contains(&InitTestType::Fuzz) {
-        lines.push("- Run fuzzing: `fozzy fuzz fn:kv --mode coverage --time 10s --corpus .fozzy/corpora/fn-kv --json`".to_string());
+        lines.push("- Run fuzzing: `fozzy fuzz scenario:tests/example.fozzy.json --mode coverage --time 10s --corpus .fozzy/corpora/example --json`".to_string());
     }
     if selected.contains(&InitTestType::Host) {
         lines.push("- Run host-backed checks: `fozzy run tests/host.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`".to_string());
