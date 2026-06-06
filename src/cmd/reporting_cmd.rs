@@ -113,14 +113,40 @@ fn report_doc_with_profile(config: &Config, run: &str, summary: &RunSummary) -> 
     .ok();
     if let Some(obj) = value.as_object_mut()
         && let Some(explain) = explain
-        && explain
-            .get("schemaVersion")
-            .and_then(|v| v.as_str())
-            == Some("fozzy.profile_explain.v1")
+        && is_diagnostic_profile_explain(&explain)
     {
         obj.insert("profileDiagnosis".to_string(), explain);
     }
     value
+}
+
+fn is_diagnostic_profile_explain(explain: &serde_json::Value) -> bool {
+    if explain
+        .get("schemaVersion")
+        .and_then(|v| v.as_str())
+        != Some("fozzy.profile_explain.v1")
+    {
+        return false;
+    }
+    let statement = explain
+        .get("regressionStatement")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let path = explain
+        .get("topShiftedPath")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let cause = explain
+        .get("likelyCauseDomain")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    !statement.is_empty()
+        && statement != "no measurable regression shift found"
+        && !statement.starts_with("run ")
+        && !path.is_empty()
+        && path != "n/a"
+        && !cause.is_empty()
+        && cause != "unknown"
 }
 
 fn render_pretty_with_profile(summary: &RunSummary, doc: &serde_json::Value) -> String {

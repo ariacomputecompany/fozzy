@@ -2881,16 +2881,9 @@ fn trace_followup_commands_accept_bare_and_dot_relative_paths() {
             String::from_utf8_lossy(&report.stderr)
         );
         let report_doc = parse_json_stdout(&report);
-        assert_eq!(
-            report_doc
-                .get("profileDiagnosis")
-                .and_then(|v| v.get("run"))
-                .and_then(|v| v.as_str())
-                .expect("diagnosis run"),
-            std::fs::canonicalize(ws.join("artifacts/repro.trace.fozzy"))
-                .expect("canonicalize expected trace")
-                .to_string_lossy(),
-            "report show should normalize embedded profile selector for {trace_arg}"
+        assert!(
+            report_doc.get("profileDiagnosis").is_none(),
+            "report show should not inject a non-diagnostic single-run profile summary for {trace_arg}"
         );
 
         let memory = run_cli_in(
@@ -4057,5 +4050,44 @@ fn report_show_omits_profile_diagnosis_when_only_contract_warning_is_available()
     assert!(
         doc.get("profileDiagnosis").is_none(),
         "contract warning should not be injected as profile diagnosis"
+    );
+}
+
+#[test]
+fn report_show_omits_profile_diagnosis_for_single_run_summary_only() {
+    let ws = temp_workspace("report-show-no-single-run-diagnosis");
+    let scenario = ws.join("memory.pass.fozzy.json");
+    std::fs::write(&scenario, fixture("memory.pass.fozzy.json")).expect("write scenario");
+    let trace = ws.join("pass.trace.fozzy");
+
+    let run = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.to_string_lossy().to_string(),
+            "--det".into(),
+            "--record".into(),
+            trace.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(run.status.code(), Some(0), "run should succeed");
+
+    let report = run_cli_in(
+        &ws,
+        &[
+            "report".into(),
+            "show".into(),
+            trace.to_string_lossy().to_string(),
+            "--format".into(),
+            "json".into(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(report.status.code(), Some(0), "report show should succeed");
+    let doc = parse_json_stdout(&report);
+    assert!(
+        doc.get("profileDiagnosis").is_none(),
+        "single-run profile summary should not be injected as a diagnosis"
     );
 }
