@@ -586,6 +586,38 @@ fn resolve_profile_trace_supports_run_with_report_trace_path() {
 }
 
 #[test]
+fn resolve_profile_artifacts_prefers_declared_artifacts_dir_for_direct_trace() {
+    let ws = temp_workspace("resolve-direct-artifacts-dir");
+    let base_dir = ws.join(".fozzy");
+    let detached = ws.join("trace.profile-artifacts");
+    std::fs::create_dir_all(&detached).expect("detached dir");
+
+    let mut trace = sample_trace();
+    let trace_path = ws.join("direct.trace.fozzy");
+    trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(detached.to_string_lossy().to_string());
+    std::fs::write(
+        &trace_path,
+        serde_json::to_vec_pretty(&trace).expect("trace bytes"),
+    )
+    .expect("write trace");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let (artifacts_dir, resolved_trace) =
+        profile_support::resolve_profile_artifacts(&cfg, &trace_path.to_string_lossy())
+            .expect("resolve profile");
+    assert_eq!(artifacts_dir, detached);
+    assert_eq!(resolved_trace, Some(trace_path.clone()));
+    assert!(
+        !base_dir.join("profile-cache").exists(),
+        "declared artifacts dir should win over cache fallback"
+    );
+}
+
+#[test]
 fn profile_commands_support_run_id_with_profile_artifacts_only() {
     let ws = temp_workspace("artifacts-only-run");
     let base_dir = ws.join(".fozzy");

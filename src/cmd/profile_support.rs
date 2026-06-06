@@ -613,6 +613,17 @@ pub(super) fn resolve_profile_artifacts(
 ) -> FozzyResult<(PathBuf, Option<PathBuf>)> {
     let input = PathBuf::from(crate::normalize_run_or_trace_selector(selector));
     if input.exists() && input.is_file() && crate::is_trace_path(&input) {
+        let trace = TraceFile::read_json(&input)?;
+        if let Some(artifacts_dir) = trace
+            .summary
+            .identity
+            .artifacts_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|dir| dir.exists() && dir.is_dir())
+        {
+            return Ok((artifacts_dir, Some(input)));
+        }
         let canonical = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
         let key = blake3::hash(canonical.to_string_lossy().as_bytes())
             .to_hex()
