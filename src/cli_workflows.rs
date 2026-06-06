@@ -172,6 +172,28 @@ fn memory_diff_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     )
 }
 
+fn replay_summary_status(
+    expected: Option<ExitStatus>,
+    summary: &RunSummary,
+    strict: bool,
+) -> (FullStepStatus, String) {
+    let class_ok = expected
+        .map(|s| (s == ExitStatus::Pass) == (summary.status == ExitStatus::Pass))
+        .unwrap_or(false);
+    let strict_ok = enforce_strict_summary(strict, summary).is_ok();
+    (
+        if class_ok && strict_ok {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!(
+            "status={:?} class_ok={} strict_ok={}",
+            summary.status, class_ok, strict_ok
+        ),
+    )
+}
+
 fn clean_tree_step_status(detail: &str) -> FullStepStatus {
     if detail.contains("check skipped") {
         FullStepStatus::Skipped
@@ -460,22 +482,9 @@ pub(super) fn run_gate_command(
         ) {
             Ok(replay) => {
                 replay_run_id = Some(replay.summary.identity.run_id.clone());
-                let class_ok = primary_status
-                    .map(|s| (s == ExitStatus::Pass) == (replay.summary.status == ExitStatus::Pass))
-                    .unwrap_or(false);
-                let strict_ok = enforce_strict_summary(strict, &replay.summary).is_ok();
-                push(
-                    "replay",
-                    if class_ok && strict_ok {
-                        FullStepStatus::Passed
-                    } else {
-                        FullStepStatus::Failed
-                    },
-                    format!(
-                        "status={:?} class_ok={} strict_ok={}",
-                        replay.summary.status, class_ok, strict_ok
-                    ),
-                );
+                let (status, detail) =
+                    replay_summary_status(primary_status, &replay.summary, strict);
+                push("replay", status, detail);
             }
             Err(err) => push("replay", FullStepStatus::Failed, err.to_string()),
         }
@@ -819,6 +828,7 @@ pub(super) fn run_full_command(
     let mut primary_trace: Option<PathBuf> = None;
     let mut shrunk_trace: Option<PathBuf> = None;
     let mut primary_status: Option<ExitStatus> = None;
+    let mut shrunk_status: Option<ExitStatus> = None;
 
     if pick_step.is_none() {
         push(
@@ -1019,21 +1029,12 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(replay) => {
-                let replay_ok = primary_status
-                    .map(|s| (s == ExitStatus::Pass) == (replay.summary.status == ExitStatus::Pass))
-                    .unwrap_or(false);
-                let strict_ok = enforce_strict_summary(strict, &replay.summary).is_ok();
+                let (status, detail) =
+                    replay_summary_status(primary_status, &replay.summary, strict);
                 push(
                     "replay",
-                    if replay_ok && strict_ok {
-                        FullStepStatus::Passed
-                    } else {
-                        FullStepStatus::Failed
-                    },
-                    format!(
-                        "status={:?} strict_ok={} run_id={}",
-                        replay.summary.status, strict_ok, replay.summary.identity.run_id
-                    ),
+                    status,
+                    format!("{detail} run_id={}", replay.summary.identity.run_id),
                 );
             }
             Err(err) => push("replay", FullStepStatus::Failed, err.to_string()),
@@ -1077,6 +1078,7 @@ pub(super) fn run_full_command(
         ) {
             Ok(shrink) => {
                 shrunk_trace = Some(PathBuf::from(shrink.out_trace_path.clone()));
+                shrunk_status = Some(shrink.result.summary.status);
                 let status = if allow_expected_failures {
                     if let Some(primary) = primary_status {
                         if shrink_status_matches(primary, shrink.result.summary.status) {
@@ -1123,11 +1125,11 @@ pub(super) fn run_full_command(
                     reporter: Reporter::Json,
                 },
             ) {
-                Ok(replay) => push(
-                    "replay_shrunk",
-                    FullStepStatus::Passed,
-                    format!("status={:?}", replay.summary.status),
-                ),
+                Ok(replay) => {
+                    let (status, detail) =
+                        replay_summary_status(shrunk_status, &replay.summary, strict);
+                    push("replay_shrunk", status, detail);
+                }
                 Err(err) => push("replay_shrunk", FullStepStatus::Failed, err.to_string()),
             }
         } else {
@@ -1951,6 +1953,7 @@ fn is_preferred_distributed_scenario(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fozzy::{RunIdentity, RunMode};
 
     #[test]
     fn profile_diff_status_rejects_regressions() {
@@ -2028,6 +2031,35 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Passed));
         assert!(detail.contains("cause_domain=latency"));
         assert!(detail.contains("shifted_path=metric::p99_latency_ms"));
+    }
+
+    fn sample_run_summary(status: ExitStatus) -> RunSummary {
+        RunSummary {
+            status,
+            mode: RunMode::Run,
+            identity: RunIdentity {
+                run_id: "test-run".to_string(),
+                seed: 7,
+                trace_path: None,
+                report_path: None,
+                artifacts_dir: None,
+            },
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:00Z".to_string(),
+            duration_ms: 1,
+            duration_ns: 1_000_000,
+            tests: None,
+            memory: None,
+            findings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn replay_summary_status_rejects_class_mismatch() {
+        let summary = sample_run_summary(ExitStatus::Fail);
+        let (status, detail) = replay_summary_status(Some(ExitStatus::Pass), &summary, true);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("class_ok=false"));
     }
 
     #[test]

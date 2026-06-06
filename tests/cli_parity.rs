@@ -2108,6 +2108,10 @@ fn full_allow_expected_failures_controls_shrink_status_for_fail_class_runs() {
         Some("failed".to_string())
     );
     assert_eq!(
+        full_step_status(&no_allow_doc, "replay_shrunk"),
+        Some("skipped".to_string())
+    );
+    assert_eq!(
         no_allow_doc
             .get("shrinkClassification")
             .and_then(|v| v.as_str())
@@ -2139,6 +2143,10 @@ fn full_allow_expected_failures_controls_shrink_status_for_fail_class_runs() {
     assert_eq!(
         full_step_status(&allow_doc, "shrink"),
         Some("passed".to_string())
+    );
+    assert_eq!(
+        full_step_status(&allow_doc, "replay_shrunk"),
+        Some("skipped".to_string())
     );
     assert_eq!(
         allow_doc
