@@ -222,11 +222,38 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .get("flakeRatePct")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
+    let invalid_status_keys = value
+        .get("statusCounts")
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.keys()
+                .filter(|key| {
+                    let key = key.trim();
+                    key.is_empty() || !matches!(key, "pass" | "fail" | "error" | "timeout")
+                })
+                .count()
+        })
+        .unwrap_or(0);
     let status_variant_count = value
         .get("statusCounts")
         .and_then(|v| v.as_object())
         .map(|m| m.len())
         .unwrap_or(0) as u64;
+    let invalid_finding_rows = value
+        .get("findingTitleSets")
+        .and_then(|v| v.as_array())
+        .map(|sets| {
+            sets.iter()
+                .filter(|set| {
+                    set.as_array().is_none_or(|items| {
+                        items
+                            .iter()
+                            .any(|item| item.as_str().is_none_or(|s| s.trim().is_empty()))
+                    })
+                })
+                .count()
+        })
+        .unwrap_or(0);
     let finding_variant_count = value
         .get("findingTitleSets")
         .and_then(|v| v.as_array())
@@ -238,7 +265,11 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     } else {
         flake_rate == 0.0
     };
-    let consistent = run_count > 0 && is_flaky == derived_flaky && rate_ok;
+    let consistent = run_count > 0
+        && is_flaky == derived_flaky
+        && rate_ok
+        && invalid_status_keys == 0
+        && invalid_finding_rows == 0;
     (
         if !consistent || is_flaky {
             FullStepStatus::Failed
@@ -246,13 +277,15 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
             FullStepStatus::Passed
         },
         format!(
-            "run_count={} is_flaky={} derived_flaky={} flake_rate_pct={} status_variants={} finding_variants={}",
+            "run_count={} is_flaky={} derived_flaky={} flake_rate_pct={} status_variants={} finding_variants={} invalid_status_keys={} invalid_finding_rows={}",
             run_count,
             is_flaky,
             derived_flaky,
             flake_rate,
             status_variant_count,
-            finding_variant_count
+            finding_variant_count,
+            invalid_status_keys,
+            invalid_finding_rows
         ),
     )
 }
@@ -3408,6 +3441,48 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("derived_flaky=false"));
         assert!(detail.contains("flake_rate_pct=50"));
+    }
+
+    #[test]
+    fn flaky_report_status_rejects_invalid_status_keys() {
+        let value = serde_json::json!({
+            "runCount": 2,
+            "statusCounts": {"": 2},
+            "findingTitleSets": [["ok"]],
+            "isFlaky": false,
+            "flakeRatePct": 0.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_status_keys=1"));
+    }
+
+    #[test]
+    fn flaky_report_status_rejects_invalid_finding_rows() {
+        let value = serde_json::json!({
+            "runCount": 2,
+            "statusCounts": {"pass": 2},
+            "findingTitleSets": [[null]],
+            "isFlaky": false,
+            "flakeRatePct": 0.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_finding_rows=1"));
+    }
+
+    #[test]
+    fn flaky_report_status_allows_empty_finding_rows_for_clean_runs() {
+        let value = serde_json::json!({
+            "runCount": 2,
+            "statusCounts": {"pass": 2},
+            "findingTitleSets": [[]],
+            "isFlaky": false,
+            "flakeRatePct": 0.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Passed));
+        assert!(detail.contains("invalid_finding_rows=0"));
     }
 
     #[test]
