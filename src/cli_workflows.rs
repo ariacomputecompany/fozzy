@@ -457,6 +457,35 @@ fn env_step_status(env: &fozzy::EnvInfo) -> (FullStepStatus, String) {
     )
 }
 
+fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
+    let failing = report
+        .checks
+        .iter()
+        .filter(|check| !check.ok)
+        .map(|check| match check.detail.as_deref() {
+            Some(detail) if !detail.is_empty() => format!("{}: {}", check.name, detail),
+            _ => check.name.clone(),
+        })
+        .collect::<Vec<_>>();
+    let detail = if failing.is_empty() {
+        format!("checks={} failed=<none>", report.checks.len())
+    } else {
+        format!(
+            "checks={} failed={}",
+            report.checks.len(),
+            failing.join("; ")
+        )
+    };
+    (
+        if report.ok {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        detail,
+    )
+}
+
 fn clean_tree_step_status(detail: &str) -> FullStepStatus {
     if detail.contains("check skipped") {
         FullStepStatus::Skipped
@@ -760,15 +789,10 @@ pub(super) fn run_gate_command(
             },
         );
         match ci {
-            Ok(report) => push(
-                "ci",
-                if report.ok {
-                    FullStepStatus::Passed
-                } else {
-                    FullStepStatus::Failed
-                },
-                format!("ok={} checks={}", report.ok, report.checks.len()),
-            ),
+            Ok(report) => {
+                let (status, detail) = ci_report_status(&report);
+                push("ci", status, detail);
+            }
             Err(err) => push("ci", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -1303,15 +1327,10 @@ pub(super) fn run_full_command(
                 strict,
             },
         ) {
-            Ok(ci) => push(
-                "ci",
-                if ci.ok {
-                    FullStepStatus::Passed
-                } else {
-                    FullStepStatus::Failed
-                },
-                format!("ok={} checks={}", ci.ok, ci.checks.len()),
-            ),
+            Ok(ci) => {
+                let (status, detail) = ci_report_status(&ci);
+                push("ci", status, detail);
+            }
             Err(err) => push("ci", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -2361,6 +2380,34 @@ mod tests {
         let (status, detail) = env_step_status(&env);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("proc=unknown"));
+    }
+
+    #[test]
+    fn ci_report_status_surfaces_failing_check_detail() {
+        let report = fozzy::CiReport {
+            schema_version: "fozzy.ci_report.v1".to_string(),
+            ok: false,
+            checks: vec![
+                fozzy::CiCheck {
+                    name: "trace_verify".to_string(),
+                    ok: true,
+                    detail: Some(
+                        "checksum_present=true checksum_valid=true warnings=<none>".to_string(),
+                    ),
+                },
+                fozzy::CiCheck {
+                    name: "strict_warning_policy".to_string(),
+                    ok: false,
+                    detail: Some(
+                        "strict=true warnings=[\"detected 1 leaked allocation(s)\"]".to_string(),
+                    ),
+                },
+            ],
+        };
+        let (status, detail) = ci_report_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("checks=2"));
+        assert!(detail.contains("strict_warning_policy: strict=true warnings="));
     }
 
     #[test]
