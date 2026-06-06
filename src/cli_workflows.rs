@@ -39,23 +39,47 @@ fn summarize_profile_top(value: &serde_json::Value) -> String {
 }
 
 fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
-    let warning_count = value
+    let warnings = value
         .get("warnings")
         .and_then(|v| v.as_array())
-        .map(|v| v.len())
-        .unwrap_or(0);
-    let empty_count = value
+        .cloned()
+        .unwrap_or_default();
+    let empty_domains = value
         .get("emptyDomains")
         .and_then(|v| v.as_array())
-        .map(|v| v.len())
-        .unwrap_or(0);
+        .cloned()
+        .unwrap_or_default();
+    let warning_count = warnings.len();
+    let empty_count = empty_domains.len();
+    let invalid_warnings = warnings
+        .iter()
+        .filter(|warning| warning.as_str().is_none_or(|s| s.trim().is_empty()))
+        .count();
+    let invalid_empty_domains = empty_domains
+        .iter()
+        .filter(|item| {
+            item.get("domain")
+                .and_then(|v| v.as_str())
+                .is_none_or(|s| s.trim().is_empty())
+                || item.get("reason")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|s| s.trim().is_empty())
+                || item.get("empty").and_then(|v| v.as_bool()) != Some(true)
+        })
+        .count();
     (
-        if warning_count > 0 || empty_count > 0 {
+        if warning_count > 0 || empty_count > 0 || invalid_warnings > 0 || invalid_empty_domains > 0
+        {
             FullStepStatus::Failed
         } else {
             FullStepStatus::Passed
         },
-        summarize_profile_top(value),
+        format!(
+            "{} invalid_warnings={} invalid_empty_domains={}",
+            summarize_profile_top(value),
+            invalid_warnings,
+            invalid_empty_domains
+        ),
     )
 }
 
@@ -2616,11 +2640,12 @@ mod tests {
     fn profile_top_status_rejects_empty_domains() {
         let value = serde_json::json!({
             "warnings": [],
-            "emptyDomains": [{"domain": "heap", "reason": "no heap samples in trace"}]
+            "emptyDomains": [{"domain": "heap", "empty": true, "reason": "no heap samples in trace"}]
         });
         let (status, detail) = profile_top_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("heap:no heap samples in trace"));
+        assert!(detail.contains("invalid_empty_domains=0"));
     }
 
     #[test]
@@ -2632,6 +2657,29 @@ mod tests {
         let (status, detail) = profile_top_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("warnings=cpu domain uses host-time sampling"));
+        assert!(detail.contains("invalid_warnings=0"));
+    }
+
+    #[test]
+    fn profile_top_status_rejects_invalid_empty_domain_rows() {
+        let value = serde_json::json!({
+            "warnings": [],
+            "emptyDomains": [{"domain": "heap", "reason": "no heap samples in trace"}]
+        });
+        let (status, detail) = profile_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_empty_domains=1"));
+    }
+
+    #[test]
+    fn profile_top_status_rejects_invalid_warning_rows() {
+        let value = serde_json::json!({
+            "warnings": ["", null],
+            "emptyDomains": []
+        });
+        let (status, detail) = profile_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_warnings=2"));
     }
 
     #[test]
