@@ -98,6 +98,52 @@ fn validate_leaks_against_summary(
     Ok(())
 }
 
+fn validate_graph_against_summary(
+    summary: &MemorySummary,
+    graph: &MemoryGraph,
+    source: &Path,
+) -> FozzyResult<()> {
+    let alloc_nodes = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "alloc")
+        .count() as u64;
+    let free_nodes = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "free")
+        .count() as u64;
+    let allocates_edges = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == "allocates")
+        .count() as u64;
+    let freed_by_edges = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == "freed_by")
+        .count() as u64;
+    let successful_allocs = summary.free_count.saturating_add(summary.leaked_allocs);
+    if alloc_nodes != successful_allocs
+        || free_nodes != summary.free_count
+        || allocates_edges != successful_allocs
+        || freed_by_edges != summary.free_count
+    {
+        return Err(FozzyError::InvalidArgument(format!(
+            "memory graph sidecar {} does not match summary: summary successful_allocs={} free_count={} leaked_allocs={}, graph alloc_nodes={} free_nodes={} allocates_edges={} freed_by_edges={}",
+            source.display(),
+            successful_allocs,
+            summary.free_count,
+            summary.leaked_allocs,
+            alloc_nodes,
+            free_nodes,
+            allocates_edges,
+            freed_by_edges
+        )));
+    }
+    Ok(())
+}
+
 pub fn memory_command(config: &Config, command: &MemoryCommand) -> FozzyResult<serde_json::Value> {
     match command {
         MemoryCommand::Graph { run, out } => {
@@ -189,10 +235,13 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
             validate_leaks_against_summary(&summary, &leaks, &leaks_path)?;
         }
         let graph: MemoryGraph = if graph_path.exists() {
-            serde_json::from_slice(&std::fs::read(graph_path)?)?
+            serde_json::from_slice(&std::fs::read(&graph_path)?)?
         } else {
             MemoryGraph::default()
         };
+        if graph_path.exists() {
+            validate_graph_against_summary(&summary, &graph, &graph_path)?;
+        }
         return Ok(MemoryBundle {
             summary,
             leaks,
@@ -222,10 +271,13 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
                 validate_leaks_against_summary(&summary, &leaks, &leaks_path)?;
             }
             let graph: MemoryGraph = if graph_path.exists() {
-                serde_json::from_slice(&std::fs::read(graph_path)?)?
+                serde_json::from_slice(&std::fs::read(&graph_path)?)?
             } else {
                 MemoryGraph::default()
             };
+            if graph_path.exists() {
+                validate_graph_against_summary(&summary, &graph, &graph_path)?;
+            }
             return Ok(MemoryBundle {
                 summary,
                 leaks,
@@ -530,7 +582,9 @@ fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
         Vec::new()
     };
     let graph = if let Some(graph_path) = trusted_graph {
-        serde_json::from_slice(&std::fs::read(graph_path)?)?
+        let graph: MemoryGraph = serde_json::from_slice(&std::fs::read(&graph_path)?)?;
+        validate_graph_against_summary(&summary, &graph, &graph_path)?;
+        graph
     } else {
         MemoryGraph::default()
     };
@@ -758,7 +812,15 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -779,7 +841,15 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 tests: None,
-                memory: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
                 findings: Vec::new(),
             },
             checksum: None,
@@ -794,20 +864,31 @@ mod tests {
         std::fs::write(
             detached.join("memory.graph.json"),
             serde_json::to_vec_pretty(&MemoryGraph {
-                nodes: vec![MemoryGraphNode {
-                    id: "alloc:a".to_string(),
-                    kind: "alloc".to_string(),
-                    label: "a".to_string(),
+                nodes: vec![
+                    MemoryGraphNode {
+                        id: "alloc:a".to_string(),
+                        kind: "alloc".to_string(),
+                        label: "a".to_string(),
+                    },
+                    MemoryGraphNode {
+                        id: "callsite:exact".to_string(),
+                        kind: "callsite".to_string(),
+                        label: "exact".to_string(),
+                    },
+                ],
+                edges: vec![crate::MemoryGraphEdge {
+                    from: "callsite:exact".to_string(),
+                    to: "alloc:a".to_string(),
+                    kind: "allocates".to_string(),
                 }],
-                edges: Vec::new(),
             })
             .expect("graph bytes"),
         )
         .expect("write graph");
 
         let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
-        assert_eq!(bundle.graph.nodes.len(), 1);
-        assert_eq!(bundle.graph.nodes[0].id, "alloc:a");
+        assert_eq!(bundle.graph.nodes.len(), 2);
+        assert!(bundle.graph.nodes.iter().any(|node| node.id == "alloc:a"));
     }
 
     #[test]
@@ -836,7 +917,15 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -857,7 +946,15 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 tests: None,
-                memory: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
                 findings: Vec::new(),
             },
             checksum: None,
@@ -906,7 +1003,15 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -927,7 +1032,15 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 tests: None,
-                memory: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
                 findings: Vec::new(),
             },
             checksum: None,
@@ -976,7 +1089,15 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -997,7 +1118,15 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 tests: None,
-                memory: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
                 findings: Vec::new(),
             },
             checksum: None,
@@ -1044,7 +1173,116 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
+                leaks: Vec::new(),
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: Some(report_path.to_string_lossy().to_string()),
+                    artifacts_dir: Some(root.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&trace_path).expect("write trace");
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&trace.summary).expect("report bytes"),
+        )
+        .expect("write report");
+        crate::write_run_manifest(&trace.summary, &root).expect("write manifest");
+        std::fs::write(
+            root.join("memory.graph.json"),
+            serde_json::to_vec_pretty(&MemoryGraph {
+                nodes: vec![
+                    MemoryGraphNode {
+                        id: "alloc:exact".to_string(),
+                        kind: "alloc".to_string(),
+                        label: "exact".to_string(),
+                    },
+                    MemoryGraphNode {
+                        id: "callsite:exact".to_string(),
+                        kind: "callsite".to_string(),
+                        label: "exact".to_string(),
+                    },
+                ],
+                edges: vec![crate::MemoryGraphEdge {
+                    from: "callsite:exact".to_string(),
+                    to: "alloc:exact".to_string(),
+                    kind: "allocates".to_string(),
+                }],
+            })
+            .expect("graph bytes"),
+        )
+        .expect("write graph");
+
+        let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
+        assert_eq!(bundle.graph.nodes.len(), 2);
+        assert!(bundle.graph.nodes.iter().any(|node| node.id == "alloc:exact"));
+    }
+
+    #[test]
+    fn direct_trace_rejects_mismatched_trusted_memory_graph_sidecar() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-mismatched-sibling-graph-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let report_path = root.join("report.json");
+
+        let trace = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 1,
+                    peak_bytes: 32,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -1081,9 +1319,9 @@ mod tests {
             root.join("memory.graph.json"),
             serde_json::to_vec_pretty(&MemoryGraph {
                 nodes: vec![MemoryGraphNode {
-                    id: "alloc:exact".to_string(),
+                    id: "alloc:1".to_string(),
                     kind: "alloc".to_string(),
-                    label: "exact".to_string(),
+                    label: "1".to_string(),
                 }],
                 edges: Vec::new(),
             })
@@ -1091,9 +1329,12 @@ mod tests {
         )
         .expect("write graph");
 
-        let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
-        assert_eq!(bundle.graph.nodes.len(), 1);
-        assert_eq!(bundle.graph.nodes[0].id, "alloc:exact");
+        let err = load_from_trace(&trace_path, &trace_path.to_string_lossy())
+            .expect_err("must reject stale graph");
+        assert!(
+            err.to_string().contains("does not match summary"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1283,7 +1524,15 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -1304,7 +1553,15 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 tests: None,
-                memory: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
                 findings: Vec::new(),
             },
             checksum: None,
@@ -1344,7 +1601,15 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -1406,7 +1671,15 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -1427,7 +1700,15 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 tests: None,
-                memory: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
                 findings: Vec::new(),
             },
             checksum: None,
@@ -1467,7 +1748,15 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -1727,6 +2016,98 @@ mod tests {
     }
 
     #[test]
+    fn memory_run_id_rejects_mismatched_memory_graph_sidecar() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-runid-graph-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let external_trace = root.join("external.trace.fozzy");
+        let trace = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 1,
+                    peak_bytes: 32,
+                    ..MemorySummary::default()
+                },
+                leaks: Vec::new(),
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(external_trace.to_string_lossy().to_string()),
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 1,
+                    peak_bytes: 32,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&external_trace).expect("write trace");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&trace.summary).expect("report json"),
+        )
+        .expect("write report");
+        crate::write_run_manifest(&trace.summary, &run_dir).expect("write manifest");
+        std::fs::write(
+            run_dir.join("memory.graph.json"),
+            serde_json::to_vec_pretty(&MemoryGraph {
+                nodes: vec![MemoryGraphNode {
+                    id: "alloc:1".to_string(),
+                    kind: "alloc".to_string(),
+                    label: "1".to_string(),
+                }],
+                edges: Vec::new(),
+            })
+            .expect("graph json"),
+        )
+        .expect("write graph");
+
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            ..Config::default()
+        };
+        let err = load_memory_bundle(&cfg, "r1").expect_err("must reject stale graph sidecar");
+        assert!(
+            err.to_string().contains("does not match summary"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn memory_run_id_rejects_mismatched_memory_leaks_sidecar() {
         let root = std::env::temp_dir().join(format!(
             "fozzy-memory-runid-mismatch-{}",
@@ -1869,7 +2250,15 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 tests: None,
-                memory: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
                 findings: Vec::new(),
             },
             checksum: None,
@@ -1899,9 +2288,9 @@ mod tests {
                 tests_passed: None,
                 tests_failed: None,
                 tests_skipped: None,
-                memory_leaked_bytes: None,
-                memory_leaked_allocs: None,
-                memory_peak_bytes: None,
+                memory_leaked_bytes: Some(16),
+                memory_leaked_allocs: Some(1),
+                memory_peak_bytes: Some(16),
                 profile_capabilities: Vec::new(),
                 profile_artifacts: std::collections::BTreeMap::new(),
                 profile_schema_versions: std::collections::BTreeMap::new(),
@@ -2161,7 +2550,15 @@ mod tests {
             explore: None,
             memory: Some(crate::MemoryTrace {
                 options: MemoryOptions::default(),
-                summary: MemorySummary::default(),
+                summary: MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                },
                 leaks: Vec::new(),
                 graph: MemoryGraph::default(),
             }),
@@ -2182,7 +2579,15 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 tests: None,
-                memory: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
                 findings: Vec::new(),
             },
             checksum: None,
@@ -2207,9 +2612,9 @@ mod tests {
                 tests_passed: None,
                 tests_failed: None,
                 tests_skipped: None,
-                memory_leaked_bytes: None,
-                memory_leaked_allocs: None,
-                memory_peak_bytes: None,
+                memory_leaked_bytes: Some(16),
+                memory_leaked_allocs: Some(1),
+                memory_peak_bytes: Some(16),
                 profile_capabilities: Vec::new(),
                 profile_artifacts: std::collections::BTreeMap::new(),
                 profile_schema_versions: std::collections::BTreeMap::new(),
@@ -2220,20 +2625,37 @@ mod tests {
         std::fs::write(
             artifacts_dir.join("memory.graph.json"),
             serde_json::to_vec_pretty(&MemoryGraph {
-                nodes: vec![MemoryGraphNode {
-                    id: "alloc:manifest-only".to_string(),
-                    kind: "alloc".to_string(),
-                    label: "manifest-only".to_string(),
+                nodes: vec![
+                    MemoryGraphNode {
+                        id: "alloc:manifest-only".to_string(),
+                        kind: "alloc".to_string(),
+                        label: "manifest-only".to_string(),
+                    },
+                    MemoryGraphNode {
+                        id: "callsite:manifest-only".to_string(),
+                        kind: "callsite".to_string(),
+                        label: "manifest-only".to_string(),
+                    },
+                ],
+                edges: vec![crate::MemoryGraphEdge {
+                    from: "callsite:manifest-only".to_string(),
+                    to: "alloc:manifest-only".to_string(),
+                    kind: "allocates".to_string(),
                 }],
-                edges: Vec::new(),
             })
             .expect("graph bytes"),
         )
         .expect("write graph");
 
         let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
-        assert_eq!(bundle.graph.nodes.len(), 1);
-        assert_eq!(bundle.graph.nodes[0].id, "alloc:manifest-only");
+        assert_eq!(bundle.graph.nodes.len(), 2);
+        assert!(
+            bundle
+                .graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "alloc:manifest-only")
+        );
     }
 
     #[test]
@@ -2825,7 +3247,15 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 tests: None,
-                memory: None,
+                memory: Some(MemorySummary {
+                    alloc_count: 1,
+                    free_count: 0,
+                    leaked_allocs: 1,
+                    leaked_bytes: 16,
+                    peak_bytes: 16,
+                    in_use_bytes: 16,
+                    ..MemorySummary::default()
+                }),
                 findings: Vec::new(),
             },
             checksum: None,
