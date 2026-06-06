@@ -382,7 +382,13 @@ fn list_query_paths(root: &serde_json::Value) -> Vec<String> {
     let mut out = std::collections::BTreeSet::new();
     visit(root, ".".to_string(), &mut out);
     out.into_iter()
-        .map(|p| p.trim_start_matches('.').to_string())
+        .map(|p| {
+            if p == "." {
+                ".".to_string()
+            } else {
+                p.trim_start_matches('.').to_string()
+            }
+        })
         .collect()
 }
 
@@ -643,6 +649,7 @@ mod tests {
             "findings": [{"title": "oops"}]
         });
         let paths = list_query_paths(&value);
+        assert!(paths.contains(&".".to_string()));
         assert!(paths.contains(&"identity.runId".to_string()));
         assert!(paths.contains(&"findings[0].title".to_string()));
     }

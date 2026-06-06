@@ -402,18 +402,23 @@ fn report_query_status(value: &serde_json::Value) -> (FullStepStatus, String) {
 }
 
 fn report_query_paths_status(value: &serde_json::Value) -> (FullStepStatus, String) {
-    let count = value
+    let paths = value
         .get("paths")
         .and_then(|v| v.as_array())
-        .map(|v| v.len())
-        .unwrap_or(0);
+        .cloned()
+        .unwrap_or_default();
+    let count = paths.len();
+    let invalid = paths
+        .iter()
+        .filter(|path| path.as_str().is_none_or(|s| s.trim().is_empty()))
+        .count();
     (
-        if count > 0 {
+        if count > 0 && invalid == 0 {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
-        format!("paths={count}"),
+        format!("paths={count} invalid={invalid}"),
     )
 }
 
@@ -2654,6 +2659,17 @@ mod tests {
         let (status, detail) = report_query_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains(".status=fail"));
+    }
+
+    #[test]
+    fn report_query_paths_status_rejects_invalid_entries() {
+        let value = serde_json::json!({
+            "paths": ["status", "", null]
+        });
+        let (status, detail) = report_query_paths_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("paths=3"));
+        assert!(detail.contains("invalid=2"));
     }
 
     #[test]
