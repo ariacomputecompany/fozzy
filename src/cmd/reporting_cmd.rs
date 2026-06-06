@@ -261,23 +261,16 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<RunSummary> {
 
     let artifacts_dir = crate::resolve_artifacts_dir(config, run)?;
     let report_json = artifacts_dir.join("report.json");
-    let manifest_json = artifacts_dir.join("manifest.json");
     if let Some(summary) =
         crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, run)?
     {
         return Ok(summary);
     }
 
-    let trace_path = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)?;
-    if let Some(trace_path) = trace_path {
-        if manifest_json.exists() {
-            let trace = TraceFile::read_json(&trace_path)?;
-            return Ok(trace.summary);
-        }
-        return Err(FozzyError::Report(format!(
-            "no coherent report/manifest pair found for {run:?} (artifacts dir: {})",
-            artifacts_dir.display()
-        )));
+    if let Some(summary) =
+        crate::load_checked_manifest_trace_summary_from_artifacts_dir(&artifacts_dir, run)?
+    {
+        return Ok(summary);
     }
 
     Err(FozzyError::Report(format!(
@@ -1068,8 +1061,111 @@ mod tests {
 
         let err = load_summary(&cfg, "r1").expect_err("must reject trace-only wrapper");
         assert!(
+            err.to_string().contains("no coherent report/manifest pair found")
+                || err
+                    .to_string()
+                    .contains("missing required files: report.json, manifest.json")
+                || err.to_string().contains("no report found")
+        );
+    }
+
+    #[test]
+    fn load_summary_rejects_incoherent_manifest_only_run_wrapper() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-report-manifest-only-{}", Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let trace_path = run_dir.join("trace.fozzy");
+
+        let trace = TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: None,
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&trace_path).expect("write trace");
+        let manifest = crate::RunManifest {
+            schema_version: "fozzy.run_manifest.v1".to_string(),
+            run_id: "other".to_string(),
+            mode: RunMode::Run,
+            status: ExitStatus::Pass,
+            seed: 1,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:00Z".to_string(),
+            duration_ms: 0,
+            duration_ns: 0,
+            trace_path: Some(trace_path.to_string_lossy().to_string()),
+            report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+            artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+            findings_count: 0,
+            tests_passed: None,
+            tests_failed: None,
+            tests_skipped: None,
+            memory_leaked_bytes: None,
+            memory_leaked_allocs: None,
+            memory_peak_bytes: None,
+            profile_capabilities: Vec::new(),
+            profile_artifacts: std::collections::BTreeMap::new(),
+            profile_schema_versions: std::collections::BTreeMap::new(),
+        };
+        std::fs::write(
+            run_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err = load_summary(&cfg, "r1").expect_err("must reject incoherent manifest-only wrapper");
+        assert!(
             err.to_string()
-                .contains("no coherent report/manifest pair found")
+                .contains("manifest/trace identity mismatch")
         );
     }
 }

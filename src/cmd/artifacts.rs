@@ -928,6 +928,70 @@ pub(crate) fn load_checked_report_summary_from_artifacts_dir(
     Ok(Some(serde_json::from_slice(&std::fs::read(report_path)?)?))
 }
 
+pub(crate) fn load_checked_manifest_trace_summary_from_artifacts_dir(
+    artifacts_dir: &Path,
+    run: &str,
+) -> FozzyResult<Option<RunSummary>> {
+    let manifest_path = artifacts_dir.join("manifest.json");
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+    let Some(trace_path) = resolve_trace_path_from_artifacts_dir(artifacts_dir)? else {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "invalid manifest for {run:?}: missing declared trace artifact"
+        )));
+    };
+    let manifest: RunManifest =
+        serde_json::from_slice(&std::fs::read(&manifest_path)?).map_err(|e| {
+            crate::FozzyError::InvalidArgument(format!(
+                "invalid manifest for {run:?}: {} ({e})",
+                manifest_path.display()
+            ))
+        })?;
+    if manifest.schema_version != "fozzy.run_manifest.v1" {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "invalid manifest for {run:?}: unsupported schemaVersion {}",
+            manifest.schema_version
+        )));
+    }
+    let trace: TraceFile = serde_json::from_slice(&std::fs::read(&trace_path)?).map_err(|e| {
+        crate::FozzyError::InvalidArgument(format!(
+            "invalid trace for {run:?}: {} ({e})",
+            trace_path.display()
+        ))
+    })?;
+    let expected_trace = trace_path.to_string_lossy().to_string();
+    let expected_artifacts_dir = artifacts_dir.to_string_lossy().to_string();
+    if manifest.trace_path.as_deref() != Some(expected_trace.as_str())
+        || trace.summary.identity.trace_path.as_deref() != Some(expected_trace.as_str())
+    {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "invalid manifest for {run:?}: declared trace artifact mismatch"
+        )));
+    }
+    if manifest.mode == crate::RunMode::Replay {
+        if trace.summary.status != manifest.status || trace.summary.identity.seed != manifest.seed {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid manifest for {run:?}: replay source trace mismatch"
+            )));
+        }
+        return Ok(Some(trace.summary));
+    }
+    if trace.summary.identity.run_id != manifest.run_id
+        || trace.summary.mode != manifest.mode
+        || trace.summary.status != manifest.status
+        || trace.summary.identity.seed != manifest.seed
+        || trace.summary.identity.report_path != manifest.report_path
+        || trace.summary.identity.artifacts_dir.as_deref() != Some(expected_artifacts_dir.as_str())
+        || manifest.artifacts_dir.as_deref() != Some(expected_artifacts_dir.as_str())
+    {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "invalid manifest for {run:?}: manifest/trace identity mismatch"
+        )));
+    }
+    Ok(Some(trace.summary))
+}
+
 fn trace_identity_key(path: &Path) -> FozzyResult<PathBuf> {
     std::fs::canonicalize(path).map_err(Into::into)
 }
