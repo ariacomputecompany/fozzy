@@ -438,7 +438,7 @@ fn shrink_trace_inner(
     let (started_at, finished_at, duration_ms, duration_ns) = trace_timing_for_run(&best_run);
     let summary = build_run_summary(
         best_run.status,
-        RunMode::Run,
+        RunMode::Replay,
         run_id,
         seed,
         Some(out_path.to_string_lossy().to_string()),
@@ -454,7 +454,7 @@ fn shrink_trace_inner(
     );
 
     let mut trace_out = TraceFile::new(
-        RunMode::Run,
+        RunMode::Replay,
         None,
         Some(out_scenario),
         best_run.decisions.decisions.clone(),
@@ -652,7 +652,10 @@ mod tests {
         .expect("shrink");
 
         assert_eq!(result.result.summary.memory, None);
+        assert_eq!(result.result.summary.mode, RunMode::Replay);
         let shrunk = TraceFile::read_json(&shrunk_path).expect("read shrunk trace");
         assert!(shrunk.memory.is_none());
+        assert_eq!(shrunk.summary.mode, RunMode::Replay);
+        assert_eq!(shrunk.mode, RunMode::Replay);
     }
 }
