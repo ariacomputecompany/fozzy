@@ -42,6 +42,27 @@ fn known_profile_domain(domain: &str) -> bool {
     matches!(domain, "cpu" | "heap" | "latency" | "io" | "sched")
 }
 
+fn known_profile_time_domain(time_domain: &str) -> bool {
+    matches!(time_domain, "host_monotonic_time" | "virtual_time")
+}
+
+fn known_profile_metric(domain: &str, metric: &str) -> bool {
+    match domain {
+        "cpu" => metric == "cpu_time_ms",
+        "heap" => {
+            matches!(metric, "alloc_bytes" | "in_use_bytes")
+                || metric.starts_with("callsite:")
+                    && (metric.ends_with(".alloc_bytes")
+                        || metric.ends_with(".in_use_bytes")
+                        || metric.ends_with(".alloc_rate_per_sec"))
+        }
+        "latency" => matches!(metric, "p95_latency_ms" | "p99_latency_ms" | "max_latency_ms"),
+        "io" => metric == "io_ops",
+        "sched" => metric == "sched_ops",
+        _ => false,
+    }
+}
+
 fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let warnings = value
         .get("warnings")
@@ -175,6 +196,8 @@ fn profile_diff_status(
             let is_regression = row.get("isRegression").and_then(|v| v.as_bool());
             let is_significant = row.get("isSignificant").and_then(|v| v.as_bool());
             let domain = row.get("domain").and_then(|v| v.as_str()).map(str::trim);
+            let metric = row.get("metric").and_then(|v| v.as_str()).map(str::trim);
+            let time_domain = row.get("timeDomain").and_then(|v| v.as_str()).map(str::trim);
             let classification_invalid = !matches!(
                 classification,
                 Some("regression") | Some("improvement") | Some("stable")
@@ -187,14 +210,9 @@ fn profile_diff_status(
                 _ => true,
             };
             domain.is_none_or(|s| s.is_empty() || !known_profile_domain(s))
-                || row
-                    .get("metric")
-                    .and_then(|v| v.as_str())
-                    .is_none_or(|s| s.trim().is_empty())
-                || row
-                    .get("timeDomain")
-                    .and_then(|v| v.as_str())
-                    .is_none_or(|s| s.trim().is_empty())
+                || metric.is_none_or(|s| s.is_empty())
+                || time_domain.is_none_or(|s| s.is_empty() || !known_profile_time_domain(s))
+                || !matches!((domain, metric), (Some(domain), Some(metric)) if known_profile_metric(domain, metric))
                 || row
                     .get("classification")
                     .and_then(|v| v.as_str())
@@ -3195,7 +3213,9 @@ mod tests {
                 "topRegressionMetric": "cpu_time_ms"
             },
             "regressions": [{
+                "domain": "cpu",
                 "metric": "cpu_time_ms",
+                "timeDomain": "host_monotonic_time",
                 "classification": "regression",
                 "isRegression": true,
                 "isSignificant": false
@@ -3219,7 +3239,7 @@ mod tests {
             "regressions": [{
                 "domain": "heap",
                 "metric": "alloc_bytes",
-                "timeDomain": "memory",
+                "timeDomain": "virtual_time",
                 "classification": "improvement",
                 "isRegression": false,
                 "isSignificant": false
@@ -3260,7 +3280,9 @@ mod tests {
                 "topRegressionMetric": null
             },
             "regressions": [{
+                "domain": "cpu",
                 "metric": "cpu_time_ms",
+                "timeDomain": "host_monotonic_time",
                 "classification": "regression",
                 "isRegression": true,
                 "isSignificant": true
@@ -3285,7 +3307,7 @@ mod tests {
                 {
                     "domain": "cpu",
                     "metric": "cpu_time_ms",
-                    "timeDomain": "cpu",
+                    "timeDomain": "host_monotonic_time",
                     "classification": "regression",
                     "isRegression": true,
                     "isSignificant": false
@@ -3293,7 +3315,7 @@ mod tests {
                 {
                     "domain": "cpu",
                     "metric": "cpu_time_ms",
-                    "timeDomain": "cpu",
+                    "timeDomain": "host_monotonic_time",
                     "classification": "regression",
                     "isRegression": true,
                     "isSignificant": false
@@ -3342,7 +3364,7 @@ mod tests {
             "regressions": [{
                 "domain": "mystery",
                 "metric": "cpu_time_ms",
-                "timeDomain": "cpu",
+                "timeDomain": "host_monotonic_time",
                 "classification": "stable",
                 "isRegression": false,
                 "isSignificant": false
@@ -3352,6 +3374,54 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_rows=1"));
         assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_unknown_time_domains() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "domain": "cpu",
+                "metric": "cpu_time_ms",
+                "timeDomain": "cpu",
+                "classification": "stable",
+                "isRegression": false,
+                "isSignificant": false
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_rows=1"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_unknown_metric_for_domain() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "domain": "io",
+                "metric": "cpu_time_ms",
+                "timeDomain": "host_monotonic_time",
+                "classification": "stable",
+                "isRegression": false,
+                "isSignificant": false
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_rows=1"));
     }
 
     #[test]
@@ -3367,7 +3437,7 @@ mod tests {
             "regressions": [{
                 "domain": "cpu",
                 "metric": "cpu_time_ms",
-                "timeDomain": "cpu",
+                "timeDomain": "host_monotonic_time",
                 "classification": "improvement",
                 "isRegression": true,
                 "isSignificant": false
