@@ -854,6 +854,51 @@ fn profile_commands_support_run_id_with_profile_artifacts_only() {
 }
 
 #[test]
+fn profile_commands_reject_profile_artifacts_with_mismatched_run_identity() {
+    let ws = temp_workspace("profile-mismatched-artifact-runid");
+    let base_dir = ws.join(".fozzy");
+    let run_id = "run-profile-mismatch";
+    let run_dir = base_dir.join("runs").join(run_id);
+    std::fs::create_dir_all(&run_dir).expect("run dir");
+
+    let mut wrapper_trace = sample_trace();
+    wrapper_trace.summary.identity.run_id = run_id.to_string();
+    wrapper_trace.summary.identity.report_path =
+        Some(run_dir.join("report.json").to_string_lossy().to_string());
+    wrapper_trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
+    std::fs::write(
+        run_dir.join("report.json"),
+        serde_json::to_vec_pretty(&wrapper_trace.summary).expect("summary bytes"),
+    )
+    .expect("write report");
+    crate::write_run_manifest(&wrapper_trace.summary, &run_dir).expect("write manifest");
+
+    let mut foreign_trace = sample_trace();
+    foreign_trace.summary.identity.run_id = "foreign-run".to_string();
+    foreign_trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
+    write_profile_artifacts_from_trace(&foreign_trace, &run_dir).expect("foreign profile artifacts");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let cmd = ProfileCommand::Top {
+        run: run_id.to_string(),
+        cpu: false,
+        heap: true,
+        latency: false,
+        io: false,
+        sched: false,
+        limit: 5,
+    };
+    let err = profile_command(&cfg, &cmd, true).expect_err("must reject mismatched profile artifacts");
+    assert!(
+        err.to_string().contains("belong to runId=foreign-run"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn profile_commands_support_manifest_only_trace_wrapper_without_report() {
     let ws = temp_workspace("manifest-only-trace-wrapper");
     let base_dir = ws.join(".fozzy");
@@ -889,6 +934,61 @@ fn profile_commands_support_manifest_only_trace_wrapper_without_report() {
     assert!(
         run_dir.join("profile.metrics.json").exists(),
         "manifest-backed trace wrapper should lazily emit profile artifacts"
+    );
+}
+
+#[test]
+fn explicit_trace_rejects_exact_sibling_profile_artifacts_with_mismatched_run_identity() {
+    let ws = temp_workspace("profile-explicit-sibling-mismatch");
+    let base_dir = ws.join(".fozzy");
+    std::fs::create_dir_all(&ws).expect("workspace dir");
+
+    let mut explicit_trace = sample_trace();
+    let trace_path = ws.join("trace.fozzy");
+    explicit_trace.summary.identity.run_id = "explicit-run".to_string();
+    explicit_trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    explicit_trace.summary.identity.report_path =
+        Some(ws.join("report.json").to_string_lossy().to_string());
+    explicit_trace.summary.identity.artifacts_dir = Some(ws.to_string_lossy().to_string());
+    explicit_trace.write_json(&trace_path).expect("write explicit trace");
+    std::fs::write(
+        ws.join("report.json"),
+        serde_json::to_vec_pretty(&explicit_trace.summary).expect("report bytes"),
+    )
+    .expect("write report");
+    crate::write_run_manifest(&explicit_trace.summary, &ws).expect("write manifest");
+
+    write_profile_artifacts_from_trace_with_source(&explicit_trace, Some(&trace_path), &ws)
+        .expect("profile artifacts with source");
+    let metrics_path = ws.join("profile.metrics.json");
+    let mut metrics: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&metrics_path).expect("read metrics"))
+            .expect("metrics json");
+    metrics["runId"] = serde_json::Value::String("foreign-run".to_string());
+    std::fs::write(
+        &metrics_path,
+        serde_json::to_vec_pretty(&metrics).expect("metrics bytes"),
+    )
+    .expect("write mismatched metrics");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let cmd = ProfileCommand::Top {
+        run: trace_path.to_string_lossy().to_string(),
+        cpu: false,
+        heap: true,
+        latency: false,
+        io: false,
+        sched: false,
+        limit: 5,
+    };
+    let err =
+        profile_command(&cfg, &cmd, true).expect_err("must reject mismatched explicit sibling artifacts");
+    assert!(
+        err.to_string().contains("belong to runId=foreign-run"),
+        "unexpected error: {err}"
     );
 }
 

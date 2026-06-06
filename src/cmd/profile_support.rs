@@ -6,6 +6,13 @@ pub(super) fn load_profile_bundle(
     spec: ProfileLoadSpec,
 ) -> FozzyResult<ProfileBundle> {
     let (artifacts_dir, trace_path) = resolve_profile_artifacts(config, selector)?;
+    let expected_identity = if let Some(trace_path) = trace_path.as_ref() {
+        let trace = TraceFile::read_json(trace_path)?;
+        Some((trace.summary.identity.run_id, trace.summary.identity.seed))
+    } else {
+        crate::load_checked_run_summary_from_artifacts_dir(&artifacts_dir, selector)?
+            .map(|summary| (summary.identity.run_id, summary.identity.seed))
+    };
     if let Some(trace_path) = trace_path {
         if profile_artifacts_stale(&artifacts_dir, &trace_path)? {
             let trace = TraceFile::read_json(&trace_path)?;
@@ -63,7 +70,7 @@ pub(super) fn load_profile_bundle(
         None
     };
 
-    Ok(ProfileBundle {
+    let bundle = ProfileBundle {
         artifacts_dir,
         timeline,
         cpu,
@@ -71,7 +78,11 @@ pub(super) fn load_profile_bundle(
         latency,
         metrics,
         symbols,
-    })
+    };
+    if let Some((expected_run_id, expected_seed)) = expected_identity {
+        validate_profile_bundle_identity(&bundle, &expected_run_id, expected_seed)?;
+    }
+    Ok(bundle)
 }
 
 pub(super) fn parse_selector_group(value: &str) -> Vec<String> {
@@ -170,6 +181,76 @@ fn metric_stats(values: &[f64]) -> MetricStats {
         mean,
         std_dev: variance.sqrt(),
     }
+}
+
+fn validate_profile_bundle_identity(
+    bundle: &ProfileBundle,
+    expected_run_id: &str,
+    expected_seed: u64,
+) -> FozzyResult<()> {
+    if bundle.metrics.run_id != expected_run_id {
+        return Err(FozzyError::InvalidArgument(format!(
+            "profile metrics in {} belong to runId={}, expected {}",
+            bundle.artifacts_dir.join("profile.metrics.json").display(),
+            bundle.metrics.run_id,
+            expected_run_id
+        )));
+    }
+    if let Some(timeline) = bundle.timeline.as_ref() {
+        for event in timeline {
+            if event.run_id != expected_run_id || event.seed != expected_seed {
+                return Err(FozzyError::InvalidArgument(format!(
+                    "profile timeline in {} contains event identity runId={} seed={}, expected runId={} seed={}",
+                    bundle.artifacts_dir.join("profile.timeline.json").display(),
+                    event.run_id,
+                    event.seed,
+                    expected_run_id,
+                    expected_seed
+                )));
+            }
+        }
+    }
+    if let Some(cpu) = bundle.cpu.as_ref()
+        && cpu.run_id != expected_run_id
+    {
+        return Err(FozzyError::InvalidArgument(format!(
+            "profile cpu artifact in {} belongs to runId={}, expected {}",
+            bundle.artifacts_dir.join("profile.cpu.json").display(),
+            cpu.run_id,
+            expected_run_id
+        )));
+    }
+    if let Some(heap) = bundle.heap.as_ref()
+        && heap.run_id != expected_run_id
+    {
+        return Err(FozzyError::InvalidArgument(format!(
+            "profile heap artifact in {} belongs to runId={}, expected {}",
+            bundle.artifacts_dir.join("profile.heap.json").display(),
+            heap.run_id,
+            expected_run_id
+        )));
+    }
+    if let Some(latency) = bundle.latency.as_ref()
+        && latency.run_id != expected_run_id
+    {
+        return Err(FozzyError::InvalidArgument(format!(
+            "profile latency artifact in {} belongs to runId={}, expected {}",
+            bundle.artifacts_dir.join("profile.latency.json").display(),
+            latency.run_id,
+            expected_run_id
+        )));
+    }
+    if let Some(symbols) = bundle.symbols.as_ref()
+        && symbols.run_id != expected_run_id
+    {
+        return Err(FozzyError::InvalidArgument(format!(
+            "profile symbols artifact in {} belongs to runId={}, expected {}",
+            bundle.artifacts_dir.join("symbols.json").display(),
+            symbols.run_id,
+            expected_run_id
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn top_by_tag(
