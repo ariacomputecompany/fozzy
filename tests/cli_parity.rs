@@ -2093,7 +2093,7 @@ fn full_allow_expected_failures_controls_shrink_status_for_fail_class_runs() {
     let no_allow_doc = parse_json_stdout(&no_allow);
     assert_eq!(
         full_step_status(&no_allow_doc, "run_record_trace"),
-        Some("passed".to_string())
+        Some("failed".to_string())
     );
     assert_eq!(
         full_step_status(&no_allow_doc, "replay"),
@@ -2123,14 +2123,14 @@ fn full_allow_expected_failures_controls_shrink_status_for_fail_class_runs() {
     let allow = run_cli(&common);
     assert_eq!(
         allow.status.code(),
-        Some(0),
-        "full should pass with --allow-expected-failures: {}",
+        Some(1),
+        "full should still fail when the primary scenario itself is non-pass: {}",
         String::from_utf8_lossy(&allow.stderr)
     );
     let allow_doc = parse_json_stdout(&allow);
     assert_eq!(
         full_step_status(&allow_doc, "run_record_trace"),
-        Some("passed".to_string())
+        Some("failed".to_string())
     );
     assert_eq!(
         full_step_status(&allow_doc, "replay"),
@@ -2154,6 +2154,65 @@ fn full_allow_expected_failures_controls_shrink_status_for_fail_class_runs() {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
         Some("expected_fail_class_preserved".to_string())
+    );
+}
+
+#[test]
+fn full_rejects_non_pass_primary_summaries_even_without_strict_warnings() {
+    let ws = temp_workspace("full-non-pass-primary");
+    let scenario_root = ws.join("tests");
+    std::fs::create_dir_all(&scenario_root).expect("create tests dir");
+    std::fs::write(
+        scenario_root.join("fail.fozzy.json"),
+        r#"{
+          "version":1,
+          "name":"fail-fast",
+          "steps":[
+            {"type":"assert_ok","value":false}
+          ]
+        }"#,
+    )
+    .expect("write fail scenario");
+
+    let out = run_cli(&[
+        "full".into(),
+        "--scenario-root".into(),
+        scenario_root.to_string_lossy().to_string(),
+        "--scenario-filter".into(),
+        "fail.fozzy.json".into(),
+        "--seed".into(),
+        "7".into(),
+        "--doctor-runs".into(),
+        "2".into(),
+        "--fuzz-time".into(),
+        "10ms".into(),
+        "--required-steps".into(),
+        "test_det,run_record_trace".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "full should fail for non-pass primary scenario");
+    let doc = parse_json_stdout(&out);
+    assert_eq!(
+        full_step_status(&doc, "test_det").as_deref(),
+        Some("failed"),
+        "test_det should fail when the test summary is non-pass"
+    );
+    assert_eq!(
+        full_step_status(&doc, "run_record_trace").as_deref(),
+        Some("failed"),
+        "run_record_trace should fail when the recorded run summary is non-pass"
+    );
+    assert!(
+        full_step_detail(&doc, "test_det")
+            .unwrap_or_default()
+            .contains("status=Fail"),
+        "test_det detail should surface the underlying fail status"
+    );
+    assert!(
+        full_step_detail(&doc, "run_record_trace")
+            .unwrap_or_default()
+            .contains("status=Fail"),
+        "run_record_trace detail should surface the underlying fail status"
     );
 }
 
@@ -3139,6 +3198,68 @@ fn gate_targeted_profile_runs_scoped_strict_bundle() {
     assert!(
         profile_explain.contains("cause_domain=") && profile_explain.contains("shifted_path="),
         "profile_explain should report concrete explain evidence, got: {profile_explain}"
+    );
+}
+
+#[test]
+fn gate_rejects_non_pass_primary_summaries_even_without_strict_warnings() {
+    let ws = temp_workspace("gate-non-pass-primary");
+    let tests_dir = ws.join("tests");
+    std::fs::create_dir_all(&tests_dir).expect("mkdir tests");
+    std::fs::write(
+        tests_dir.join("fail.fozzy.json"),
+        r#"{
+          "version":1,
+          "name":"fail-fast",
+          "steps":[
+            {"type":"assert_ok","value":false}
+          ]
+        }"#,
+    )
+    .expect("write fail scenario");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_fozzy"))
+        .args([
+            "--cwd",
+            ws.to_str().expect("ws str"),
+            "gate",
+            "--profile",
+            "targeted",
+            "--scenario-root",
+            tests_dir.to_str().expect("tests str"),
+            "--scope",
+            "fail.fozzy.json",
+            "--seed",
+            "7",
+            "--doctor-runs",
+            "2",
+            "--json",
+        ])
+        .output()
+        .expect("run gate");
+    assert_eq!(out.status.code(), Some(1), "gate should fail for non-pass primary scenario");
+    let doc = parse_json_stdout(&out);
+    assert_eq!(
+        full_step_status(&doc, "test_det_strict").as_deref(),
+        Some("failed"),
+        "test_det_strict should fail when the suite summary is non-pass"
+    );
+    assert_eq!(
+        full_step_status(&doc, "run_record_trace").as_deref(),
+        Some("failed"),
+        "run_record_trace should fail when the recorded run summary is non-pass"
+    );
+    assert!(
+        full_step_detail(&doc, "test_det_strict")
+            .unwrap_or_default()
+            .contains("status=Fail"),
+        "test_det_strict detail should surface the underlying fail status"
+    );
+    assert!(
+        full_step_detail(&doc, "run_record_trace")
+            .unwrap_or_default()
+            .contains("status=Fail"),
+        "run_record_trace detail should surface the underlying fail status"
     );
 }
 

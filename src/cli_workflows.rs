@@ -215,29 +215,6 @@ fn file_artifact_status(path: &Path) -> (FullStepStatus, String) {
     }
 }
 
-fn directory_artifact_status(path: &Path) -> (FullStepStatus, String) {
-    match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_dir() => {
-            let entries = std::fs::read_dir(path)
-                .ok()
-                .map(|iter| iter.filter_map(Result::ok).count())
-                .unwrap_or(0);
-            (
-                FullStepStatus::Passed,
-                format!("path={} entries={}", path.display(), entries),
-            )
-        }
-        Ok(_) => (
-            FullStepStatus::Failed,
-            format!("path={} is not a directory", path.display()),
-        ),
-        Err(err) => (
-            FullStepStatus::Failed,
-            format!("path={} missing: {err}", path.display()),
-        ),
-    }
-}
-
 fn report_show_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let format = value
         .get("format")
@@ -310,15 +287,7 @@ fn corpus_add_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         );
     };
     let added = PathBuf::from(added);
-    let detail = added.display().to_string();
-    (
-        if added.exists() {
-            FullStepStatus::Passed
-        } else {
-            FullStepStatus::Failed
-        },
-        detail,
-    )
+    file_artifact_status(&added)
 }
 
 fn corpus_list_status(value: &serde_json::Value) -> (FullStepStatus, String) {
@@ -349,6 +318,40 @@ fn corpus_minimize_status(value: &serde_json::Value) -> (FullStepStatus, String)
         },
         format!("files_before={before} files_after={after} duplicates_removed={removed}"),
     )
+}
+
+fn corpus_import_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let Some(import_dir) = value.get("dir").and_then(|v| v.as_str()) else {
+        return (
+            FullStepStatus::Failed,
+            "missing dir path in corpus import response".to_string(),
+        );
+    };
+    let path = Path::new(import_dir);
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            let entries = std::fs::read_dir(path)
+                .ok()
+                .map(|iter| iter.filter_map(Result::ok).count())
+                .unwrap_or(0);
+            (
+                if entries > 0 {
+                    FullStepStatus::Passed
+                } else {
+                    FullStepStatus::Failed
+                },
+                format!("path={} entries={}", path.display(), entries),
+            )
+        }
+        Ok(_) => (
+            FullStepStatus::Failed,
+            format!("path={} is not a directory", path.display()),
+        ),
+        Err(err) => (
+            FullStepStatus::Failed,
+            format!("path={} missing: {err}", path.display()),
+        ),
+    }
 }
 
 fn artifacts_list_status(
@@ -614,24 +617,17 @@ pub(super) fn run_gate_command(
             http_backend: config.http_backend,
             memory: memory.clone(),
         },
-    ) {
-        Ok(test) => {
-            let strict_ok = enforce_strict_summary(strict, &test.summary).is_ok();
-            push(
-                "test_det_strict",
-                if strict_ok {
-                    FullStepStatus::Passed
-                } else {
-                    FullStepStatus::Failed
-                },
-                format!(
-                    "status={:?} strict_ok={} run_id={}",
-                    test.summary.status, strict_ok, test.summary.identity.run_id
-                ),
-            );
+        ) {
+            Ok(test) => {
+                let (status, detail) = run_summary_pass_status(&test.summary, strict);
+                push(
+                    "test_det_strict",
+                    status,
+                    format!("{detail} run_id={}", test.summary.identity.run_id),
+                );
+            }
+            Err(err) => push("test_det_strict", FullStepStatus::Failed, err.to_string()),
         }
-        Err(err) => push("test_det_strict", FullStepStatus::Failed, err.to_string()),
-    }
 
     let trace_path = std::env::temp_dir().join(format!(
         "fozzy-gate-{}-{}.trace.fozzy",
@@ -659,27 +655,22 @@ pub(super) fn run_gate_command(
             http_backend: config.http_backend,
             memory,
         },
-    ) {
-        Ok(run) => {
-            primary_status = Some(run.summary.status);
-            let strict_ok = enforce_strict_summary(strict, &run.summary).is_ok();
-            push(
-                "run_record_trace",
-                if run.summary.identity.trace_path.is_some() && strict_ok {
-                    FullStepStatus::Passed
-                } else {
-                    FullStepStatus::Failed
-                },
-                format!(
-                    "status={:?} strict_ok={} trace={}",
-                    run.summary.status,
-                    strict_ok,
-                    trace_path.display()
-                ),
-            );
+        ) {
+            Ok(run) => {
+                primary_status = Some(run.summary.status);
+                let (status, detail) = run_summary_pass_status(&run.summary, strict);
+                push(
+                    "run_record_trace",
+                    if run.summary.identity.trace_path.is_some() {
+                        status
+                    } else {
+                        FullStepStatus::Failed
+                    },
+                    format!("{detail} trace={}", trace_path.display()),
+                );
+            }
+            Err(err) => push("run_record_trace", FullStepStatus::Failed, err.to_string()),
         }
-        Err(err) => push("run_record_trace", FullStepStatus::Failed, err.to_string()),
-    }
 
     if trace_path.exists() {
         match fozzy::verify_trace_file(&trace_path) {
@@ -1170,18 +1161,11 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(test) => {
-                let strict_ok = enforce_strict_summary(strict, &test.summary).is_ok();
+                let (status, detail) = run_summary_pass_status(&test.summary, strict);
                 push(
                     "test_det",
-                    if strict_ok {
-                        FullStepStatus::Passed
-                    } else {
-                        FullStepStatus::Failed
-                    },
-                    format!(
-                        "status={:?} strict_ok={} run_id={}",
-                        test.summary.status, strict_ok, test.summary.identity.run_id
-                    ),
+                    status,
+                    format!("{detail} run_id={}", test.summary.identity.run_id),
                 )
             }
             Err(err) => push("test_det", FullStepStatus::Failed, err.to_string()),
@@ -1212,23 +1196,18 @@ pub(super) fn run_full_command(
         ) {
             Ok(run) => {
                 primary_status = Some(run.summary.status);
-                let strict_ok = enforce_strict_summary(strict, &run.summary).is_ok();
+                let (status, detail) = run_summary_pass_status(&run.summary, strict);
                 if run.summary.identity.trace_path.is_some() {
                     primary_trace = Some(trace_path.clone());
                 }
                 push(
                     "run_record_trace",
-                    if run.summary.identity.trace_path.is_some() && strict_ok {
-                        FullStepStatus::Passed
+                    if run.summary.identity.trace_path.is_some() {
+                        status
                     } else {
                         FullStepStatus::Failed
                     },
-                    format!(
-                        "status={:?} strict_ok={} trace={}",
-                        run.summary.status,
-                        strict_ok,
-                        trace_path.display()
-                    ),
+                    format!("{detail} trace={}", trace_path.display()),
                 );
             }
             Err(err) => push("run_record_trace", FullStepStatus::Failed, err.to_string()),
@@ -1856,16 +1835,8 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(value) => {
-                if let Some(import_dir) = value.get("dir").and_then(|v| v.as_str()) {
-                    let (status, detail) = directory_artifact_status(Path::new(import_dir));
-                    push("corpus_import", status, detail);
-                } else {
-                    push(
-                        "corpus_import",
-                        FullStepStatus::Failed,
-                        "missing dir path in corpus import response".to_string(),
-                    );
-                }
+                let (status, detail) = corpus_import_status(&value);
+                push("corpus_import", status, detail);
             }
             Err(err) => push("corpus_import", FullStepStatus::Failed, err.to_string()),
         }
@@ -2265,17 +2236,6 @@ mod tests {
     }
 
     #[test]
-    fn directory_artifact_status_rejects_missing_output() {
-        let path = std::env::temp_dir().join(format!(
-            "fozzy-missing-dir-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let (status, detail) = directory_artifact_status(&path);
-        assert!(matches!(status, FullStepStatus::Failed));
-        assert!(detail.contains("missing"));
-    }
-
-    #[test]
     fn report_show_status_rejects_empty_content() {
         let value = serde_json::json!({"format": "pretty", "content": ""});
         let (status, detail) = report_show_status(&value);
@@ -2301,6 +2261,14 @@ mod tests {
         let (status, detail) = corpus_add_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("missing added path"));
+    }
+
+    #[test]
+    fn corpus_import_status_rejects_missing_dir_path() {
+        let value = serde_json::json!({});
+        let (status, detail) = corpus_import_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("missing dir path"));
     }
 
     #[test]
