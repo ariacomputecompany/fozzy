@@ -306,6 +306,31 @@ fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatu
     )
 }
 
+fn recorded_trace_status(
+    summary: &RunSummary,
+    strict: bool,
+    trace_path: &Path,
+) -> (FullStepStatus, String) {
+    let (summary_status, summary_detail) = run_summary_pass_status(summary, strict);
+    let (file_status, file_detail) = file_artifact_status(trace_path);
+    let has_reported_trace = summary.identity.trace_path.is_some();
+    let status = if has_reported_trace
+        && matches!(summary_status, FullStepStatus::Passed)
+        && matches!(file_status, FullStepStatus::Passed)
+    {
+        FullStepStatus::Passed
+    } else {
+        FullStepStatus::Failed
+    };
+    (
+        status,
+        format!(
+            "{} trace_reported={} {}",
+            summary_detail, has_reported_trace, file_detail
+        ),
+    )
+}
+
 fn shrink_step_status(
     primary_status: Option<ExitStatus>,
     summary: &RunSummary,
@@ -807,15 +832,11 @@ pub(super) fn run_gate_command(
         ) {
             Ok(run) => {
                 primary_status = Some(run.summary.status);
-                let (status, detail) = run_summary_pass_status(&run.summary, strict);
+                let (status, detail) = recorded_trace_status(&run.summary, strict, &trace_path);
                 push(
                     "run_record_trace",
-                    if run.summary.identity.trace_path.is_some() {
-                        status
-                    } else {
-                        FullStepStatus::Failed
-                    },
-                    format!("{detail} trace={}", trace_path.display()),
+                    status,
+                    detail,
                 );
             }
             Err(err) => push("run_record_trace", FullStepStatus::Failed, err.to_string()),
@@ -1321,18 +1342,16 @@ pub(super) fn run_full_command(
         ) {
             Ok(run) => {
                 primary_status = Some(run.summary.status);
-                let (status, detail) = run_summary_pass_status(&run.summary, strict);
-                if run.summary.identity.trace_path.is_some() {
+                let (status, detail) = recorded_trace_status(&run.summary, strict, &trace_path);
+                let trace_recorded = run.summary.identity.trace_path.is_some()
+                    && matches!(file_artifact_status(&trace_path).0, FullStepStatus::Passed);
+                if trace_recorded {
                     primary_trace = Some(trace_path.clone());
                 }
                 push(
                     "run_record_trace",
-                    if run.summary.identity.trace_path.is_some() {
-                        status
-                    } else {
-                        FullStepStatus::Failed
-                    },
-                    format!("{detail} trace={}", trace_path.display()),
+                    status,
+                    detail,
                 );
             }
             Err(err) => push("run_record_trace", FullStepStatus::Failed, err.to_string()),
@@ -2366,6 +2385,20 @@ mod tests {
         let (status, detail) = run_summary_pass_status(&summary, true);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("status=Fail"));
+    }
+
+    #[test]
+    fn recorded_trace_status_rejects_missing_trace_file() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.trace_path = Some("/tmp/missing.trace.fozzy".to_string());
+        let path = std::env::temp_dir().join(format!(
+            "fozzy-missing-trace-{}.fozzy",
+            uuid::Uuid::new_v4()
+        ));
+        let (status, detail) = recorded_trace_status(&summary, true, &path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("trace_reported=true"));
+        assert!(detail.contains("missing"));
     }
 
     #[test]
