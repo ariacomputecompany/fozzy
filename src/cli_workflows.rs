@@ -660,17 +660,24 @@ fn report_query_paths_status(value: &serde_json::Value) -> (FullStepStatus, Stri
         .cloned()
         .unwrap_or_default();
     let count = paths.len();
+    let mut seen = std::collections::BTreeSet::new();
     let invalid = paths
         .iter()
         .filter(|path| path.as_str().is_none_or(|s| s.trim().is_empty()))
         .count();
+    let duplicate = paths
+        .iter()
+        .filter_map(|path| path.as_str().map(str::trim))
+        .filter(|s| !s.is_empty())
+        .filter(|path| !seen.insert((*path).to_string()))
+        .count();
     (
-        if count > 0 && invalid == 0 {
+        if count > 0 && invalid == 0 && duplicate == 0 {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
-        format!("paths={count} invalid={invalid}"),
+        format!("paths={count} invalid={invalid} duplicate={duplicate}"),
     )
 }
 
@@ -3262,6 +3269,17 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("paths=3"));
         assert!(detail.contains("invalid=2"));
+    }
+
+    #[test]
+    fn report_query_paths_status_rejects_duplicate_entries() {
+        let value = serde_json::json!({
+            "paths": ["status", "status"]
+        });
+        let (status, detail) = report_query_paths_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("paths=2"));
+        assert!(detail.contains("duplicate=1"));
     }
 
     #[test]
