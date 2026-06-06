@@ -194,6 +194,27 @@ fn replay_summary_status(
     )
 }
 
+fn file_artifact_status(path: &Path) -> (FullStepStatus, String) {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => (
+            FullStepStatus::Passed,
+            format!("path={} bytes={}", path.display(), metadata.len()),
+        ),
+        Ok(metadata) if metadata.is_file() => (
+            FullStepStatus::Failed,
+            format!("path={} bytes=0", path.display()),
+        ),
+        Ok(_) => (
+            FullStepStatus::Failed,
+            format!("path={} is not a file", path.display()),
+        ),
+        Err(err) => (
+            FullStepStatus::Failed,
+            format!("path={} missing: {err}", path.display()),
+        ),
+    }
+}
+
 fn clean_tree_step_status(detail: &str) -> FullStepStatus {
     if detail.contains("check skipped") {
         FullStepStatus::Skipped
@@ -1165,11 +1186,10 @@ pub(super) fn run_full_command(
                 out: artifacts_export.clone(),
             },
         ) {
-            Ok(_) => push(
-                "artifacts_export",
-                FullStepStatus::Passed,
-                artifacts_export.display().to_string(),
-            ),
+            Ok(_) => {
+                let (status, detail) = file_artifact_status(&artifacts_export);
+                push("artifacts_export", status, detail);
+            }
             Err(err) => push("artifacts_export", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -1183,11 +1203,10 @@ pub(super) fn run_full_command(
                 out: artifacts_pack.clone(),
             },
         ) {
-            Ok(_) => push(
-                "artifacts_pack",
-                FullStepStatus::Passed,
-                artifacts_pack.display().to_string(),
-            ),
+            Ok(_) => {
+                let (status, detail) = file_artifact_status(&artifacts_pack);
+                push("artifacts_pack", status, detail);
+            }
             Err(err) => push("artifacts_pack", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -2060,6 +2079,17 @@ mod tests {
         let (status, detail) = replay_summary_status(Some(ExitStatus::Pass), &summary, true);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("class_ok=false"));
+    }
+
+    #[test]
+    fn file_artifact_status_rejects_missing_output() {
+        let path = std::env::temp_dir().join(format!(
+            "fozzy-missing-artifact-{}.zip",
+            uuid::Uuid::new_v4()
+        ));
+        let (status, detail) = file_artifact_status(&path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("missing"));
     }
 
     #[test]
