@@ -1122,6 +1122,8 @@ fn artifacts_list_status(
 fn artifacts_diff_status(output: &fozzy::ArtifactOutput) -> (FullStepStatus, String) {
     match output {
         fozzy::ArtifactOutput::Diff { diff } => {
+            let left_ok = !diff.left.trim().is_empty();
+            let right_ok = !diff.right.trim().is_empty();
             let mut invalid = 0usize;
             let mut seen = std::collections::BTreeSet::new();
             for file in &diff.files {
@@ -1143,15 +1145,17 @@ fn artifacts_diff_status(output: &fozzy::ArtifactOutput) -> (FullStepStatus, Str
                 + usize::from(diff.report.is_some())
                 + usize::from(diff.trace.is_some());
             (
-                if evidence_count > 0 && invalid == 0 {
+                if evidence_count > 0 && left_ok && right_ok && invalid == 0 {
                     FullStepStatus::Passed
                 } else {
                     FullStepStatus::Failed
                 },
                 format!(
-                    "left={} right={} file_deltas={} report={} trace={} invalid={}",
+                    "left={} left_ok={} right={} right_ok={} file_deltas={} report={} trace={} invalid={}",
                     diff.left,
+                    left_ok,
                     diff.right,
+                    right_ok,
                     diff.files.len(),
                     diff.report.is_some(),
                     diff.trace.is_some(),
@@ -3830,6 +3834,30 @@ mod tests {
         let (status, detail) = artifacts_diff_status(&output);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid=1"));
+    }
+
+    #[test]
+    fn artifacts_diff_status_rejects_blank_diff_identities() {
+        let output = fozzy::ArtifactOutput::Diff {
+            diff: Box::new(fozzy::ArtifactDiff {
+                left: "   ".to_string(),
+                right: "".to_string(),
+                files: vec![fozzy::ArtifactFileDelta {
+                    key: "Trace:trace.fozzy".to_string(),
+                    left_path: Some("/tmp/left.trace.fozzy".to_string()),
+                    right_path: Some("/tmp/right.trace.fozzy".to_string()),
+                    left_size_bytes: Some(10),
+                    right_size_bytes: Some(11),
+                    changed: true,
+                }],
+                report: None,
+                trace: None,
+            }),
+        };
+        let (status, detail) = artifacts_diff_status(&output);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("left_ok=false"));
+        assert!(detail.contains("right_ok=false"));
     }
 
     #[test]
