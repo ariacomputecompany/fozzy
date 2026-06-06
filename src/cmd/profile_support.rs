@@ -408,10 +408,15 @@ pub(super) fn profile_doctor(
             bundle.timeline.as_ref().expect("timeline loaded").len()
         )),
     ));
+    let diff_domains = ["cpu", "heap", "latency", "io", "sched"]
+        .iter()
+        .filter(|domain| !unavailable_domains.iter().any(|name| name == **domain))
+        .map(|domain| (*domain).to_string())
+        .collect::<Vec<_>>();
     let diff = compute_diff(
         run,
         run,
-        &["cpu".to_string(), "heap".to_string(), "latency".to_string()],
+        &diff_domains,
         &bundle.metrics,
         &bundle.metrics,
         bundle.heap.as_ref(),
@@ -421,10 +426,19 @@ pub(super) fn profile_doctor(
         1,
         1,
     );
+    let diff_ok = diff.summary.verdict == "stable"
+        && diff.summary.regression_count == 0
+        && diff.summary.significant_regression_count == 0;
     checks.push(check(
         "diff",
-        "pass",
-        serde_json::json!(format!("regressions={}", diff.regressions.len())),
+        if diff_ok { "pass" } else { "warn" },
+        serde_json::json!(format!(
+            "verdict={} regressions={} significant_regressions={} domains={}",
+            diff.summary.verdict,
+            diff.summary.regression_count,
+            diff.summary.significant_regression_count,
+            diff_domains.join(",")
+        )),
     ));
     let explain = explain_single(
         run,
@@ -432,10 +446,15 @@ pub(super) fn profile_doctor(
         &bundle.metrics,
         bundle.latency.as_ref().expect("latency loaded"),
     );
+    let explain_ok = is_diagnostic_profile_explain(&explain);
     checks.push(check(
         "explain",
-        "pass",
-        serde_json::json!(explain.likely_cause_domain),
+        if explain_ok { "pass" } else { "warn" },
+        serde_json::json!(if explain_ok {
+            explain.likely_cause_domain
+        } else {
+            "single-run explain is observational, not diagnostic".to_string()
+        }),
     ));
     let speedscope: serde_json::Value =
         folded_to_speedscope(run, &bundle.cpu.as_ref().expect("cpu loaded").folded_stacks);
@@ -551,6 +570,16 @@ pub(super) fn profile_doctor(
         "checks": checks,
         "issues": issues,
     }))
+}
+
+fn is_diagnostic_profile_explain(explain: &ProfileExplain) -> bool {
+    !explain.regression_statement.is_empty()
+        && explain.regression_statement != "no measurable regression shift found"
+        && !explain.regression_statement.starts_with("run ")
+        && !explain.top_shifted_path.is_empty()
+        && explain.top_shifted_path != "n/a"
+        && !explain.likely_cause_domain.is_empty()
+        && explain.likely_cause_domain != "unknown"
 }
 
 pub(super) fn resolve_profile_trace(

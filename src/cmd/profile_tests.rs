@@ -948,6 +948,31 @@ fn profile_doctor_marks_warning_checks_as_not_ok() {
         .expect("export check");
     assert_eq!(export.get("status").and_then(|v| v.as_str()), Some("warn"));
     assert_eq!(export.get("ok").and_then(|v| v.as_bool()), Some(false));
+    let diff = checks
+        .iter()
+        .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("diff"))
+        .expect("diff check");
+    assert_eq!(diff.get("status").and_then(|v| v.as_str()), Some("pass"));
+    let diff_detail = diff
+        .get("detail")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        diff_detail.contains("verdict=stable"),
+        "self-diff should stay stable on supported domains, got: {diff_detail}"
+    );
+    let explain = checks
+        .iter()
+        .find(|check| check.get("name").and_then(|v| v.as_str()) == Some("explain"))
+        .expect("explain check");
+    assert_eq!(explain.get("status").and_then(|v| v.as_str()), Some("warn"));
+    assert_eq!(explain.get("ok").and_then(|v| v.as_bool()), Some(false));
+    assert!(
+        issues.iter().any(|v| {
+            v.as_str().is_some_and(|s| s.contains("explain: single-run explain is observational"))
+        }),
+        "expected explain warning in issues: {issues:?}"
+    );
 }
 
 #[test]
