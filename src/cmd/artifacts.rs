@@ -1180,6 +1180,94 @@ fn validate_manifest_integrity(files: &[PathBuf], run: &str) -> FozzyResult<()> 
             manifest.schema_version
         )));
     }
+    let report_path = files
+        .iter()
+        .find(|p| p.file_name().and_then(|s| s.to_str()) == Some("report.json"))
+        .ok_or_else(|| {
+            crate::FozzyError::InvalidArgument(format!(
+                "incomplete artifacts for {run:?}; missing required files: report.json"
+            ))
+        })?;
+    let report_bytes = std::fs::read(report_path)?;
+    let report: RunSummary = serde_json::from_slice(&report_bytes).map_err(|e| {
+        crate::FozzyError::InvalidArgument(format!(
+            "invalid report for {run:?}: {} ({e})",
+            report_path.display()
+        ))
+    })?;
+    let expected_artifacts_dir = report_path
+        .parent()
+        .ok_or_else(|| {
+            crate::FozzyError::InvalidArgument(format!(
+                "invalid report for {run:?}: {} has no parent directory",
+                report_path.display()
+            ))
+        })?
+        .to_string_lossy()
+        .to_string();
+    let report_path_string = report_path.to_string_lossy().to_string();
+    let trace_path = files
+        .iter()
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("fozzy"));
+    let report_trace_path = report.identity.trace_path.clone();
+    let manifest_trace_path = manifest.trace_path.clone();
+    if manifest.run_id != report.identity.run_id
+        || manifest.mode != report.mode
+        || manifest.status != report.status
+        || manifest.seed != report.identity.seed
+        || manifest.duration_ms != report.duration_ms
+        || manifest.duration_ns != report.duration_ns
+        || manifest.findings_count != report.findings.len()
+        || manifest.report_path.as_ref() != Some(&report_path_string)
+        || manifest.artifacts_dir.as_ref() != Some(&expected_artifacts_dir)
+        || report.identity.report_path.as_ref() != Some(&report_path_string)
+        || report.identity.artifacts_dir.as_ref() != Some(&expected_artifacts_dir)
+        || manifest_trace_path != report_trace_path
+    {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "invalid manifest for {run:?}: report/manifest identity mismatch"
+        )));
+    }
+    match manifest_trace_path {
+        Some(ref expected_trace) => {
+            let actual_trace = trace_path.ok_or_else(|| {
+                crate::FozzyError::InvalidArgument(format!(
+                    "invalid manifest for {run:?}: missing declared trace artifact {expected_trace}"
+                ))
+            })?;
+            if actual_trace.to_string_lossy() != expected_trace.as_str() {
+                return Err(crate::FozzyError::InvalidArgument(format!(
+                    "invalid manifest for {run:?}: declared trace artifact mismatch"
+                )));
+            }
+            let trace_bytes = std::fs::read(actual_trace)?;
+            let trace: TraceFile = serde_json::from_slice(&trace_bytes).map_err(|e| {
+                crate::FozzyError::InvalidArgument(format!(
+                    "invalid trace for {run:?}: {} ({e})",
+                    actual_trace.display()
+                ))
+            })?;
+            if trace.summary.identity.run_id != manifest.run_id
+                || trace.summary.mode != manifest.mode
+                || trace.summary.status != manifest.status
+                || trace.summary.identity.seed != manifest.seed
+                || trace.summary.identity.trace_path.as_ref() != Some(expected_trace)
+                || trace.summary.identity.report_path.as_ref() != Some(&report_path_string)
+                || trace.summary.identity.artifacts_dir.as_ref() != Some(&expected_artifacts_dir)
+            {
+                return Err(crate::FozzyError::InvalidArgument(format!(
+                    "invalid manifest for {run:?}: trace/report identity mismatch"
+                )));
+            }
+        }
+        None => {
+            if trace_path.is_some() {
+                return Err(crate::FozzyError::InvalidArgument(format!(
+                    "invalid manifest for {run:?}: undeclared trace artifact present"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1242,6 +1330,117 @@ mod tests {
     fn valid_manifest_json(run_id: &str) -> String {
         format!(
             r#"{{"schemaVersion":"fozzy.run_manifest.v1","runId":"{run_id}","mode":"run","status":"pass","seed":1,"startedAt":"2026-01-01T00:00:00Z","finishedAt":"2026-01-01T00:00:00Z","durationMs":0,"findingsCount":0}}"#
+        )
+    }
+
+    fn valid_report_json(run_id: &str, report_path: &Path, artifacts_dir: &Path) -> String {
+        format!(
+            r#"{{
+  "status":"pass",
+  "mode":"run",
+  "identity":{{
+    "runId":"{run_id}",
+    "seed":1,
+    "reportPath":"{}",
+    "artifactsDir":"{}"
+  }},
+  "startedAt":"2026-01-01T00:00:00Z",
+  "finishedAt":"2026-01-01T00:00:00Z",
+  "durationMs":0,
+  "durationNs":0,
+  "findings":[]
+}}"#,
+            report_path.display(),
+            artifacts_dir.display()
+        )
+    }
+
+    fn valid_report_and_manifest_json(
+        run_id: &str,
+        report_path: &Path,
+        artifacts_dir: &Path,
+        trace_path: Option<&Path>,
+    ) -> (String, String) {
+        let trace_json = trace_path.map(|path| format!(r#","tracePath":"{}""#, path.display()));
+        let report = format!(
+            r#"{{
+  "status":"pass",
+  "mode":"run",
+  "identity":{{
+    "runId":"{run_id}",
+    "seed":1,
+    "reportPath":"{}",
+    "artifactsDir":"{}"{}
+  }},
+  "startedAt":"2026-01-01T00:00:00Z",
+  "finishedAt":"2026-01-01T00:00:00Z",
+  "durationMs":0,
+  "durationNs":0,
+  "findings":[]
+}}"#,
+            report_path.display(),
+            artifacts_dir.display(),
+            trace_json.clone().unwrap_or_default()
+        );
+        let manifest = format!(
+            r#"{{
+  "schemaVersion":"fozzy.run_manifest.v1",
+  "runId":"{run_id}",
+  "mode":"run",
+  "status":"pass",
+  "seed":1,
+  "startedAt":"2026-01-01T00:00:00Z",
+  "finishedAt":"2026-01-01T00:00:00Z",
+  "durationMs":0,
+  "durationNs":0,
+  "reportPath":"{}",
+  "artifactsDir":"{}",
+  "findingsCount":0{}
+}}"#,
+            report_path.display(),
+            artifacts_dir.display(),
+            trace_path
+                .map(|path| format!(r#","tracePath":"{}""#, path.display()))
+                .unwrap_or_default()
+        );
+        (report, manifest)
+    }
+
+    fn valid_trace_json(
+        run_id: &str,
+        trace_path: &Path,
+        report_path: &Path,
+        artifacts_dir: &Path,
+    ) -> String {
+        format!(
+            r#"{{
+  "format":"fozzy-trace",
+  "version":4,
+  "engine":{{"version":"0.1.0"}},
+  "mode":"run",
+  "scenario_path":null,
+  "scenario":{{"version":1,"name":"x","steps":[]}},
+  "decisions":[],
+  "events":[],
+  "summary":{{
+    "status":"pass",
+    "mode":"run",
+    "identity":{{
+      "runId":"{run_id}",
+      "seed":1,
+      "tracePath":"{}",
+      "reportPath":"{}",
+      "artifactsDir":"{}"
+    }},
+    "startedAt":"2026-01-01T00:00:00Z",
+    "finishedAt":"2026-01-01T00:00:00Z",
+    "durationMs":0,
+    "durationNs":0
+  }}
+}}"#,
+            trace_path.display(),
+            report_path.display(),
+            artifacts_dir.display()
         )
     }
 
@@ -1337,10 +1536,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("fozzy-pack-test-{}", uuid::Uuid::new_v4()));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
-        std::fs::write(run_dir.join("report.json"), b"{}").expect("report");
+        let report_path = run_dir.join("report.json");
+        let trace_path = run_dir.join("trace.fozzy");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&trace_path));
+        std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), b"[]").expect("events");
-        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1")).expect("manifest");
-        std::fs::write(run_dir.join("trace.fozzy"), b"{}").expect("trace");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
+            .expect("trace");
         let out = root.join("pack.zip");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
@@ -1380,10 +1584,15 @@ mod tests {
             std::env::temp_dir().join(format!("fozzy-pack-symlink-{}", uuid::Uuid::new_v4()));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
-        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
+        let report_path = run_dir.join("report.json");
+        let trace_path = run_dir.join("trace.fozzy");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&trace_path));
+        std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
-        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1")).expect("manifest");
-        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
+            .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -1423,10 +1632,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("fozzy-pack-atomic-{}", uuid::Uuid::new_v4()));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
-        std::fs::write(run_dir.join("report.json"), br#"{"report":true}"#).expect("report");
+        let report_path = run_dir.join("report.json");
+        let trace_path = run_dir.join("trace.fozzy");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&trace_path));
+        std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
-        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1")).expect("manifest");
-        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
+            .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -1474,10 +1688,15 @@ mod tests {
             std::env::temp_dir().join(format!("fozzy-pack-deterministic-{}", uuid::Uuid::new_v4()));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
-        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
+        let report_path = run_dir.join("report.json");
+        let trace_path = run_dir.join("trace.fozzy");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&trace_path));
+        std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
-        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1")).expect("manifest");
-        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
+            .expect("trace");
 
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
@@ -1759,8 +1978,10 @@ mod tests {
             std::env::temp_dir().join(format!("fozzy-pack-minimal-run-{}", uuid::Uuid::new_v4()));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
-        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
-        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1")).expect("manifest");
+        let report_path = run_dir.join("report.json");
+        let (report, manifest) = valid_report_and_manifest_json("r1", &report_path, &run_dir, None);
+        std::fs::write(&report_path, report).expect("report");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -1793,10 +2014,15 @@ mod tests {
             std::env::temp_dir().join(format!("fozzy-pack-stale-dir-{}", uuid::Uuid::new_v4()));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
-        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
+        let report_path = run_dir.join("report.json");
+        let trace_path = run_dir.join("trace.fozzy");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&trace_path));
+        std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
-        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1")).expect("manifest");
-        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
+            .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -1836,8 +2062,10 @@ mod tests {
             std::env::temp_dir().join(format!("fozzy-export-stale-dir-{}", uuid::Uuid::new_v4()));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
-        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
-        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1")).expect("manifest");
+        let report_path = run_dir.join("report.json");
+        let (report, manifest) = valid_report_and_manifest_json("r1", &report_path, &run_dir, None);
+        std::fs::write(&report_path, report).expect("report");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -1877,10 +2105,17 @@ mod tests {
             std::env::temp_dir().join(format!("fozzy-pack-bad-manifest-{}", uuid::Uuid::new_v4()));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
-        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
+        let report_path = run_dir.join("report.json");
+        let trace_path = run_dir.join("trace.fozzy");
+        std::fs::write(
+            &report_path,
+            valid_report_json("r1", &report_path, &run_dir),
+        )
+        .expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), br#"not-json"#).expect("manifest");
-        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
+        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
+            .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -1910,6 +2145,116 @@ mod tests {
         assert!(!out_export.exists(), "export zip should not be created");
     }
 
+    #[test]
+    fn pack_and_export_reject_invalid_report_bytes() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-pack-bad-report-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let report_path = run_dir.join("report.json");
+        let trace_path = run_dir.join("trace.fozzy");
+        let (_, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&trace_path));
+        std::fs::write(&report_path, br#"not-json"#).expect("report");
+        std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
+            .expect("trace");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+        let out_pack = root.join("pack.zip");
+        let out_export = root.join("export.zip");
+
+        let err_pack = export_reproducer_pack(&cfg, "r1", &out_pack).expect_err("pack must fail");
+        assert!(err_pack.to_string().contains("invalid report"));
+        assert!(!out_pack.exists(), "pack zip should not be created");
+
+        let err_export = export_artifacts(&cfg, "r1", &out_export).expect_err("export must fail");
+        assert!(err_export.to_string().contains("invalid report"));
+        assert!(!out_export.exists(), "export zip should not be created");
+    }
+
+    #[test]
+    fn pack_and_export_reject_manifest_report_identity_mismatch() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-pack-identity-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let report_path = run_dir.join("report.json");
+        let trace_path = run_dir.join("trace.fozzy");
+        let (report, _) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&trace_path));
+        let mismatched_manifest = format!(
+            r#"{{
+  "schemaVersion":"fozzy.run_manifest.v1",
+  "runId":"r1",
+  "mode":"run",
+  "status":"pass",
+  "seed":1,
+  "startedAt":"2026-01-01T00:00:00Z",
+  "finishedAt":"2026-01-01T00:00:00Z",
+  "durationMs":0,
+  "durationNs":0,
+  "reportPath":"{}",
+  "artifactsDir":"{}",
+  "tracePath":"{}",
+  "findingsCount":0
+}}"#,
+            report_path.display(),
+            run_dir.display(),
+            root.join("wrong.trace.fozzy").display()
+        );
+        std::fs::write(&report_path, report).expect("report");
+        std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
+        std::fs::write(run_dir.join("manifest.json"), mismatched_manifest).expect("manifest");
+        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
+            .expect("trace");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+        let out_pack = root.join("pack.zip");
+        let out_export = root.join("export.zip");
+
+        let err_pack = export_reproducer_pack(&cfg, "r1", &out_pack).expect_err("pack must fail");
+        assert!(err_pack.to_string().contains("identity mismatch"));
+        assert!(!out_pack.exists(), "pack zip should not be created");
+
+        let err_export = export_artifacts(&cfg, "r1", &out_export).expect_err("export must fail");
+        assert!(err_export.to_string().contains("identity mismatch"));
+        assert!(!out_export.exists(), "export zip should not be created");
+    }
+
     #[cfg(unix)]
     #[test]
     fn zip_output_rejects_symlinked_parent_components() {
@@ -1921,10 +2266,15 @@ mod tests {
         ));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
-        std::fs::write(run_dir.join("report.json"), br#"{"ok":true}"#).expect("report");
+        let report_path = run_dir.join("report.json");
+        let trace_path = run_dir.join("trace.fozzy");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&trace_path));
+        std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
-        std::fs::write(run_dir.join("manifest.json"), br#"{"schemaVersion":"fozzy.run_manifest.v1","runId":"r1","mode":"run","status":"pass","seed":1,"startedAt":"2026-01-01T00:00:00Z","finishedAt":"2026-01-01T00:00:00Z","durationMs":0,"findingsCount":0}"#).expect("manifest");
-        std::fs::write(run_dir.join("trace.fozzy"), br#"{"format":"fozzy-trace"}"#).expect("trace");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
+            .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
