@@ -133,13 +133,38 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .get("flakeRatePct")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
+    let status_variant_count = value
+        .get("statusCounts")
+        .and_then(|v| v.as_object())
+        .map(|m| m.len())
+        .unwrap_or(0) as u64;
+    let finding_variant_count = value
+        .get("findingTitleSets")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0) as u64;
+    let derived_flaky = status_variant_count > 1 || finding_variant_count > 1;
+    let rate_ok = if derived_flaky {
+        flake_rate > 0.0 && flake_rate <= 100.0
+    } else {
+        flake_rate == 0.0
+    };
+    let consistent = run_count > 0 && is_flaky == derived_flaky && rate_ok;
     (
-        if is_flaky || run_count == 0 {
+        if !consistent || is_flaky {
             FullStepStatus::Failed
         } else {
             FullStepStatus::Passed
         },
-        format!("run_count={} is_flaky={} flake_rate_pct={}", run_count, is_flaky, flake_rate),
+        format!(
+            "run_count={} is_flaky={} derived_flaky={} flake_rate_pct={} status_variants={} finding_variants={}",
+            run_count,
+            is_flaky,
+            derived_flaky,
+            flake_rate,
+            status_variant_count,
+            finding_variant_count
+        ),
     )
 }
 
@@ -2810,6 +2835,8 @@ mod tests {
     fn flaky_report_status_rejects_flaky_results() {
         let value = serde_json::json!({
             "runCount": 2,
+            "statusCounts": {"pass": 1, "fail": 1},
+            "findingTitleSets": [[], ["boom"]],
             "isFlaky": true,
             "flakeRatePct": 50.0
         });
@@ -2822,12 +2849,29 @@ mod tests {
     fn flaky_report_status_rejects_zero_run_count() {
         let value = serde_json::json!({
             "runCount": 0,
+            "statusCounts": {},
+            "findingTitleSets": [],
             "isFlaky": false,
             "flakeRatePct": 0.0
         });
         let (status, detail) = flaky_report_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("run_count=0"));
+    }
+
+    #[test]
+    fn flaky_report_status_rejects_inconsistent_payload() {
+        let value = serde_json::json!({
+            "runCount": 2,
+            "statusCounts": {"pass": 2},
+            "findingTitleSets": [[]],
+            "isFlaky": false,
+            "flakeRatePct": 50.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("derived_flaky=false"));
+        assert!(detail.contains("flake_rate_pct=50"));
     }
 
     #[test]
