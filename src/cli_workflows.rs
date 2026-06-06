@@ -1415,6 +1415,7 @@ fn doctor_report_status(
     scenario: &Path,
     runs: u32,
 ) -> (FullStepStatus, String) {
+    let expected_scenario = scenario.display().to_string();
     let mut seen_issues = std::collections::BTreeSet::new();
     let invalid_issues = report
         .issues
@@ -1472,7 +1473,25 @@ fn doctor_report_status(
                 .count()
         })
         .unwrap_or(0);
+    let audit_present = report.determinism_audit.is_some();
+    let audit_valid = report.determinism_audit.as_ref().is_some_and(|audit| {
+        audit.scenario == expected_scenario
+            && audit.runs == runs
+            && audit.signatures.len() == audit.runs as usize
+            && audit
+                .signatures
+                .iter()
+                .all(|signature| !signature.trim().is_empty())
+            && if audit.consistent {
+                audit.first_mismatch_run.is_none()
+            } else {
+                audit.first_mismatch_run
+                    .is_some_and(|run| run >= 2 && run <= audit.runs)
+            }
+    });
     let derived_ok = runs > 0
+        && audit_present
+        && audit_valid
         && report.issues.is_empty()
         && invalid_issues == 0
         && duplicate_issues == 0
@@ -1497,28 +1516,32 @@ fn doctor_report_status(
         .collect::<Vec<_>>();
     let detail = if failing.is_empty() {
         format!(
-            "issues=0 signals=0 invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues=0 signals=0 invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
             invalid_issues,
             duplicate_issues,
             invalid_signals,
             duplicate_signals,
+            audit_present,
+            audit_valid,
             runs,
-            scenario.display(),
+            expected_scenario,
             report.ok,
             derived_ok,
             policy_ok
         )
     } else {
         format!(
-            "issues={} signals={} invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues={} signals={} invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
             report.issues.len(),
             signal_count,
             invalid_issues,
             duplicate_issues,
             invalid_signals,
             duplicate_signals,
+            audit_present,
+            audit_valid,
             runs,
-            scenario.display(),
+            expected_scenario,
             failing.join("; "),
             report.ok,
             derived_ok,
@@ -4667,7 +4690,14 @@ mod tests {
                 hint: Some("Add a `proc_when` step".to_string()),
             }],
             nondeterminism_signals: None,
-            determinism_audit: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: true,
+                signatures: vec!["abc".to_string(), "abc".to_string()],
+                first_mismatch_run: None,
+            }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
@@ -4687,7 +4717,14 @@ mod tests {
                 hint: None,
             }],
             nondeterminism_signals: None,
-            determinism_audit: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: false,
+                signatures: vec!["abc".to_string(), "def".to_string()],
+                first_mismatch_run: Some(2),
+            }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
@@ -4702,7 +4739,14 @@ mod tests {
             ok: true,
             issues: Vec::new(),
             nondeterminism_signals: None,
-            determinism_audit: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 0,
+                seed: 7,
+                consistent: true,
+                signatures: Vec::new(),
+                first_mismatch_run: None,
+            }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
         let (status, detail) = doctor_report_status(&report, true, scenario, 0);
@@ -4721,7 +4765,14 @@ mod tests {
                 hint: None,
             }],
             nondeterminism_signals: None,
-            determinism_audit: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: true,
+                signatures: vec!["abc".to_string(), "abc".to_string()],
+                first_mismatch_run: None,
+            }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
@@ -4740,7 +4791,14 @@ mod tests {
                 hint: None,
             }],
             nondeterminism_signals: None,
-            determinism_audit: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: true,
+                signatures: vec!["abc".to_string(), "abc".to_string()],
+                first_mismatch_run: None,
+            }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
@@ -4766,7 +4824,14 @@ mod tests {
                 },
             ],
             nondeterminism_signals: None,
-            determinism_audit: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: false,
+                signatures: vec!["abc".to_string(), "def".to_string()],
+                first_mismatch_run: Some(2),
+            }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
@@ -4784,7 +4849,14 @@ mod tests {
                 source: "".to_string(),
                 detail: "".to_string(),
             }]),
-            determinism_audit: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: true,
+                signatures: vec!["abc".to_string(), "abc".to_string()],
+                first_mismatch_run: None,
+            }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
@@ -4802,7 +4874,14 @@ mod tests {
                 source: "stdout".to_string(),
                 detail: "line ordering drift".to_string(),
             }]),
-            determinism_audit: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: true,
+                signatures: vec!["abc".to_string(), "abc".to_string()],
+                first_mismatch_run: None,
+            }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
@@ -4826,12 +4905,57 @@ mod tests {
                     detail: "line ordering drift".to_string(),
                 },
             ]),
-            determinism_audit: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: true,
+                signatures: vec!["abc".to_string(), "abc".to_string()],
+                first_mismatch_run: None,
+            }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("duplicate_signals=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_missing_determinism_audit() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: Vec::new(),
+            nondeterminism_signals: None,
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("audit_present=false"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_incoherent_determinism_audit() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: Vec::new(),
+            nondeterminism_signals: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/other.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: true,
+                signatures: vec!["abc".to_string()],
+                first_mismatch_run: Some(2),
+            }),
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("audit_present=true"));
+        assert!(detail.contains("audit_valid=false"));
         assert!(detail.contains("derived_ok=false"));
     }
 
