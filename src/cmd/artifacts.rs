@@ -735,12 +735,7 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<Option<RunSummary>> {
     }
 
     let artifacts_dir = resolve_artifacts_dir(config, run)?;
-    if let Some(summary) = load_checked_report_summary_from_artifacts_dir(&artifacts_dir, run)? {
-        return Ok(Some(summary));
-    }
-    if let Some(summary) =
-        load_checked_manifest_trace_summary_from_artifacts_dir(&artifacts_dir, run)?
-    {
+    if let Some(summary) = load_checked_run_summary_from_artifacts_dir(&artifacts_dir, run)? {
         return Ok(Some(summary));
     }
 
@@ -816,7 +811,7 @@ fn trusted_trace_declared_artifacts_dir(trace_path: &Path) -> FozzyResult<Option
     let Some(artifacts_dir) = trace_declared_artifacts_dir(trace_path)? else {
         return Ok(None);
     };
-    let Some(summary) = load_checked_report_summary_from_artifacts_dir(
+    let Some(summary) = load_checked_run_summary_from_artifacts_dir(
         &artifacts_dir,
         &trace_path.display().to_string(),
     )?
@@ -997,6 +992,16 @@ pub(crate) fn load_checked_manifest_trace_summary_from_artifacts_dir(
     Ok(Some(trace.summary))
 }
 
+pub(crate) fn load_checked_run_summary_from_artifacts_dir(
+    artifacts_dir: &Path,
+    run: &str,
+) -> FozzyResult<Option<RunSummary>> {
+    if let Some(summary) = load_checked_report_summary_from_artifacts_dir(artifacts_dir, run)? {
+        return Ok(Some(summary));
+    }
+    load_checked_manifest_trace_summary_from_artifacts_dir(artifacts_dir, run)
+}
+
 fn trace_identity_key(path: &Path) -> FozzyResult<PathBuf> {
     std::fs::canonicalize(path).map_err(Into::into)
 }
@@ -1034,10 +1039,7 @@ fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>>
     }
 
     for (dir, _) in run_dirs {
-        let summary = match load_checked_report_summary_from_artifacts_dir(
-            &dir,
-            &dir.display().to_string(),
-        ) {
+        let summary = match load_checked_run_summary_from_artifacts_dir(&dir, &dir.display().to_string()) {
             Ok(Some(summary)) => summary,
             Ok(None) | Err(_) => continue,
         };
@@ -1350,7 +1352,9 @@ fn validate_direct_trace_bundle(
         .collect();
     let has_report = present.contains("report.json");
     let has_manifest = present.contains("manifest.json");
-    if has_report != has_manifest {
+    let allows_manifest_only_metadata =
+        allow_sidecars_without_metadata && has_manifest && !has_report;
+    if has_report != has_manifest && !allows_manifest_only_metadata {
         return Err(crate::FozzyError::InvalidArgument(format!(
             "incomplete direct trace artifacts for {run:?}; report.json and manifest.json must appear together"
         )));
@@ -1362,6 +1366,30 @@ fn validate_direct_trace_bundle(
     }
     if has_report && has_manifest {
         validate_manifest_integrity(files, run)?;
+    } else if allows_manifest_only_metadata {
+        validate_manifest_trace_integrity(files, run)?;
+    }
+    Ok(())
+}
+
+fn validate_manifest_trace_integrity(files: &[PathBuf], run: &str) -> FozzyResult<()> {
+    let manifest_path = files
+        .iter()
+        .find(|p| p.file_name().and_then(|s| s.to_str()) == Some("manifest.json"))
+        .ok_or_else(|| {
+            crate::FozzyError::InvalidArgument(format!(
+                "incomplete direct trace artifacts for {run:?}; missing manifest.json"
+            ))
+        })?;
+    let artifacts_dir = manifest_path.parent().ok_or_else(|| {
+        crate::FozzyError::InvalidArgument(format!(
+            "invalid manifest for {run:?}: unable to resolve artifact directory"
+        ))
+    })?;
+    if load_checked_manifest_trace_summary_from_artifacts_dir(artifacts_dir, run)?.is_none() {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "invalid manifest for {run:?}: unable to load manifest-backed trace summary"
+        )));
     }
     Ok(())
 }
@@ -2087,6 +2115,62 @@ mod tests {
         let (report, manifest) =
             valid_report_and_manifest_json("r1", &report_path, &detached_artifacts, Some(&trace));
         std::fs::write(&report_path, report).expect("write report");
+        std::fs::write(detached_artifacts.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(
+            detached_artifacts.join("profile.metrics.json"),
+            br#"{"schemaVersion":"fozzy.profile_metrics.v1"}"#,
+        )
+        .expect("write metrics");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let resolved =
+            resolve_artifacts_dir(&cfg, &trace.to_string_lossy()).expect("resolve artifacts dir");
+        assert_eq!(resolved, detached_artifacts);
+
+        let entries = artifacts_list(&cfg, &trace.to_string_lossy()).expect("artifacts list");
+        assert!(entries.iter().any(|entry| {
+            entry.path
+                == detached_artifacts
+                    .join("profile.metrics.json")
+                    .to_string_lossy()
+        }));
+    }
+
+    #[test]
+    fn direct_trace_uses_manifest_only_declared_artifacts_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-trace-manifest-only-artifacts-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("root dir");
+        let trace = root.join("record.trace.fozzy");
+        let detached_artifacts = root.join("record.trace.profile-artifacts");
+        std::fs::create_dir_all(&detached_artifacts).expect("artifacts dir");
+        let report_path = detached_artifacts.join("report.json");
+        std::fs::write(
+            &trace,
+            valid_trace_json("r1", &trace, &report_path, &detached_artifacts),
+        )
+        .expect("write trace");
+        let (_, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &detached_artifacts, Some(&trace));
         std::fs::write(detached_artifacts.join("manifest.json"), manifest).expect("manifest");
         std::fs::write(
             detached_artifacts.join("profile.metrics.json"),
@@ -3057,6 +3141,71 @@ mod tests {
         };
         let resolved = resolve_artifacts_dir(&cfg, "latest").expect("resolve latest");
         assert_eq!(resolved, healthy_dir);
+    }
+
+    #[test]
+    fn latest_alias_accepts_newer_manifest_only_wrapper() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-latest-manifest-only-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+        let runs_dir = cfg.runs_dir();
+        let older_dir = runs_dir.join("older");
+        let newer_dir = runs_dir.join("newer");
+        std::fs::create_dir_all(&older_dir).expect("older");
+        std::fs::create_dir_all(&newer_dir).expect("newer");
+
+        let older_trace = root.join("older.trace.fozzy");
+        std::fs::write(
+            &older_trace,
+            valid_trace_json("older", &older_trace, &older_dir.join("report.json"), &older_dir),
+        )
+        .expect("older trace");
+        let (older_report, older_manifest) = valid_report_and_manifest_json(
+            "older",
+            &older_dir.join("report.json"),
+            &older_dir,
+            Some(&older_trace),
+        );
+        std::fs::write(older_dir.join("report.json"), older_report).expect("older report");
+        std::fs::write(older_dir.join("manifest.json"), older_manifest).expect("older manifest");
+
+        let newer_trace = root.join("newer.trace.fozzy");
+        std::fs::write(
+            &newer_trace,
+            valid_trace_json("newer", &newer_trace, &newer_dir.join("report.json"), &newer_dir),
+        )
+        .expect("newer trace");
+        let (_, newer_manifest) = valid_report_and_manifest_json(
+            "newer",
+            &newer_dir.join("report.json"),
+            &newer_dir,
+            Some(&newer_trace),
+        );
+        std::fs::write(newer_dir.join("manifest.json"), newer_manifest).expect("newer manifest");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(newer_dir.join("mtime.touch"), b"newer").expect("touch newer");
+
+        let resolved = resolve_artifacts_dir(&cfg, "latest").expect("resolve latest");
+        assert_eq!(resolved, newer_dir);
     }
 
     #[test]
