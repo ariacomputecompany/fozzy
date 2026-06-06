@@ -496,8 +496,7 @@ pub(super) fn run_gate_command(
     }
 
     let discovered = discover_scenarios(scenario_root);
-    let discovered_count = discovered.steps.len() + discovered.distributed.len();
-    if !discovered.parse_errors.is_empty() || discovered_count == 0 {
+    if !discovered.parse_errors.is_empty() || discovered.steps.is_empty() {
         push(
             "discover",
             FullStepStatus::Failed,

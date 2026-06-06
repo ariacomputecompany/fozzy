@@ -3385,6 +3385,67 @@ fn gate_fails_when_no_scenarios_are_discovered() {
 }
 
 #[test]
+fn gate_fails_discover_when_only_distributed_scenarios_exist() {
+    let ws = temp_workspace("gate-distributed-only");
+    let scenario_root = ws.join("tests");
+    std::fs::create_dir_all(&scenario_root).expect("create tests dir");
+    std::fs::write(
+        scenario_root.join("distributed.fozzy.json"),
+        r#"{
+          "version":1,
+          "name":"distributed-only",
+          "distributed":{
+            "node_count":2,
+            "steps":[{"type":"tick","duration":"1ms"}],
+            "invariants":[]
+          }
+        }"#,
+    )
+    .expect("write distributed scenario");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_fozzy"))
+        .args([
+            "--cwd",
+            ws.to_str().expect("ws str"),
+            "gate",
+            "--profile",
+            "targeted",
+            "--scenario-root",
+            scenario_root.to_str().expect("tests str"),
+            "--seed",
+            "7",
+            "--doctor-runs",
+            "2",
+            "--json",
+        ])
+        .output()
+        .expect("run gate");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "gate should fail when only distributed scenarios are discovered: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = parse_json_stdout(&out);
+    assert_eq!(
+        full_step_status(&doc, "discover").as_deref(),
+        Some("failed"),
+        "discover should fail when gate has no executable step scenarios"
+    );
+    assert!(
+        full_step_detail(&doc, "discover")
+            .unwrap_or_default()
+            .contains("step_scenarios=0 distributed_scenarios=1"),
+        "discover should report that only distributed scenarios were found"
+    );
+    assert_eq!(
+        full_step_status(&doc, "scope_match").as_deref(),
+        Some("failed"),
+        "scope_match should still fail when no step scenarios are available"
+    );
+}
+
+#[test]
 fn profile_golden_run_top_flame_timeline_export_flow() {
     let ws = temp_workspace("profile-golden-flow");
     let scenario = ws.join("memory.pass.fozzy.json");
