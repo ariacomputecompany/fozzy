@@ -178,10 +178,9 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
         let mut out = Vec::new();
         let mut files = vec![run_path.clone()];
         push_if_exists(&mut out, ArtifactKind::Trace, run_path.clone())?;
-        let allow_sidecars_without_metadata =
-            trusted_trace_declared_artifacts_dir(&run_path)?.is_some();
-        let artifacts_dir = resolve_artifacts_dir(config, run)?;
-        if artifacts_dir != run_path {
+        let trusted_artifacts_dir = trusted_explicit_trace_artifacts_dir(&run_path)?;
+        let allow_sidecars_without_metadata = trusted_artifacts_dir.is_some();
+        if let Some(artifacts_dir) = trusted_artifacts_dir {
             for (kind, path) in [
                 (ArtifactKind::Timeline, artifacts_dir.join("timeline.json")),
                 (
@@ -218,6 +217,10 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
                 }
                 push_if_exists(&mut out, kind, path)?;
             }
+        } else if has_untrusted_sibling_artifacts(&run_path)? {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "untrusted sibling artifacts for direct trace {run:?}; report.json and manifest.json are required to trust sibling files"
+            )));
         }
         validate_direct_trace_bundle(&files, run, allow_sidecars_without_metadata)?;
         return Ok(out);
@@ -831,6 +834,94 @@ fn trusted_trace_declared_artifacts_dir(trace_path: &Path) -> FozzyResult<Option
         return Ok(None);
     }
     Ok(Some(artifacts_dir))
+}
+
+fn trusted_explicit_trace_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
+    if let Some(artifacts_dir) = trusted_trace_declared_artifacts_dir(trace_path)? {
+        return Ok(Some(artifacts_dir));
+    }
+
+    let Some(parent) = trace_path.parent() else {
+        return Ok(None);
+    };
+    if parent == trace_path {
+        return Ok(None);
+    }
+    let Some(summary) =
+        load_checked_run_summary_from_artifacts_dir(parent, &trace_path.display().to_string())?
+    else {
+        return Ok(None);
+    };
+    let Some(resolved_trace) = resolve_trace_path_from_artifacts_dir(parent)? else {
+        return Ok(None);
+    };
+    let expected_trace =
+        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
+    let actual_trace =
+        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
+    if actual_trace != expected_trace {
+        return Ok(None);
+    }
+    let trace = TraceFile::read_json(trace_path)?;
+    if summary.identity.run_id != trace.summary.identity.run_id
+        || summary.identity.seed != trace.summary.identity.seed
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(parent.to_path_buf()))
+}
+
+fn has_untrusted_sibling_artifacts(trace_path: &Path) -> FozzyResult<bool> {
+    let Some(parent) = trace_path.parent() else {
+        return Ok(false);
+    };
+    let explicit_trace =
+        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
+    let has_artifactish_siblings = std::fs::read_dir(parent)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path == *trace_path {
+                return None;
+            }
+            if let Ok(canonical) = std::fs::canonicalize(&path)
+                && canonical == explicit_trace
+            {
+                return None;
+            }
+            let name = path.file_name()?.to_string_lossy().to_string();
+            let is_trace = path.is_file() && crate::is_trace_path(&path);
+            let is_artifact = matches!(
+                name.as_str(),
+                "timeline.json"
+                    | "profile.timeline.json"
+                    | "profile.cpu.json"
+                    | "profile.heap.json"
+                    | "profile.latency.json"
+                    | "profile.metrics.json"
+                    | "symbols.json"
+                    | "memory.timeline.json"
+                    | "memory.leaks.json"
+                    | "memory.graph.json"
+                    | "memory.delta.json"
+                    | "report.json"
+                    | "events.json"
+                    | "coverage.json"
+                    | "manifest.json"
+                    | "report.html"
+                    | "junit.xml"
+            );
+            (is_trace || is_artifact).then_some(path)
+        })
+        .next()
+        .is_some();
+    if !has_artifactish_siblings {
+        return Ok(false);
+    }
+
+    Ok(load_checked_run_summary_from_artifacts_dir(parent, &trace_path.display().to_string())?
+        .is_none())
 }
 
 pub(crate) fn resolve_trace_path_from_artifacts_dir(
@@ -2784,6 +2875,67 @@ mod tests {
         export_reproducer_pack(&cfg, &trace_path.to_string_lossy(), &out_pack)
             .expect("pack should succeed");
         export_artifacts(&cfg, &trace_path.to_string_lossy(), &out_export)
+            .expect("export should succeed");
+        assert!(out_pack.exists());
+        assert!(out_export.exists());
+    }
+
+    #[test]
+    fn direct_trace_ignores_coherent_foreign_sibling_wrapper() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-foreign-wrapper-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let explicit_trace = root.join("direct.trace.fozzy");
+        let sibling_trace = root.join("trace.fozzy");
+        let report_path = root.join("report.json");
+        let (report, manifest) = valid_report_and_manifest_json(
+            "sibling-run",
+            &report_path,
+            &root,
+            Some(&sibling_trace),
+        );
+        std::fs::write(
+            &explicit_trace,
+            valid_trace_json("explicit-run", &explicit_trace, &report_path, &root),
+        )
+        .expect("explicit trace");
+        std::fs::write(
+            &sibling_trace,
+            valid_trace_json("sibling-run", &sibling_trace, &report_path, &root),
+        )
+        .expect("sibling trace");
+        std::fs::write(&report_path, report).expect("report");
+        std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+        let out_pack = root.join("pack.zip");
+        let out_export = root.join("export.zip");
+
+        let entries = artifacts_list(&cfg, &explicit_trace.to_string_lossy()).expect("list");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, explicit_trace.to_string_lossy());
+
+        export_reproducer_pack(&cfg, &explicit_trace.to_string_lossy(), &out_pack)
+            .expect("pack should succeed");
+        export_artifacts(&cfg, &explicit_trace.to_string_lossy(), &out_export)
             .expect("export should succeed");
         assert!(out_pack.exists());
         assert!(out_export.exists());
