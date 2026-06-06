@@ -460,18 +460,19 @@ fn report_show_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .get("format")
         .and_then(|v| v.as_str())
         .unwrap_or("pretty");
+    let known_format = matches!(format, "pretty" | "junit" | "html");
     let bytes = value
         .get("content")
         .and_then(|v| v.as_str())
         .map(|s| s.len())
         .unwrap_or(0);
     (
-        if bytes > 0 {
+        if bytes > 0 && known_format {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
-        format!("format={format} content_bytes={bytes}"),
+        format!("format={format} known_format={} content_bytes={bytes}", known_format),
     )
 }
 
@@ -2850,6 +2851,16 @@ mod tests {
         let (status, detail) = report_show_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("content_bytes=0"));
+        assert!(detail.contains("known_format=true"));
+    }
+
+    #[test]
+    fn report_show_status_rejects_unknown_format() {
+        let value = serde_json::json!({"format": "markdown", "content": "# ok"});
+        let (status, detail) = report_show_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("format=markdown"));
+        assert!(detail.contains("known_format=false"));
     }
 
     #[test]
