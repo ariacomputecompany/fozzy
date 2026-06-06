@@ -486,6 +486,60 @@ fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
     )
 }
 
+fn doctor_report_status(
+    report: &fozzy::DoctorReport,
+    strict: bool,
+    scenario: &Path,
+    runs: u32,
+) -> (FullStepStatus, String) {
+    let signal_count = report
+        .nondeterminism_signals
+        .as_ref()
+        .map(|signals| signals.len())
+        .unwrap_or(0);
+    let policy_ok = !strict || (report.issues.is_empty() && signal_count == 0);
+    let failing = report
+        .issues
+        .iter()
+        .map(|issue| match issue.hint.as_deref() {
+            Some(hint) if !hint.is_empty() => format!("{}: {} ({hint})", issue.code, issue.message),
+            _ => format!("{}: {}", issue.code, issue.message),
+        })
+        .chain(
+            report
+                .nondeterminism_signals
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|signal| format!("signal {}: {}", signal.source, signal.detail)),
+        )
+        .collect::<Vec<_>>();
+    let detail = if failing.is_empty() {
+        format!(
+            "issues=0 signals=0 runs={} scenario={} failed=<none>",
+            runs,
+            scenario.display()
+        )
+    } else {
+        format!(
+            "issues={} signals={} runs={} scenario={} failed={}",
+            report.issues.len(),
+            signal_count,
+            runs,
+            scenario.display(),
+            failing.join("; ")
+        )
+    };
+    (
+        if report.ok && policy_ok {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        detail,
+    )
+}
+
 fn clean_tree_step_status(detail: &str) -> FullStepStatus {
     if detail.contains("check skipped") {
         FullStepStatus::Skipped
@@ -625,26 +679,9 @@ pub(super) fn run_gate_command(
         },
     ) {
         Ok(report) => {
-            let policy_ok = !strict
-                || (report.issues.is_empty()
-                    && report
-                        .nondeterminism_signals
-                        .as_ref()
-                        .map_or(true, |signals| signals.is_empty()));
-            push(
-                "doctor_deep",
-                if report.ok && policy_ok {
-                    FullStepStatus::Passed
-                } else {
-                    FullStepStatus::Failed
-                },
-                format!(
-                    "ok={} policy_ok={} scenario={}",
-                    report.ok,
-                    policy_ok,
-                    primary.display()
-                ),
-            );
+            let (status, detail) =
+                doctor_report_status(&report, strict, primary.as_path(), doctor_runs.max(2));
+            push("doctor_deep", status, detail);
         }
         Err(err) => push("doctor_deep", FullStepStatus::Failed, err.to_string()),
     }
@@ -1149,27 +1186,9 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(doctor) => {
-                let doctor_failed_strict = strict
-                    && (!doctor.issues.is_empty()
-                        || doctor
-                            .nondeterminism_signals
-                            .as_ref()
-                            .is_some_and(|s| !s.is_empty()));
-                push(
-                    "doctor_deep",
-                    if doctor.ok && !doctor_failed_strict {
-                        FullStepStatus::Passed
-                    } else {
-                        FullStepStatus::Failed
-                    },
-                    format!(
-                        "ok={} strict_policy_ok={} runs={} scenario={}",
-                        doctor.ok,
-                        !doctor_failed_strict,
-                        doctor_runs.max(2),
-                        primary.display()
-                    ),
-                );
+                let (status, detail) =
+                    doctor_report_status(&doctor, strict, primary.as_path(), doctor_runs.max(2));
+                push("doctor_deep", status, detail);
             }
             Err(err) => push("doctor_deep", FullStepStatus::Failed, err.to_string()),
         }
@@ -2408,6 +2427,27 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("checks=2"));
         assert!(detail.contains("strict_warning_policy: strict=true warnings="));
+    }
+
+    #[test]
+    fn doctor_report_status_surfaces_issue_and_hint() {
+        let report = fozzy::DoctorReport {
+            ok: false,
+            issues: vec![fozzy::DoctorIssue {
+                code: "proc_unmatched_preflight".to_string(),
+                message: "strict proc backend preflight found an undeclared subprocess"
+                    .to_string(),
+                hint: Some("Add a `proc_when` step".to_string()),
+            }],
+            nondeterminism_signals: None,
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("issues=1"));
+        assert!(detail.contains("proc_unmatched_preflight: strict proc backend preflight found an undeclared subprocess"));
+        assert!(detail.contains("Add a `proc_when` step"));
     }
 
     #[test]

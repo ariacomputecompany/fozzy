@@ -2051,6 +2051,48 @@ fn doctor_deep_preflights_proc_unmatched_scenarios() {
 }
 
 #[test]
+fn gate_doctor_deep_surfaces_issue_detail() {
+    let ws = temp_workspace("gate-doctor-detail");
+    let scenario_root = ws.join("tests");
+    std::fs::create_dir_all(&scenario_root).expect("create tests dir");
+    std::fs::write(
+        scenario_root.join("repo-owned.fozzy.json"),
+        r#"{
+          "version":1,
+          "name":"repo-owned-proc",
+          "steps":[
+            {"type":"proc_spawn","cmd":"cargo","args":["test"]}
+          ]
+        }"#,
+    )
+    .expect("write scenario");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_fozzy"))
+        .args([
+            "--cwd",
+            ws.to_str().expect("ws str"),
+            "gate",
+            "--profile",
+            "targeted",
+            "--scenario-root",
+            scenario_root.to_str().expect("tests str"),
+            "--seed",
+            "7",
+            "--doctor-runs",
+            "2",
+            "--json",
+        ])
+        .output()
+        .expect("run gate");
+    assert_eq!(out.status.code(), Some(1), "gate should fail doctor_deep");
+    let doc = parse_json_stdout(&out);
+    assert_eq!(full_step_status(&doc, "doctor_deep").as_deref(), Some("failed"));
+    let detail = full_step_detail(&doc, "doctor_deep").expect("doctor detail");
+    assert!(detail.contains("proc_unmatched_preflight"));
+    assert!(detail.contains("Add a `proc_when` step"));
+}
+
+#[test]
 fn full_allow_expected_failures_controls_shrink_status_for_fail_class_runs() {
     let ws = temp_workspace("full-allow-expected-failures");
     let scenario_root = ws.join("tests");
