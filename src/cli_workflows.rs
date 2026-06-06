@@ -38,6 +38,36 @@ fn summarize_profile_top(value: &serde_json::Value) -> String {
     format!("warnings={warnings} empty_domains={empty_domains}")
 }
 
+fn profile_diff_status(
+    value: &serde_json::Value,
+    require_stable: bool,
+) -> (FullStepStatus, String) {
+    let verdict = value
+        .pointer("/summary/verdict")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let regressions = value
+        .pointer("/summary/regressionCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let significant = value
+        .pointer("/summary/significantRegressionCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let status = if significant > 0 || regressions > 0 || (require_stable && verdict != "stable") {
+        FullStepStatus::Failed
+    } else {
+        FullStepStatus::Passed
+    };
+    (
+        status,
+        format!(
+            "verdict={} regressions={} significant_regressions={}",
+            verdict, regressions, significant
+        ),
+    )
+}
+
 fn clean_tree_step_status(detail: &str) -> FullStepStatus {
     if detail.contains("check skipped") {
         FullStepStatus::Skipped
@@ -404,22 +434,10 @@ pub(super) fn run_gate_command(
                 },
                 strict,
             ) {
-                Ok(value) => push(
-                    "profile_diff",
-                    FullStepStatus::Passed,
-                    format!(
-                        "verdict={} regressions={} significant_regressions={}",
-                        value.pointer("/summary/verdict")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown"),
-                        value.pointer("/summary/regressionCount")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0),
-                        value.pointer("/summary/significantRegressionCount")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0)
-                    ),
-                ),
+                Ok(value) => {
+                    let (status, detail) = profile_diff_status(&value, true);
+                    push("profile_diff", status, detail)
+                }
                 Err(err) => push("profile_diff", FullStepStatus::Failed, err.to_string()),
             }
         } else {
@@ -1311,22 +1329,10 @@ pub(super) fn run_full_command(
                 },
                 strict,
             ) {
-                Ok(value) => push(
-                    "profile_diff",
-                    FullStepStatus::Passed,
-                    format!(
-                        "verdict={} regressions={} significant_regressions={}",
-                        value.pointer("/summary/verdict")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown"),
-                        value.pointer("/summary/regressionCount")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0),
-                        value.pointer("/summary/significantRegressionCount")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0)
-                    ),
-                ),
+                Ok(value) => {
+                    let (status, detail) = profile_diff_status(&value, false);
+                    push("profile_diff", status, detail)
+                }
                 Err(err) => push("profile_diff", FullStepStatus::Failed, err.to_string()),
             }
         } else {
@@ -1875,4 +1881,39 @@ fn is_preferred_distributed_scenario(path: &Path) -> bool {
         .unwrap_or_default()
         .to_ascii_lowercase();
     !name.contains("checkers")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_diff_status_rejects_regressions() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "minor_regression",
+                "regressionCount": 1,
+                "significantRegressionCount": 0
+            }
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("verdict=minor_regression"));
+    }
+
+    #[test]
+    fn profile_diff_status_requires_stable_when_requested() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "improvement",
+                "regressionCount": 0,
+                "significantRegressionCount": 0
+            }
+        });
+        let (status, _) = profile_diff_status(&value, true);
+        assert!(matches!(status, FullStepStatus::Failed));
+
+        let (status_no_stable, _) = profile_diff_status(&value, false);
+        assert!(matches!(status_no_stable, FullStepStatus::Passed));
+    }
 }
