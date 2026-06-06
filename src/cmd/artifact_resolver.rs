@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use crate::{Config, ExitStatus, FozzyError, FozzyResult, RunManifest, RunSummary, TraceFile};
 
@@ -9,15 +10,13 @@ pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<P
             return Ok(path);
         }
 
-        if path.is_file()
-            && crate::is_trace_path(&path)
-            && let Some(artifacts_dir) = trusted_trace_declared_artifacts_dir(&path)?
-        {
-            return Ok(artifacts_dir);
-        }
-
-        if let Some(parent) = path.parent() {
-            return Ok(parent.to_path_buf());
+        if path.is_file() && crate::is_trace_path(&path) {
+            if let Some(artifacts_dir) = trusted_trace_declared_artifacts_dir(&path)? {
+                return Ok(artifacts_dir);
+            }
+            if let Some(parent) = path.parent() {
+                return Ok(parent.to_path_buf());
+            }
         }
     }
 
@@ -77,7 +76,7 @@ pub(crate) fn resolve_trace_path_from_artifacts_dir(
     let local_trace = local_trace.exists().then_some(local_trace);
     let report_path = artifacts_dir.join("report.json");
     let report_trace = if report_path.exists()
-        && let Ok(summary) = serde_json::from_slice::<RunSummary>(&std::fs::read(&report_path)?)
+        && let Ok(summary) = crate::read_cached_run_summary(&report_path)
         && let Some(path) = summary.identity.trace_path
     {
         let trace_path = PathBuf::from(path);
@@ -88,7 +87,7 @@ pub(crate) fn resolve_trace_path_from_artifacts_dir(
 
     let manifest_path = artifacts_dir.join("manifest.json");
     let manifest_trace = if manifest_path.exists()
-        && let Ok(manifest) = serde_json::from_slice::<RunManifest>(&std::fs::read(&manifest_path)?)
+        && let Ok(manifest) = crate::read_cached_run_manifest(&manifest_path)
         && let Some(path) = manifest.trace_path
     {
         let trace_path = PathBuf::from(path);
@@ -142,7 +141,7 @@ pub(crate) fn load_checked_report_summary_from_artifacts_dir(
     }
     crate::validate_manifest_integrity(&files, run)?;
 
-    Ok(Some(serde_json::from_slice(&std::fs::read(report_path)?)?))
+    Ok(Some(crate::read_cached_run_summary(&report_path)?))
 }
 
 pub(crate) fn load_checked_manifest_trace_summary_from_artifacts_dir(
@@ -159,11 +158,14 @@ pub(crate) fn load_checked_manifest_trace_summary_from_artifacts_dir(
         )));
     };
     let manifest: RunManifest =
-        serde_json::from_slice(&std::fs::read(&manifest_path)?).map_err(|e| {
-            FozzyError::InvalidArgument(format!(
-                "invalid manifest for {run:?}: {} ({e})",
-                manifest_path.display()
-            ))
+        crate::read_cached_run_manifest(&manifest_path).map_err(|e| match e {
+            crate::FozzyError::Json(_) | crate::FozzyError::Trace(_) => {
+                FozzyError::InvalidArgument(format!(
+                    "invalid manifest for {run:?}: {} ({e})",
+                    manifest_path.display()
+                ))
+            }
+            other => other,
         })?;
     if manifest.schema_version != "fozzy.run_manifest.v1" {
         return Err(FozzyError::InvalidArgument(format!(
@@ -171,7 +173,7 @@ pub(crate) fn load_checked_manifest_trace_summary_from_artifacts_dir(
             manifest.schema_version
         )));
     }
-    let trace: TraceFile = serde_json::from_slice(&std::fs::read(&trace_path)?).map_err(|e| {
+    let trace: TraceFile = crate::read_cached_trace_file(&trace_path).map_err(|e| {
         FozzyError::InvalidArgument(format!(
             "invalid trace for {run:?}: {} ({e})",
             trace_path.display()
@@ -230,7 +232,76 @@ fn trace_identity_key(path: &Path) -> FozzyResult<PathBuf> {
     std::fs::canonicalize(path).map_err(Into::into)
 }
 
-fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
+#[derive(Debug, Clone)]
+struct RunAliasEntry {
+    dir: PathBuf,
+    summary: RunSummary,
+    directory_modified_ns: u128,
+}
+
+fn run_index_cache()
+-> &'static Mutex<std::collections::HashMap<PathBuf, (crate::FileFingerprint, Vec<RunAliasEntry>)>>
+{
+    static CACHE: OnceLock<
+        Mutex<std::collections::HashMap<PathBuf, (crate::FileFingerprint, Vec<RunAliasEntry>)>>,
+    > = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn load_run_index(runs_dir: &Path) -> FozzyResult<Vec<RunAliasEntry>> {
+    let fingerprint = crate::FileFingerprint::for_path(runs_dir)?;
+    if let Some((cached_fingerprint, cached)) = run_index_cache()
+        .lock()
+        .expect("run index cache poisoned")
+        .get(runs_dir)
+        .cloned()
+        .filter(|(cached_fingerprint, _)| *cached_fingerprint == fingerprint)
+    {
+        let _ = cached_fingerprint;
+        return Ok(cached);
+    }
+
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(runs_dir)?.filter_map(Result::ok) {
+        if !entry
+            .file_type()
+            .ok()
+            .is_some_and(|file_type| file_type.is_dir())
+        {
+            continue;
+        }
+        let dir = entry.path();
+        let selector = dir.display().to_string();
+        let summary = match load_checked_run_summary_from_artifacts_dir(&dir, &selector) {
+            Ok(Some(summary)) => summary,
+            Ok(None) | Err(_) => continue,
+        };
+        entries.push(RunAliasEntry {
+            dir,
+            summary,
+            directory_modified_ns: crate::FileFingerprint::for_path(&entry.path())?.modified_ns,
+        });
+    }
+    entries.sort_by(|a, b| {
+        b.summary
+            .finished_at
+            .cmp(&a.summary.finished_at)
+            .then_with(|| b.directory_modified_ns.cmp(&a.directory_modified_ns))
+            .then_with(|| b.summary.identity.run_id.cmp(&a.summary.identity.run_id))
+            .then_with(|| a.dir.cmp(&b.dir))
+    });
+    run_index_cache()
+        .lock()
+        .expect("run index cache poisoned")
+        .insert(runs_dir.to_path_buf(), (fingerprint, entries.clone()));
+    Ok(entries)
+}
+
+pub(crate) fn resolve_filtered_run_alias(
+    config: &Config,
+    run: &str,
+    accept: impl Fn(&Path, &RunSummary) -> bool,
+) -> FozzyResult<Option<PathBuf>> {
     let key = run.trim().to_ascii_lowercase();
     if key != "latest" && key != "last-pass" && key != "last-fail" {
         return Ok(None);
@@ -244,37 +315,24 @@ fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>>
         )));
     }
 
-    let mut run_dirs = std::fs::read_dir(&runs_dir)?
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            if !entry.file_type().ok()?.is_dir() {
-                return None;
-            }
-            let md = entry.metadata().ok()?;
-            let modified = md.modified().ok()?;
-            Some((entry.path(), modified))
-        })
-        .collect::<Vec<_>>();
-    run_dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    if run_dirs.is_empty() {
+    let run_index = load_run_index(&runs_dir)?;
+    if run_index.is_empty() {
         return Err(FozzyError::InvalidArgument(format!(
             "run alias {run:?} cannot be resolved: no coherent completed runs found"
         )));
     }
 
-    for (dir, _) in run_dirs {
-        let summary =
-            match load_checked_run_summary_from_artifacts_dir(&dir, &dir.display().to_string()) {
-                Ok(Some(summary)) => summary,
-                Ok(None) | Err(_) => continue,
-            };
-        if key == "latest" {
-            return Ok(Some(dir));
+    for entry in run_index {
+        if !accept(&entry.dir, &entry.summary) {
+            continue;
         }
-        if (key == "last-pass" && summary.status == ExitStatus::Pass)
-            || (key == "last-fail" && summary.status != ExitStatus::Pass)
+        if key == "latest" {
+            return Ok(Some(entry.dir));
+        }
+        if (key == "last-pass" && entry.summary.status == ExitStatus::Pass)
+            || (key == "last-fail" && entry.summary.status != ExitStatus::Pass)
         {
-            return Ok(Some(dir));
+            return Ok(Some(entry.dir));
         }
     }
     let reason = if key == "latest" {
@@ -285,4 +343,8 @@ fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>>
     Err(FozzyError::InvalidArgument(format!(
         "run alias {run:?} cannot be resolved: {reason}"
     )))
+}
+
+fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
+    resolve_filtered_run_alias(config, run, |_dir, _summary| true)
 }

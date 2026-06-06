@@ -40,14 +40,13 @@ pub use profile_types::*;
 pub use profile_build::heap_budget_findings_from_trace;
 
 use crate::{
-    Config, Finding, FindingKind, FozzyError, FozzyResult, ShrinkMinimize,
-    ShrinkOptions, TraceFile, TracePath, resolve_artifacts_dir, shrink_trace,
-    shrink_trace_with_predicate,
+    Config, Finding, FindingKind, FozzyError, FozzyResult, ShrinkMinimize, ShrinkOptions,
+    TraceFile, TracePath, resolve_artifacts_dir, shrink_trace, shrink_trace_with_predicate,
 };
 
 const RUN_OR_TRACE_HELP: &str =
     "Run selector: run id, trace path (*.fozzy), or alias (latest|last-pass|last-fail).";
-const RUN_OR_TRACE_LONG_HELP: &str = "Accepted forms:\n- run id directory under .fozzy/runs/<run-id>\n- direct trace path (*.fozzy)\n- aliases: latest, last-pass, last-fail\nResolution order:\n1) existing *.fozzy path\n2) .fozzy/runs/<selector>/trace.fozzy\n3) tracePath from report.json\n4) tracePath from manifest.json\n5) existing profile artifacts in the run directory";
+const RUN_OR_TRACE_LONG_HELP: &str = "Accepted forms:\n- run id under .fozzy/runs/<run-id>\n- direct trace path (*.fozzy)\n- aliases: latest, last-pass, last-fail\nResolution model:\n1) explicit existing *.fozzy path uses direct-trace mode\n2) otherwise resolve the selector to a validated run bundle under .fozzy/runs\n3) profiler artifacts are loaded from that validated bundle, or from the direct trace cache when a direct trace path was provided";
 
 #[derive(Debug, Subcommand)]
 pub enum ProfileCommand {
@@ -227,7 +226,7 @@ fn relaxed_cpu_warning(_strict: bool, cpu_requested: bool) -> Option<String> {
 pub fn write_profile_artifacts_from_trace(
     trace: &TraceFile,
     artifacts_dir: &Path,
-) -> FozzyResult<()> {
+) -> FozzyResult<crate::ManifestProfileMetadata> {
     write_profile_artifacts_from_trace_with_source(trace, None, artifacts_dir)
 }
 
@@ -237,6 +236,10 @@ struct ProfileArtifactSource {
     schema_version: String,
     #[serde(rename = "tracePath")]
     trace_path: String,
+    #[serde(rename = "traceSizeBytes", skip_serializing_if = "Option::is_none")]
+    trace_size_bytes: Option<u64>,
+    #[serde(rename = "traceModifiedNs", skip_serializing_if = "Option::is_none")]
+    trace_modified_ns: Option<u128>,
     #[serde(rename = "traceDigest")]
     trace_digest: String,
     #[serde(rename = "runId")]
@@ -252,7 +255,7 @@ pub fn write_profile_artifacts_from_trace_with_source(
     trace: &TraceFile,
     source_trace_path: Option<&Path>,
     artifacts_dir: &Path,
-) -> FozzyResult<()> {
+) -> FozzyResult<crate::ManifestProfileMetadata> {
     std::fs::create_dir_all(artifacts_dir)?;
     let timeline = build_profile_timeline(trace);
     let cpu = build_cpu_profile(trace, &timeline);
@@ -283,18 +286,64 @@ pub fn write_profile_artifacts_from_trace_with_source(
     write_json(&artifacts_dir.join("symbols.json"), &symbols)?;
     if let Some(path) = source_trace_path {
         let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let fingerprint = crate::FileFingerprint::for_path(path)?;
         write_json(
             &artifacts_dir.join("profile.source.json"),
             &ProfileArtifactSource {
                 schema_version: "fozzy.profile_source.v1".to_string(),
                 trace_path: canonical.to_string_lossy().to_string(),
+                trace_size_bytes: Some(fingerprint.len),
+                trace_modified_ns: Some(fingerprint.modified_ns),
                 trace_digest: trace_digest(path)?,
                 run_id: trace.summary.identity.run_id.clone(),
                 seed: trace.summary.identity.seed,
             },
         )?;
     }
-    Ok(())
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut profile_schema_versions = std::collections::BTreeMap::new();
+    for (capability, file_name, schema_version) in [
+        (
+            "timeline",
+            "profile.timeline.json",
+            "fozzy.profile_timeline_artifact.v3",
+        ),
+        ("cpu", "profile.cpu.json", "fozzy.profile_cpu_artifact.v1"),
+        (
+            "heap",
+            "profile.heap.json",
+            "fozzy.profile_heap_artifact.v1",
+        ),
+        (
+            "latency",
+            "profile.latency.json",
+            "fozzy.profile_latency_artifact.v1",
+        ),
+        (
+            "metrics",
+            "profile.metrics.json",
+            "fozzy.profile_metrics_artifact.v1",
+        ),
+        ("symbols", "symbols.json", "fozzy.symbols_map.v1"),
+    ] {
+        profile_artifacts.insert(
+            capability.to_string(),
+            artifacts_dir.join(file_name).to_string_lossy().to_string(),
+        );
+        profile_schema_versions.insert(capability.to_string(), schema_version.to_string());
+    }
+    Ok(crate::ManifestProfileMetadata {
+        profile_capabilities: vec![
+            "timeline".to_string(),
+            "cpu".to_string(),
+            "heap".to_string(),
+            "latency".to_string(),
+            "metrics".to_string(),
+            "symbols".to_string(),
+        ],
+        profile_artifacts,
+        profile_schema_versions,
+    })
 }
 
 #[cfg(test)]

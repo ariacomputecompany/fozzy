@@ -5,7 +5,7 @@ mod cli_logger;
 mod cli_runtime;
 mod cli_workflows;
 
-use clap::{Parser, Subcommand, error::ErrorKind};
+use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
 use tracing_subscriber::EnvFilter;
 
 use std::path::{Path, PathBuf};
@@ -15,8 +15,8 @@ use walkdir::WalkDir;
 use cli_logger::CliLogger;
 use cli_runtime::{
     args_request_json, enforce_strict_run, enforce_strict_summary, exit_code_for_status,
-    init_tracing, normalize_global_args, print_clap_error_and_exit, print_error_and_exit,
-    resolve_memory_options, strict_enabled,
+    init_tracing, print_clap_error_and_exit, print_error_and_exit, resolve_memory_options,
+    strict_enabled,
 };
 use fozzy::{
     ArtifactCommand, CiOptions, Config, CorpusCommand, ExitStatus, ExploreOptions, FlakeBudget,
@@ -26,6 +26,28 @@ use fozzy::{
     Reporter, RunOptions, RunSummary, ScenarioPath, ScheduleStrategy, ShrinkCoveragePolicy,
     ShrinkMinimize, TopologyProfile, TracePath,
 };
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ExecutionReporter {
+    Pretty,
+    Junit,
+    Html,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PrettyReporter {
+    Pretty,
+}
+
+impl From<ExecutionReporter> for Reporter {
+    fn from(value: ExecutionReporter) -> Self {
+        match value {
+            ExecutionReporter::Pretty => Reporter::Pretty,
+            ExecutionReporter::Junit => Reporter::Junit,
+            ExecutionReporter::Html => Reporter::Html,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "fozzy")]
@@ -122,9 +144,9 @@ enum Command {
         #[arg(long)]
         filter: Option<String>,
 
-        /// Reporter format.
+        /// Reporter artifact format (`pretty`, `junit`, or `html`). Use global `--json` for machine-readable stdout.
         #[arg(long, default_value = "pretty")]
-        reporter: Reporter,
+        reporter: ExecutionReporter,
 
         /// Record trace (.fozzy) to path.
         #[arg(long)]
@@ -165,14 +187,6 @@ enum Command {
         /// Leak budget in bytes.
         #[arg(long)]
         leak_budget: Option<u64>,
-
-        /// Emit dedicated memory artifacts.
-        #[arg(long)]
-        mem_artifacts: bool,
-
-        /// Profiler capture overhead level.
-        #[arg(long, default_value = "baseline")]
-        profile_capture: ProfileCaptureLevel,
     },
 
     /// Run a single scenario file (one-off)
@@ -189,7 +203,7 @@ enum Command {
         timeout: Option<FozzyDuration>,
 
         #[arg(long, default_value = "pretty")]
-        reporter: Reporter,
+        reporter: ExecutionReporter,
 
         #[arg(long)]
         record: Option<PathBuf>,
@@ -255,7 +269,7 @@ enum Command {
         record: Option<PathBuf>,
 
         #[arg(long, default_value = "pretty")]
-        reporter: Reporter,
+        reporter: ExecutionReporter,
 
         #[arg(long)]
         crash_only: bool,
@@ -324,7 +338,7 @@ enum Command {
         minimize: bool,
 
         #[arg(long, default_value = "pretty")]
-        reporter: Reporter,
+        reporter: ExecutionReporter,
 
         /// Behavior when --record target exists: error, overwrite, or append with numeric suffix.
         #[arg(long, default_value = "error")]
@@ -374,7 +388,7 @@ enum Command {
         profile_regen: bool,
 
         /// Optional replay-side profiler export format.
-        #[arg(long)]
+        #[arg(long, requires = "profile_export_out")]
         profile_export_format: Option<ProfileExportFormat>,
 
         /// Output path used with --profile-export-format.
@@ -382,7 +396,7 @@ enum Command {
         profile_export_out: Option<PathBuf>,
 
         #[arg(long, default_value = "pretty")]
-        reporter: Reporter,
+        reporter: ExecutionReporter,
     },
 
     /// Inspect and verify trace-file integrity/versioning
@@ -407,9 +421,9 @@ enum Command {
         #[arg(long, default_value = "all")]
         minimize: ShrinkMinimize,
 
-        /// Only `pretty` is supported here; use global `--json` for machine-readable output.
+        /// Use global `--json` for machine-readable output.
         #[arg(long, default_value = "pretty")]
-        reporter: Reporter,
+        reporter: PrettyReporter,
     },
 
     /// Manage fuzz corpora
@@ -655,9 +669,9 @@ struct GateReport {
 }
 
 fn main() -> ExitCode {
-    let normalized_args = normalize_global_args(std::env::args());
-    let json_requested = args_request_json(&normalized_args);
-    let cli = match Cli::try_parse_from(normalized_args) {
+    let args: Vec<String> = std::env::args().collect();
+    let json_requested = args_request_json(&args);
+    let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(err) => return print_clap_error_and_exit(json_requested, err),
     };

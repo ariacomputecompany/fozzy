@@ -393,13 +393,18 @@ fn validate_memory_artifact_coherence(
     }
 
     if let Some(graph_path) = graph_path {
-        let graph: crate::MemoryGraph = serde_json::from_slice(&std::fs::read(graph_path)?)
-            .map_err(|e| {
-                FozzyError::InvalidArgument(format!(
-                    "invalid memory graph for {run:?}: {} ({e})",
-                    graph_path.display()
-                ))
-            })?;
+        let graph = crate::read_cached_memory_graph(graph_path).map_err(|e| {
+            FozzyError::InvalidArgument(format!(
+                "invalid memory graph for {run:?}: {} ({e})",
+                graph_path.display()
+            ))
+        })?;
+        crate::validate_memory_graph_structure(&graph, graph_path).map_err(|e| {
+            FozzyError::InvalidArgument(format!(
+                "invalid memory graph for {run:?}: {} ({e})",
+                graph_path.display()
+            ))
+        })?;
         let alloc_nodes = graph
             .nodes
             .iter()

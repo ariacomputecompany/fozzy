@@ -28,9 +28,6 @@ pub fn run_scenario(
     let seed = opt.seed.unwrap_or_else(gen_seed);
     let run_id = Uuid::new_v4().to_string();
 
-    let started_at = wall_time_iso_utc();
-    let started = Instant::now();
-
     let run = run_scenario_inner(
         config,
         RunMode::Run,
@@ -43,8 +40,7 @@ pub fn run_scenario(
         opt.http_backend,
         opt.memory.clone(),
     )?;
-    let finished_at = wall_time_iso_utc();
-    let (duration_ms, duration_ns) = crate::duration_fields(started.elapsed());
+    let (started_at, finished_at, duration_ms, duration_ns) = trace_timing_for_run(&run);
 
     let artifacts_dir = config.runs_dir().join(&run_id);
     std::fs::create_dir_all(&artifacts_dir)?;
@@ -121,20 +117,23 @@ pub fn run_scenario(
     }
 
     let mut summary = report_summary;
-    summary.identity.trace_path = trace_path
-        .as_ref()
-        .map(|p| p.to_string_lossy().to_string());
-    write_summary_report(&summary, &report_path, &artifacts_dir)?;
+    summary.identity.trace_path = trace_path.as_ref().map(|p| p.to_string_lossy().to_string());
+    let mut profile_metadata = None;
     if emit_profile {
         profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace_with_source(
+        profile_metadata = Some(write_profile_artifacts_from_trace_with_source(
             &profile_trace,
             trace_path.as_deref(),
             &artifacts_dir,
-        )?;
+        )?);
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    write_summary_report(
+        &summary,
+        &report_path,
+        &artifacts_dir,
+        profile_metadata.as_ref(),
+    )?;
 
     Ok(RunResult { summary })
 }
@@ -274,7 +273,6 @@ pub fn replay_trace(
         summary.findings = crate::collapse_findings(summary.findings.clone());
     }
 
-    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     let explicit_capture = opt.dump_events || opt.step;
     let emit_heavy = should_emit_heavy_artifacts(run.status, explicit_capture)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
@@ -292,12 +290,22 @@ pub fn replay_trace(
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
     }
+    let mut profile_metadata = None;
     if emit_profile {
         profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace_with_source(&profile_trace, None, &artifacts_dir)?;
+        profile_metadata = Some(write_profile_artifacts_from_trace_with_source(
+            &profile_trace,
+            None,
+            &artifacts_dir,
+        )?);
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    write_summary_report(
+        &summary,
+        &report_path,
+        &artifacts_dir,
+        profile_metadata.as_ref(),
+    )?;
     Ok(RunResult { summary })
 }
 
@@ -347,12 +355,14 @@ fn shrink_trace_inner(
     let budget = opt.budget.unwrap_or(Duration::from_secs(15));
     let deadline = Instant::now() + budget;
     let trace_uses_host_backends = trace.events.iter().any(|event| {
-        matches!(event.name.as_str(), "proc_spawn" | "http_request" | "capability_fs")
-            && event
-                .fields
-                .get("backend")
-                .and_then(|value| value.as_str())
-                .is_some_and(|backend| backend == "host")
+        matches!(
+            event.name.as_str(),
+            "proc_spawn" | "http_request" | "capability_fs"
+        ) && event
+            .fields
+            .get("backend")
+            .and_then(|value| value.as_str())
+            .is_some_and(|backend| backend == "host")
     });
 
     let mut candidate = scenario.steps.clone();

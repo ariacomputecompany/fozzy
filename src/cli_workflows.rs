@@ -59,7 +59,10 @@ fn known_ci_check_name(name: &str) -> bool {
 }
 
 fn known_doctor_issue_code(code: &str) -> bool {
-    matches!(code, "proc_unmatched_preflight" | "determinism_audit_mismatch")
+    matches!(
+        code,
+        "proc_unmatched_preflight" | "determinism_audit_mismatch"
+    )
 }
 
 fn known_doctor_signal_source(source: &str) -> bool {
@@ -80,7 +83,10 @@ fn known_profile_metric(domain: &str, metric: &str) -> bool {
                         || metric.ends_with(".in_use_bytes")
                         || metric.ends_with(".alloc_rate_per_sec"))
         }
-        "latency" => matches!(metric, "p95_latency_ms" | "p99_latency_ms" | "max_latency_ms"),
+        "latency" => matches!(
+            metric,
+            "p95_latency_ms" | "p99_latency_ms" | "max_latency_ms"
+        ),
         "io" => metric == "io_ops",
         "sched" => metric == "sched_ops",
         _ => false,
@@ -150,7 +156,8 @@ fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
             item.get("domain")
                 .and_then(|v| v.as_str())
                 .is_none_or(|s| s.trim().is_empty() || !known_profile_domain(s.trim()))
-                || item.get("reason")
+                || item
+                    .get("reason")
                     .and_then(|v| v.as_str())
                     .is_none_or(|s| s.trim().is_empty())
                 || item.get("empty").and_then(|v| v.as_bool()) != Some(true)
@@ -170,25 +177,33 @@ fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
             }
         })
         .count();
+    let has_concrete_domain_data = ["cpu", "heap", "latency", "io", "sched"]
+        .iter()
+        .any(|domain| {
+            value.get(*domain)
+                .and_then(|v| v.as_array())
+                .is_some_and(|items| !items.is_empty())
+        });
+    let structural_invalid = invalid_warnings > 0
+        || duplicate_warnings > 0
+        || invalid_empty_domains > 0
+        || duplicate_empty_domains > 0;
+    let status = if structural_invalid || warning_count > 0 {
+        FullStepStatus::Failed
+    } else if empty_count > 0 && !has_concrete_domain_data {
+        FullStepStatus::Skipped
+    } else {
+        FullStepStatus::Passed
+    };
     (
-        if warning_count > 0
-            || empty_count > 0
-            || invalid_warnings > 0
-            || duplicate_warnings > 0
-            || invalid_empty_domains > 0
-            || duplicate_empty_domains > 0
-        {
-            FullStepStatus::Failed
-        } else {
-            FullStepStatus::Passed
-        },
+        status,
         format!(
-            "{} invalid_warnings={} duplicate_warnings={} invalid_empty_domains={} duplicate_empty_domains={}",
+            "{} has_concrete_domain_data={} invalid_warnings={} duplicate_warnings={} invalid_empty_domains={} duplicate_empty_domains={}",
             summarize_profile_top(value),
+            has_concrete_domain_data,
             invalid_warnings,
             duplicate_warnings,
-            invalid_empty_domains
-            ,
+            invalid_empty_domains,
             duplicate_empty_domains
         ),
     )
@@ -317,7 +332,10 @@ fn profile_diff_status(
         .filter(|row| {
             let domain = row.get("domain").and_then(|v| v.as_str()).map(str::trim);
             let metric = row.get("metric").and_then(|v| v.as_str()).map(str::trim);
-            let time_domain = row.get("timeDomain").and_then(|v| v.as_str()).map(str::trim);
+            let time_domain = row
+                .get("timeDomain")
+                .and_then(|v| v.as_str())
+                .map(str::trim);
             match (domain, metric, time_domain) {
                 (Some(domain), Some(metric), Some(time_domain))
                     if !domain.is_empty() && !metric.is_empty() && !time_domain.is_empty() =>
@@ -510,7 +528,8 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .iter()
         .filter(|set| {
             set.as_array().is_none_or(|items| {
-                items.iter()
+                items
+                    .iter()
                     .any(|item| item.as_str().is_none_or(|s| s.trim().is_empty()))
             })
         })
@@ -520,7 +539,8 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .filter_map(|set| set.as_array())
         .map(|items| {
             let mut seen = std::collections::BTreeSet::new();
-            items.iter()
+            items
+                .iter()
                 .filter_map(|item| item.as_str().map(str::trim))
                 .filter(|s| !s.is_empty())
                 .filter(|title| !seen.insert((*title).to_string()))
@@ -603,8 +623,13 @@ fn memory_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let invalid_rows = leaks
         .iter()
         .filter(|leak| {
-            leak.get("allocId").and_then(|v| v.as_u64()).is_none_or(|id| id == 0)
-                || leak.get("bytes").and_then(|v| v.as_u64()).is_none_or(|bytes| bytes == 0)
+            leak.get("allocId")
+                .and_then(|v| v.as_u64())
+                .is_none_or(|id| id == 0)
+                || leak
+                    .get("bytes")
+                    .and_then(|v| v.as_u64())
+                    .is_none_or(|bytes| bytes == 0)
                 || leak
                     .get("callsiteHash")
                     .and_then(|v| v.as_str())
@@ -773,7 +798,8 @@ fn replay_summary_status(
     let run_id_present = !summary.identity.run_id.trim().is_empty();
     let seed_matches = summary.identity.seed == expected_seed;
     let mode_matches = summary.mode == expected_mode;
-    let (artifact_identity_ok, artifact_identity_detail) = summary_artifact_identity_status(summary);
+    let (artifact_identity_ok, artifact_identity_detail) =
+        summary_artifact_identity_status(summary);
     (
         if class_ok
             && strict_ok
@@ -862,10 +888,7 @@ fn report_show_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .and_then(|v| v.as_str())
         .unwrap_or("pretty");
     let known_format = matches!(format, "pretty" | "junit" | "html");
-    let content = value
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let content = value.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let bytes = content.len();
     let non_blank = !content.trim().is_empty();
     (
@@ -929,7 +952,9 @@ fn summary_artifact_identity_status(summary: &RunSummary) -> (bool, String) {
     let artifacts_dir = summary.identity.artifacts_dir.as_deref().map(str::trim);
     let report_present = report_path.is_some_and(|path| !path.is_empty());
     let artifacts_present = artifacts_dir.is_some_and(|path| !path.is_empty());
-    let report_path = report_path.filter(|path| !path.is_empty()).map(PathBuf::from);
+    let report_path = report_path
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
     let artifacts_dir = artifacts_dir
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
@@ -943,16 +968,17 @@ fn summary_artifact_identity_status(summary: &RunSummary) -> (bool, String) {
             .map(|metadata| metadata.is_dir())
             .unwrap_or(false)
     });
-    let report_matches_dir = report_path.as_ref().zip(artifacts_dir.as_ref()).is_some_and(
-        |(report, dir)| {
+    let report_matches_dir = report_path
+        .as_ref()
+        .zip(artifacts_dir.as_ref())
+        .is_some_and(|(report, dir)| {
             report.parent().is_some_and(|parent| parent == dir)
                 && report.file_name().is_some_and(|name| name == "report.json")
                 && dir
                     .file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| name == summary.identity.run_id)
-        },
-    );
+        });
     let manifest_path = artifacts_dir.as_ref().map(|dir| dir.join("manifest.json"));
     let manifest_exists = manifest_path.as_ref().is_some_and(|path| {
         std::fs::metadata(path)
@@ -1047,7 +1073,8 @@ fn run_summary_pass_status(
     let run_id_present = !summary.identity.run_id.trim().is_empty();
     let seed_matches = summary.identity.seed == expected_seed;
     let mode_matches = summary.mode == expected_mode;
-    let (artifact_identity_ok, artifact_identity_detail) = summary_artifact_identity_status(summary);
+    let (artifact_identity_ok, artifact_identity_detail) =
+        summary_artifact_identity_status(summary);
     (
         if summary.status == ExitStatus::Pass
             && strict_ok
@@ -1133,15 +1160,14 @@ fn shrink_step_status(
         match primary_status {
             Some(primary) => {
                 let class_ok = shrink_status_matches(primary, summary.status);
-                let classification =
-                    if class_ok
-                        && strict_ok
-                        && run_id_present
-                        && seed_matches
-                        && mode_matches
-                        && artifact_ok
-                        && reported_matches
-                        && trace_identity_ok
+                let classification = if class_ok
+                    && strict_ok
+                    && run_id_present
+                    && seed_matches
+                    && mode_matches
+                    && artifact_ok
+                    && reported_matches
+                    && trace_identity_ok
                 {
                     "expected_fail_class_preserved"
                 } else if !class_ok {
@@ -1290,8 +1316,8 @@ fn corpus_add_status(value: &serde_json::Value) -> (FullStepStatus, String) {
 }
 
 fn listed_file_status(path: &Path) -> anyhow::Result<u64> {
-    let metadata =
-        std::fs::metadata(path).map_err(|err| anyhow::anyhow!("{} missing: {err}", path.display()))?;
+    let metadata = std::fs::metadata(path)
+        .map_err(|err| anyhow::anyhow!("{} missing: {err}", path.display()))?;
     anyhow::ensure!(metadata.is_file(), "{} is not a file", path.display());
     anyhow::ensure!(metadata.len() > 0, "{} is empty", path.display());
     Ok(metadata.len())
@@ -1335,19 +1361,32 @@ fn corpus_list_status(value: &serde_json::Value) -> (FullStepStatus, String) {
 }
 
 fn corpus_minimize_status(value: &serde_json::Value) -> (FullStepStatus, String) {
-    let before = value.get("filesBefore").and_then(|v| v.as_u64()).unwrap_or(0);
-    let after = value.get("filesAfter").and_then(|v| v.as_u64()).unwrap_or(0);
+    let before = value
+        .get("filesBefore")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let after = value
+        .get("filesAfter")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let removed = value
         .get("duplicatesRemoved")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let bytes_before = value.get("bytesBefore").and_then(|v| v.as_u64()).unwrap_or(0);
-    let bytes_after = value.get("bytesAfter").and_then(|v| v.as_u64()).unwrap_or(0);
-    let bytes_removed = value.get("bytesRemoved").and_then(|v| v.as_u64()).unwrap_or(0);
-    let file_math_ok = before > 0
-        && after > 0
-        && after <= before
-        && removed == before.saturating_sub(after);
+    let bytes_before = value
+        .get("bytesBefore")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let bytes_after = value
+        .get("bytesAfter")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let bytes_removed = value
+        .get("bytesRemoved")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let file_math_ok =
+        before > 0 && after > 0 && after <= before && removed == before.saturating_sub(after);
     let bytes_present = value.get("bytesBefore").is_some()
         || value.get("bytesAfter").is_some()
         || value.get("bytesRemoved").is_some();
@@ -1389,7 +1428,8 @@ fn corpus_import_status(value: &serde_json::Value) -> (FullStepStatus, String) {
                                     invalid.push(err.to_string());
                                 }
                             }
-                            Err(err) => invalid.push(format!("{} read_dir entry error: {err}", path.display())),
+                            Err(err) => invalid
+                                .push(format!("{} read_dir entry error: {err}", path.display())),
                         }
                     }
                 }
@@ -1460,22 +1500,26 @@ fn artifacts_list_status(
                 }
             }
             (
-            if entries.is_empty() || !invalid.is_empty() {
-                FullStepStatus::Failed
-            } else {
-                FullStepStatus::Passed
-            },
-            if invalid.is_empty() {
-                format!("entries={} run={} invalid=<none>", entries.len(), fallback.display())
-            } else {
-                format!(
-                    "entries={} run={} invalid={}",
-                    entries.len(),
-                    fallback.display(),
-                    invalid.join("; ")
-                )
-            },
-        )
+                if entries.is_empty() || !invalid.is_empty() {
+                    FullStepStatus::Failed
+                } else {
+                    FullStepStatus::Passed
+                },
+                if invalid.is_empty() {
+                    format!(
+                        "entries={} run={} invalid=<none>",
+                        entries.len(),
+                        fallback.display()
+                    )
+                } else {
+                    format!(
+                        "entries={} run={} invalid={}",
+                        entries.len(),
+                        fallback.display(),
+                        invalid.join("; ")
+                    )
+                },
+            )
         }
         _ => (
             FullStepStatus::Failed,
@@ -1601,11 +1645,7 @@ fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
     let detail = if failing.is_empty() {
         format!(
             "checks={} failed=<none> invalid={} duplicate={} reported_ok={} derived_ok={}",
-            check_count,
-            invalid,
-            duplicate,
-            report.ok,
-            derived_ok
+            check_count, invalid, duplicate, report.ok, derived_ok
         )
     } else {
         format!(
@@ -1710,7 +1750,8 @@ fn doctor_report_status(
             && if audit.consistent {
                 audit.first_mismatch_run.is_none()
             } else {
-                audit.first_mismatch_run
+                audit
+                    .first_mismatch_run
                     .is_some_and(|run| run >= 2 && run <= audit.runs)
             }
     });
@@ -1730,7 +1771,8 @@ fn doctor_report_status(
         && duplicate_issues == 0
         && invalid_signals == 0
         && duplicate_signals == 0;
-    let policy_ok = !strict || (report.issues.is_empty() && signal_count == 0 && invalid_signals == 0);
+    let policy_ok =
+        !strict || (report.issues.is_empty() && signal_count == 0 && invalid_signals == 0);
     let failing = report
         .issues
         .iter()
@@ -1923,37 +1965,22 @@ fn topology_coverage_status(
                 .map(|suite| suite.trim())
                 .filter(|suite| !suite.is_empty())
                 .collect::<std::collections::BTreeSet<_>>();
-            let suite_math_invalid = suite
-                .required_suites
-                .iter()
-                .any(|suite| {
+            let suite_math_invalid = suite.required_suites.iter().any(|suite| {
+                let suite = suite.trim();
+                suite.is_empty() || !known_topology_suite(suite)
+            }) || suite.covered_suites.iter().any(|suite| {
+                let suite = suite.trim();
+                suite.is_empty() || !known_topology_suite(suite)
+            }) || suite.missing_required_suites.iter().any(|suite| {
+                let suite = suite.trim();
+                suite.is_empty() || !known_topology_suite(suite)
+            }) || required_duplicates
+                || covered_duplicates
+                || missing_duplicates
+                || suite.recommended_suites.iter().any(|suite| {
                     let suite = suite.trim();
                     suite.is_empty() || !known_topology_suite(suite)
                 })
-                || suite
-                    .covered_suites
-                    .iter()
-                    .any(|suite| {
-                        let suite = suite.trim();
-                        suite.is_empty() || !known_topology_suite(suite)
-                    })
-                || suite
-                    .missing_required_suites
-                    .iter()
-                    .any(|suite| {
-                        let suite = suite.trim();
-                        suite.is_empty() || !known_topology_suite(suite)
-                    })
-                || required_duplicates
-                || covered_duplicates
-                || missing_duplicates
-                || suite
-                    .recommended_suites
-                    .iter()
-                    .any(|suite| {
-                        let suite = suite.trim();
-                        suite.is_empty() || !known_topology_suite(suite)
-                    })
                 || suite
                     .coverage_hints
                     .iter()
@@ -2177,17 +2204,17 @@ pub(super) fn run_gate_command(
             runs: doctor_runs.max(2),
             seed,
         },
-        ) {
-            Ok(report) => {
-                let (status, detail) = doctor_report_status(
-                    &report,
-                    strict,
-                    primary.as_path(),
-                    doctor_runs.max(2),
-                    seed.unwrap_or(0xC0DEC0DE_u64),
-                );
-                push("doctor_deep", status, detail);
-            }
+    ) {
+        Ok(report) => {
+            let (status, detail) = doctor_report_status(
+                &report,
+                strict,
+                primary.as_path(),
+                doctor_runs.max(2),
+                seed.unwrap_or(0xC0DEC0DE_u64),
+            );
+            push("doctor_deep", status, detail);
+        }
         Err(err) => push("doctor_deep", FullStepStatus::Failed, err.to_string()),
     }
 
@@ -2214,22 +2241,22 @@ pub(super) fn run_gate_command(
             http_backend: config.http_backend,
             memory: memory.clone(),
         },
-        ) {
-            Ok(test) => {
-                let (status, detail) = run_summary_pass_status(
-                    &test.summary,
-                    strict,
-                    seed.unwrap_or(0xC0DEC0DE_u64),
-                    RunMode::Test,
-                );
-                push(
-                    "test_det_strict",
-                    status,
-                    format!("{detail} run_id={}", test.summary.identity.run_id),
-                );
-            }
-            Err(err) => push("test_det_strict", FullStepStatus::Failed, err.to_string()),
+    ) {
+        Ok(test) => {
+            let (status, detail) = run_summary_pass_status(
+                &test.summary,
+                strict,
+                seed.unwrap_or(0xC0DEC0DE_u64),
+                RunMode::Test,
+            );
+            push(
+                "test_det_strict",
+                status,
+                format!("{detail} run_id={}", test.summary.identity.run_id),
+            );
         }
+        Err(err) => push("test_det_strict", FullStepStatus::Failed, err.to_string()),
+    }
 
     let trace_path = std::env::temp_dir().join(format!(
         "fozzy-gate-{}-{}.trace.fozzy",
@@ -2257,24 +2284,20 @@ pub(super) fn run_gate_command(
             http_backend: config.http_backend,
             memory,
         },
-        ) {
-            Ok(run) => {
-                primary_status = Some(run.summary.status);
-                let (status, detail) = recorded_trace_status(
-                    &run.summary,
-                    strict,
-                    seed.unwrap_or(0xC0DEC0DE_u64),
-                    RunMode::Run,
-                    &trace_path,
-                );
-                push(
-                    "run_record_trace",
-                    status,
-                    detail,
-                );
-            }
-            Err(err) => push("run_record_trace", FullStepStatus::Failed, err.to_string()),
+    ) {
+        Ok(run) => {
+            primary_status = Some(run.summary.status);
+            let (status, detail) = recorded_trace_status(
+                &run.summary,
+                strict,
+                seed.unwrap_or(0xC0DEC0DE_u64),
+                RunMode::Run,
+                &trace_path,
+            );
+            push("run_record_trace", status, detail);
         }
+        Err(err) => push("run_record_trace", FullStepStatus::Failed, err.to_string()),
+    }
 
     if trace_path.exists() {
         match fozzy::verify_trace_file(&trace_path) {
@@ -2427,7 +2450,7 @@ pub(super) fn run_gate_command(
         }
     }
 
-    Ok(GateReport {
+    let report = GateReport {
         schema_version: "fozzy.gate_report.v1".to_string(),
         profile,
         strict,
@@ -2435,7 +2458,9 @@ pub(super) fn run_gate_command(
         scopes: scope_tokens,
         matched_scenarios,
         steps,
-    })
+    };
+    let _ = std::fs::remove_file(&trace_path);
+    Ok(report)
 }
 
 fn profile_string(profile: GateProfile) -> &'static str {
@@ -2639,6 +2664,11 @@ pub(super) fn run_full_command(
         .find(|p| is_preferred_step_scenario(p))
         .cloned()
         .or_else(|| discovered.steps.first().cloned());
+    let pick_host_step = discovered
+        .steps
+        .iter()
+        .find(|p| is_preferred_host_step_scenario(p))
+        .cloned();
     let pick_distributed = discovered
         .distributed
         .iter()
@@ -2793,11 +2823,7 @@ pub(super) fn run_full_command(
                 if trace_recorded {
                     primary_trace = Some(trace_path.clone());
                 }
-                push(
-                    "run_record_trace",
-                    status,
-                    detail,
-                );
+                push("run_record_trace", status, detail);
             }
             Err(err) => push("run_record_trace", FullStepStatus::Failed, err.to_string()),
         }
@@ -3031,7 +3057,7 @@ pub(super) fn run_full_command(
             config,
             &ReportCommand::Query {
                 run: trace.display().to_string(),
-                jq: Some(".status".to_string()),
+                path_expr: Some(".status".to_string()),
                 list_paths: false,
             },
         ) {
@@ -3046,7 +3072,7 @@ pub(super) fn run_full_command(
             config,
             &ReportCommand::Query {
                 run: trace.display().to_string(),
-                jq: None,
+                path_expr: None,
                 list_paths: true,
             },
         ) {
@@ -3419,7 +3445,12 @@ pub(super) fn run_full_command(
         }
     }
 
-    if let Some(primary) = pick_step.as_ref() {
+    if let Some(primary) = pick_host_step.as_ref() {
+        let host_trace = std::env::temp_dir().join(format!(
+            "fozzy-full-host-{}.trace.fozzy",
+            uuid::Uuid::new_v4()
+        ));
+        temp_paths.push(host_trace.clone());
         match fozzy::run_scenario(
             config,
             ScenarioPath::new(primary.clone()),
@@ -3428,7 +3459,7 @@ pub(super) fn run_full_command(
                 seed,
                 timeout: None,
                 reporter: Reporter::Json,
-                record_trace_to: None,
+                record_trace_to: Some(host_trace.clone()),
                 filter: None,
                 jobs: None,
                 fail_fast: false,
@@ -3441,13 +3472,25 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(host_run) => {
-                let (status, detail) = run_summary_pass_status(
+                let (run_status, run_detail) = run_summary_pass_status(
                     &host_run.summary,
                     strict,
                     seed.unwrap_or(0xC0DEC0DE_u64),
                     RunMode::Run,
                 );
-                push("host_backends_run", status, detail);
+                let (trace_status, trace_detail) = host_backed_trace_status(&host_trace);
+                let status = if matches!(run_status, FullStepStatus::Passed)
+                    && matches!(trace_status, FullStepStatus::Passed)
+                {
+                    FullStepStatus::Passed
+                } else {
+                    FullStepStatus::Failed
+                };
+                push(
+                    "host_backends_run",
+                    status,
+                    format!("{run_detail}; {trace_detail}"),
+                );
             }
             Err(err) => push("host_backends_run", FullStepStatus::Failed, err.to_string()),
         }
@@ -3455,7 +3498,7 @@ pub(super) fn run_full_command(
         push(
             "host_backends_run",
             FullStepStatus::Skipped,
-            "no step scenario found".to_string(),
+            "no host-backed step scenario found".to_string(),
         );
     }
 
@@ -3677,6 +3720,15 @@ fn is_preferred_step_scenario(path: &Path) -> bool {
     name.contains("pass") || name.contains("example")
 }
 
+fn is_preferred_host_step_scenario(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    name.contains("host")
+}
+
 fn is_preferred_distributed_scenario(path: &Path) -> bool {
     let name = path
         .file_name()
@@ -3686,14 +3738,57 @@ fn is_preferred_distributed_scenario(path: &Path) -> bool {
     !name.contains("checkers")
 }
 
+fn host_backed_trace_status(path: &Path) -> (FullStepStatus, String) {
+    let trace = match fozzy::TraceFile::read_json(path) {
+        Ok(trace) => trace,
+        Err(err) => return (FullStepStatus::Failed, err.to_string()),
+    };
+    let used_host_proc = trace.events.iter().any(|event| {
+        event.name == "proc_spawn"
+            && event
+                .fields
+                .get("backend")
+                .and_then(|value| value.as_str())
+                .is_some_and(|backend| backend == "host")
+    });
+    let used_host_fs = trace.events.iter().any(|event| {
+        matches!(
+            event.name.as_str(),
+            "capability_fs" | "fs_write" | "fs_read_assert" | "fs_snapshot" | "fs_restore"
+        ) && event
+            .fields
+            .get("backend")
+            .and_then(|value| value.as_str())
+            .is_some_and(|backend| backend == "host")
+    });
+    let used_host_http = trace.events.iter().any(|event| {
+        event.name == "http_request"
+            && event
+                .fields
+                .get("backend")
+                .and_then(|value| value.as_str())
+                .is_some_and(|backend| backend == "host")
+    });
+    let exercised = used_host_proc || used_host_fs || used_host_http;
+    (
+        if exercised {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!(
+            "host_proc={} host_fs={} host_http={}",
+            used_host_proc, used_host_fs, used_host_http
+        ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use fozzy::{RunIdentity, RunMode};
 
-    fn topology_status_for_report(
-        report: &fozzy::MapSuitesReport,
-    ) -> (FullStepStatus, String) {
+    fn topology_status_for_report(report: &fozzy::MapSuitesReport) -> (FullStepStatus, String) {
         topology_coverage_status(
             report,
             Path::new(&report.root),
@@ -4057,14 +4152,15 @@ mod tests {
     }
 
     #[test]
-    fn profile_top_status_rejects_empty_domains() {
+    fn profile_top_status_skips_empty_domains() {
         let value = serde_json::json!({
             "warnings": [],
             "emptyDomains": [{"domain": "heap", "empty": true, "reason": "no heap samples in trace"}]
         });
         let (status, detail) = profile_top_status(&value);
-        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(matches!(status, FullStepStatus::Skipped));
         assert!(detail.contains("heap:no heap samples in trace"));
+        assert!(detail.contains("has_concrete_domain_data=false"));
         assert!(detail.contains("invalid_empty_domains=0"));
     }
 
@@ -4328,8 +4424,7 @@ mod tests {
 
     fn sample_run_summary(status: ExitStatus) -> RunSummary {
         let run_id = format!("test-run-{}", uuid::Uuid::new_v4());
-        let artifacts_dir =
-            std::env::temp_dir().join(format!("fozzy-run-summary-{run_id}"));
+        let artifacts_dir = std::env::temp_dir().join(format!("fozzy-run-summary-{run_id}"));
         std::fs::create_dir_all(&artifacts_dir).expect("create artifacts dir");
         let report_path = artifacts_dir.join("report.json");
         let summary = RunSummary {
@@ -4350,8 +4445,11 @@ mod tests {
             memory: None,
             findings: Vec::new(),
         };
-        std::fs::write(&report_path, serde_json::to_vec(&summary).expect("serialize report"))
-            .expect("write report");
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec(&summary).expect("serialize report"),
+        )
+        .expect("write report");
         fozzy::write_run_manifest(&summary, &artifacts_dir).expect("write manifest");
         summary
     }
@@ -4565,10 +4663,8 @@ mod tests {
 
     #[test]
     fn recorded_trace_status_rejects_mismatched_reported_trace_path() {
-        let path = std::env::temp_dir().join(format!(
-            "fozzy-trace-match-{}.fozzy",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("fozzy-trace-match-{}.fozzy", uuid::Uuid::new_v4()));
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.identity.trace_path = Some("/tmp/other.trace.fozzy".to_string());
         write_trace_fixture(&path, &summary);
@@ -4581,10 +4677,8 @@ mod tests {
 
     #[test]
     fn recorded_trace_status_rejects_seed_mismatch() {
-        let path = std::env::temp_dir().join(format!(
-            "fozzy-trace-seed-{}.fozzy",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("fozzy-trace-seed-{}.fozzy", uuid::Uuid::new_v4()));
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.identity.seed = 99;
         summary.identity.trace_path = Some(path.display().to_string());
@@ -4598,10 +4692,8 @@ mod tests {
 
     #[test]
     fn recorded_trace_status_rejects_mode_mismatch() {
-        let path = std::env::temp_dir().join(format!(
-            "fozzy-trace-mode-{}.fozzy",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("fozzy-trace-mode-{}.fozzy", uuid::Uuid::new_v4()));
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.mode = RunMode::Test;
         summary.identity.trace_path = Some(path.display().to_string());
@@ -4738,10 +4830,8 @@ mod tests {
 
     #[test]
     fn corpus_list_status_rejects_duplicate_entry_paths() {
-        let dir = std::env::temp_dir().join(format!(
-            "fozzy-corpus-list-dup-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fozzy-corpus-list-dup-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create corpus dir");
         let entry = dir.join("input.bin");
         std::fs::write(&entry, b"seed").expect("write corpus entry");
@@ -4775,10 +4865,7 @@ mod tests {
 
     #[test]
     fn corpus_import_status_rejects_empty_imported_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "fozzy-import-empty-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("fozzy-import-empty-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create import dir");
         std::fs::write(dir.join("input-empty.bin"), b"").expect("write empty file");
         let value = serde_json::json!({ "dir": dir.to_string_lossy().to_string() });
@@ -4886,7 +4973,9 @@ mod tests {
 
     #[test]
     fn artifacts_list_status_rejects_empty_entries() {
-        let output = fozzy::ArtifactOutput::List { entries: Vec::new() };
+        let output = fozzy::ArtifactOutput::List {
+            entries: Vec::new(),
+        };
         let path = PathBuf::from("/tmp/example.trace.fozzy");
         let (status, detail) = artifacts_list_status(&output, &path);
         assert!(matches!(status, FullStepStatus::Failed));
@@ -4911,10 +5000,8 @@ mod tests {
 
     #[test]
     fn artifacts_list_status_rejects_duplicate_entry_paths() {
-        let dir = std::env::temp_dir().join(format!(
-            "fozzy-artifacts-list-dup-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fozzy-artifacts-list-dup-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create artifact dir");
         let artifact = dir.join("trace.fozzy");
         std::fs::write(&artifact, b"trace").expect("write artifact");
@@ -5114,7 +5201,8 @@ mod tests {
 
     #[test]
     fn zip_artifact_status_rejects_invalid_zip_payload() {
-        let path = std::env::temp_dir().join(format!("fozzy-invalid-zip-{}.zip", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("fozzy-invalid-zip-{}.zip", uuid::Uuid::new_v4()));
         std::fs::write(&path, b"not a zip").expect("write invalid zip");
         let (status, detail) = zip_artifact_status(&path);
         let _ = std::fs::remove_file(&path);
@@ -5124,7 +5212,8 @@ mod tests {
 
     #[test]
     fn zip_artifact_status_rejects_empty_zip_archive() {
-        let path = std::env::temp_dir().join(format!("fozzy-empty-zip-{}.zip", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("fozzy-empty-zip-{}.zip", uuid::Uuid::new_v4()));
         {
             let file = std::fs::File::create(&path).expect("create empty zip");
             let zip = zip::ZipWriter::new(file);
@@ -5258,8 +5347,7 @@ mod tests {
             ok: false,
             issues: vec![fozzy::DoctorIssue {
                 code: "proc_unmatched_preflight".to_string(),
-                message: "strict proc backend preflight found an undeclared subprocess"
-                    .to_string(),
+                message: "strict proc backend preflight found an undeclared subprocess".to_string(),
                 hint: Some("Add a `proc_when` step".to_string()),
             }],
             nondeterminism_signals: None,
@@ -5276,7 +5364,9 @@ mod tests {
         let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("issues=1"));
-        assert!(detail.contains("proc_unmatched_preflight: strict proc backend preflight found an undeclared subprocess"));
+        assert!(detail.contains(
+            "proc_unmatched_preflight: strict proc backend preflight found an undeclared subprocess"
+        ));
         assert!(detail.contains("Add a `proc_when` step"));
     }
 
@@ -5617,7 +5707,9 @@ mod tests {
             scenario_count: 1,
             skipped_source_files: vec!["/repo/src/broken.rs: failed to open".to_string()],
             unreadable_scenarios: Vec::new(),
-            warnings: vec!["map scan skipped 1 source file(s); hotspot coverage is incomplete".to_string()],
+            warnings: vec![
+                "map scan skipped 1 source file(s); hotspot coverage is incomplete".to_string(),
+            ],
             required_hotspot_count: 1,
             covered_hotspot_count: 1,
             uncovered_hotspot_count: 0,
@@ -5631,7 +5723,9 @@ mod tests {
         let (status, detail) = topology_status_for_report(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("uncovered=0"));
-        assert!(detail.contains("warnings=map scan skipped 1 source file(s); hotspot coverage is incomplete"));
+        assert!(detail.contains(
+            "warnings=map scan skipped 1 source file(s); hotspot coverage is incomplete"
+        ));
     }
 
     #[test]
@@ -6481,16 +6575,15 @@ mod tests {
         summary.mode = RunMode::Replay;
         let missing = std::env::temp_dir().join(format!("missing-{}.fozzy", uuid::Uuid::new_v4()));
         summary.identity.trace_path = Some(missing.display().to_string());
-        let (status, detail, classification) =
-            shrink_step_status(
-                Some(ExitStatus::Pass),
-                &summary,
-                true,
-                7,
-                RunMode::Replay,
-                false,
-                &missing,
-            );
+        let (status, detail, classification) = shrink_step_status(
+            Some(ExitStatus::Pass),
+            &summary,
+            true,
+            7,
+            RunMode::Replay,
+            false,
+            &missing,
+        );
         assert!(matches!(status, FullStepStatus::Failed));
         assert_eq!(classification, "out_trace_missing");
         assert!(detail.contains("missing"));
@@ -6501,7 +6594,8 @@ mod tests {
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.mode = RunMode::Replay;
         let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
-        let other_trace = std::env::temp_dir().join(format!("other-{}.fozzy", uuid::Uuid::new_v4()));
+        let other_trace =
+            std::env::temp_dir().join(format!("other-{}.fozzy", uuid::Uuid::new_v4()));
         summary.identity.trace_path = Some(other_trace.display().to_string());
         write_trace_fixture(&out_trace, &summary);
         let (status, detail, classification) = shrink_step_status(

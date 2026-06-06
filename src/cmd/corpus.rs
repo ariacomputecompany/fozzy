@@ -1173,12 +1173,7 @@ mod tests {
 
         let mut names = std::fs::read_dir(&corpus)
             .expect("read dir")
-            .map(|e| {
-                e.expect("entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .to_string()
-            })
+            .map(|e| e.expect("entry").file_name().to_string_lossy().to_string())
             .collect::<Vec<_>>();
         names.sort();
         assert_eq!(

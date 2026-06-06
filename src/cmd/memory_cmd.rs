@@ -4,9 +4,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::{
-    Config, ExitStatus, FozzyError, FozzyResult, MemoryGraph, MemoryLeak, MemorySummary, TraceFile,
-};
+use crate::{Config, FozzyError, FozzyResult, MemoryGraph, MemoryLeak, MemorySummary, TraceFile};
 
 #[derive(Debug, Subcommand)]
 pub enum MemoryCommand {
@@ -300,7 +298,20 @@ fn resolve_memory_source(config: &Config, run: &str) -> FozzyResult<ResolvedMemo
         return Ok(ResolvedMemorySource::DirectTrace(input));
     }
 
-    let artifacts_dir = if let Some(dir) = resolve_memory_alias_dir(config, run)? {
+    let artifacts_dir = if let Some(dir) =
+        crate::resolve_filtered_run_alias(config, run, |dir, summary| {
+            summary.memory.is_some()
+                || dir.join("memory.leaks.json").exists()
+                || dir.join("memory.graph.json").exists()
+                || crate::resolve_trace_path_from_artifacts_dir(dir)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|trace_path| {
+                        crate::read_cached_trace_file(&trace_path)
+                            .map(|trace| trace.memory.is_some() || trace.summary.memory.is_some())
+                            .unwrap_or(false)
+                    })
+        })? {
         dir
     } else {
         crate::resolve_artifacts_dir(config, run)?
@@ -310,73 +321,6 @@ fn resolve_memory_source(config: &Config, run: &str) -> FozzyResult<ResolvedMemo
         artifacts_dir,
         validated_bundle,
     }))
-}
-
-fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
-    let key = run.trim().to_ascii_lowercase();
-    if !is_memory_alias(&key) {
-        return Ok(None);
-    }
-    let runs_dir = config.runs_dir();
-    if !runs_dir.exists() {
-        return Ok(None);
-    }
-
-    let mut run_dirs = std::fs::read_dir(&runs_dir)?
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            if !entry.file_type().ok()?.is_dir() {
-                return None;
-            }
-            let md = entry.metadata().ok()?;
-            let modified = md.modified().ok()?;
-            Some((entry.path(), modified))
-        })
-        .collect::<Vec<_>>();
-    run_dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    if run_dirs.is_empty() {
-        return Ok(None);
-    }
-    for (dir, _) in run_dirs {
-        let selector = dir.display().to_string();
-        let bundle = match crate::load_validated_artifact_bundle_from_dir(&dir, &selector) {
-            Ok(bundle) => bundle,
-            Err(_) => continue,
-        };
-        let summary = bundle.as_ref().map(|bundle| &bundle.summary);
-        let has_memory_trace = bundle
-            .as_ref()
-            .and_then(|bundle| bundle.trace_path.as_deref())
-            .is_some_and(trace_has_memory_data);
-        let has_memory = summary.and_then(|s| s.memory.as_ref()).is_some()
-            || dir.join("memory.leaks.json").exists()
-            || dir.join("memory.graph.json").exists()
-            || has_memory_trace;
-        if !has_memory {
-            continue;
-        }
-        if key == "latest" {
-            return Ok(Some(dir));
-        }
-        let status = summary.map(|s| s.status).unwrap_or(ExitStatus::Fail);
-        if (key == "last-pass" && status == ExitStatus::Pass)
-            || (key == "last-fail" && status != ExitStatus::Pass)
-        {
-            return Ok(Some(dir));
-        }
-    }
-    Ok(None)
-}
-
-fn is_memory_alias(run: &str) -> bool {
-    let key = run.trim().to_ascii_lowercase();
-    key == "latest" || key == "last-pass" || key == "last-fail"
-}
-
-fn trace_has_memory_data(path: &Path) -> bool {
-    TraceFile::read_json(path)
-        .map(|trace| trace.memory.is_some() || trace.summary.memory.is_some())
-        .unwrap_or(false)
 }
 
 fn load_summary_from_validated_artifacts(
@@ -421,7 +365,8 @@ fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
         Vec::new()
     };
     let graph = if let Some(graph_path) = trusted_graph.as_ref() {
-        let graph: MemoryGraph = serde_json::from_slice(&std::fs::read(&graph_path)?)?;
+        let graph = crate::read_cached_memory_graph(&graph_path)?;
+        crate::validate_memory_graph_structure(&graph, &graph_path)?;
         validate_graph_against_summary(&summary, &graph, &graph_path)?;
         graph
     } else {

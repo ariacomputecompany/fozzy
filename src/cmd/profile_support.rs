@@ -23,7 +23,7 @@ pub(super) fn load_profile_bundle(
             artifacts_dir,
             trace_path,
         } => {
-            let trace = TraceFile::read_json(trace_path)?;
+            let trace = crate::read_cached_trace_file(trace_path)?;
             (
                 artifacts_dir.clone(),
                 Some(trace_path.clone()),
@@ -39,7 +39,7 @@ pub(super) fn load_profile_bundle(
                 .as_ref()
                 .and_then(|bundle| bundle.trace_path.clone());
             let expected_identity = if let Some(trace_path) = trace_path.as_ref() {
-                let trace = TraceFile::read_json(trace_path)?;
+                let trace = crate::read_cached_trace_file(trace_path)?;
                 Some((trace.summary.identity.run_id, trace.summary.identity.seed))
             } else {
                 validated_bundle.as_ref().map(|bundle| {
@@ -54,7 +54,7 @@ pub(super) fn load_profile_bundle(
     };
     if let Some(ref trace_path) = trace_path {
         if profile_artifacts_stale(&artifacts_dir, &trace_path)? {
-            let trace = TraceFile::read_json(&trace_path)?;
+            let trace = crate::read_cached_trace_file(&trace_path)?;
             write_profile_artifacts_from_trace_with_source(
                 &trace,
                 Some(&trace_path),
@@ -68,13 +68,29 @@ pub(super) fn load_profile_bundle(
         )));
     }
 
-    let mut bundle = read_profile_bundle_from_dir(&artifacts_dir, spec)?;
+    let mut bundle = match read_profile_bundle_from_dir(&artifacts_dir, spec) {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            if let Some(trace_path) = trace_path.clone() {
+                let trace = crate::read_cached_trace_file(&trace_path)?;
+                write_profile_artifacts_from_trace_with_source(
+                    &trace,
+                    Some(&trace_path),
+                    &artifacts_dir,
+                )?;
+                refresh_manifest_for_profile_artifacts(&artifacts_dir)?;
+                read_profile_bundle_from_dir(&artifacts_dir, spec)?
+            } else {
+                return Err(err);
+            }
+        }
+    };
     if let Some((expected_run_id, expected_seed)) = expected_identity {
         if let Err(err) = validate_profile_bundle_identity(&bundle, &expected_run_id, expected_seed)
         {
             if can_refresh_from_trace {
                 if let Some(trace_path) = trace_path.clone() {
-                    let trace = TraceFile::read_json(&trace_path)?;
+                    let trace = crate::read_cached_trace_file(&trace_path)?;
                     write_profile_artifacts_from_trace_with_source(
                         &trace,
                         Some(&trace_path),
@@ -854,7 +870,18 @@ fn refresh_manifest_for_profile_artifacts(artifacts_dir: &Path) -> FozzyResult<(
     else {
         return Ok(());
     };
-    crate::write_run_manifest(&bundle.summary, artifacts_dir)?;
+    let trace_path = bundle.trace_path.as_deref().ok_or_else(|| {
+        crate::FozzyError::InvalidArgument(
+            "validated artifact bundle is missing trace path".to_string(),
+        )
+    })?;
+    let trace = crate::read_cached_trace_file(trace_path)?;
+    let profile = crate::write_profile_artifacts_from_trace_with_source(
+        &trace,
+        Some(trace_path),
+        artifacts_dir,
+    )?;
+    crate::write_run_manifest_with_profile(&bundle.summary, artifacts_dir, Some(&profile))?;
     Ok(())
 }
 
@@ -1020,17 +1047,26 @@ fn profile_artifacts_stale(artifacts_dir: &Path, trace_path: &Path) -> FozzyResu
         .get("tracePath")
         .and_then(|v| v.as_str())
         .map(PathBuf::from);
+    let recorded_size = source.get("traceSizeBytes").and_then(|v| v.as_u64());
+    let recorded_modified_ns = source.get("traceModifiedNs").and_then(|v| v.as_u64());
     let recorded_digest = source.get("traceDigest").and_then(|v| v.as_str());
     let expected_path =
         std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let expected_digest = blake3::hash(&std::fs::read(trace_path)?)
-        .to_hex()
-        .to_string();
     if recorded_path.as_deref() != Some(expected_path.as_path()) {
         return Ok(true);
     }
-    if recorded_digest != Some(expected_digest.as_str()) {
-        return Ok(true);
+    let fingerprint = crate::FileFingerprint::for_path(trace_path)?;
+    if let (Some(size), Some(modified_ns)) = (recorded_size, recorded_modified_ns) {
+        if size != fingerprint.len || u128::from(modified_ns) != fingerprint.modified_ns {
+            return Ok(true);
+        }
+    } else {
+        let expected_digest = blake3::hash(&std::fs::read(trace_path)?)
+            .to_hex()
+            .to_string();
+        if recorded_digest != Some(expected_digest.as_str()) {
+            return Ok(true);
+        }
     }
     let trace_mtime = std::fs::metadata(trace_path)?.modified()?;
     for name in [

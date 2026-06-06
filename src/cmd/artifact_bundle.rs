@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{Config, FozzyResult, RunSummary, TraceFile};
+use crate::{Config, FozzyResult, RunSummary};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedArtifactBundle {
@@ -69,7 +69,7 @@ fn trusted_bundle_for_trace_in_dir(
     trace_path: &Path,
     artifacts_dir: &Path,
 ) -> FozzyResult<Option<ValidatedArtifactBundle>> {
-    let trace = TraceFile::read_json(trace_path)?;
+    let trace = crate::read_cached_trace_file(trace_path)?;
     let selector = trace_path.display().to_string();
     let Some(bundle) = load_validated_artifact_bundle_from_dir(artifacts_dir, &selector)? else {
         return Ok(None);
@@ -93,7 +93,7 @@ fn trusted_bundle_for_trace_in_dir(
 }
 
 pub(crate) fn declared_artifacts_dir_for_trace(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    let trace = TraceFile::read_json(trace_path)?;
+    let trace = crate::read_cached_trace_file(trace_path)?;
     Ok(trace
         .summary
         .identity

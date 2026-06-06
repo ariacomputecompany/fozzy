@@ -45,23 +45,11 @@ pub(super) fn run_command(
             mem_pressure_wave,
             fail_on_leak,
             leak_budget,
-            mem_artifacts,
-            profile_capture,
         } => {
-            if *profile_capture != fozzy::ProfileCaptureLevel::Baseline {
-                return Err(anyhow::anyhow!(
-                    "invalid argument: `fozzy test` does not emit aggregate profile artifacts; use `fozzy run`/`fozzy fuzz`/`fozzy explore`, or record traces and profile those explicit traces"
-                ));
-            }
-            if *mem_artifacts {
-                return Err(anyhow::anyhow!(
-                    "invalid argument: `fozzy test` does not emit aggregate memory sidecar artifacts; use recorded traces with `fozzy memory ...`, or use `fozzy run` for artifact-emitting execution"
-                ));
-            }
             let memory = resolve_memory_options(
                 config,
                 *mem_track,
-                *mem_artifacts,
+                false,
                 *mem_limit_mb,
                 *mem_fail_after,
                 *mem_fragmentation_seed,
@@ -76,13 +64,13 @@ pub(super) fn run_command(
                     det: *det,
                     seed: *seed,
                     timeout: timeout.map(|d| d.0),
-                    reporter: *reporter,
+                    reporter: (*reporter).into(),
                     record_trace_to: record.clone(),
                     filter: filter.clone(),
                     jobs: *jobs,
                     fail_fast: *fail_fast,
                     record_collision: *record_collision,
-                    profile_capture: *profile_capture,
+                    profile_capture: fozzy::ProfileCaptureLevel::Baseline,
                     proc_backend,
                     fs_backend,
                     http_backend,
@@ -129,7 +117,7 @@ pub(super) fn run_command(
                     det: *det,
                     seed: *seed,
                     timeout: timeout.map(|d| d.0),
-                    reporter: *reporter,
+                    reporter: (*reporter).into(),
                     record_trace_to: record.clone(),
                     filter: None,
                     jobs: None,
@@ -198,7 +186,7 @@ pub(super) fn run_command(
                     mutator: mutator.clone(),
                     shrink: *shrink,
                     record_trace_to: record.clone(),
-                    reporter: *reporter,
+                    reporter: (*reporter).into(),
                     crash_only: *crash_only,
                     minimize: *minimize,
                     record_collision: *record_collision,
@@ -259,7 +247,7 @@ pub(super) fn run_command(
                     record_trace_to: record.clone(),
                     shrink: *shrink,
                     minimize: *minimize,
-                    reporter: *reporter,
+                    reporter: (*reporter).into(),
                     record_collision: *record_collision,
                     profile_capture: *profile_capture,
                     memory,
@@ -280,11 +268,6 @@ pub(super) fn run_command(
             profile_export_out,
             reporter,
         } => {
-            if profile_export_format.is_some() && profile_export_out.is_none() {
-                return Err(anyhow::anyhow!(
-                    "--profile-export-out is required when --profile-export-format is set"
-                ));
-            }
             let run = fozzy::replay_trace(
                 config,
                 TracePath::new(trace.clone()),
@@ -297,7 +280,7 @@ pub(super) fn run_command(
                     } else {
                         *profile_capture
                     },
-                    reporter: *reporter,
+                    reporter: (*reporter).into(),
                 },
             )?;
             if let (Some(format), Some(out)) = (profile_export_format, profile_export_out.as_ref())
@@ -356,13 +339,8 @@ pub(super) fn run_command(
             budget,
             aggressive,
             minimize,
-            reporter,
+            reporter: _,
         } => {
-            if !matches!(reporter, Reporter::Pretty) {
-                return Err(anyhow::anyhow!(
-                    "invalid argument: `fozzy shrink` does not emit command-level reporter artifacts; use global `--json` for machine-readable output, then inspect the shrunk trace with `fozzy report ...` or `fozzy artifacts ...`"
-                ));
-            }
             let result = fozzy::shrink_trace(
                 config,
                 TracePath::new(trace.clone()),
@@ -454,7 +432,7 @@ pub(super) fn run_command(
             perf_baseline,
             max_p99_delta_pct,
         } => {
-            let out = fozzy::ci_command(
+            let out = fozzy::ci_evaluate(
                 config,
                 &CiOptions {
                     trace: trace.clone(),
@@ -466,7 +444,11 @@ pub(super) fn run_command(
                 },
             )?;
             logger.print_serialized(&out)?;
-            Ok(ExitCode::SUCCESS)
+            Ok(if out.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
         }
         Command::Gate {
             profile,

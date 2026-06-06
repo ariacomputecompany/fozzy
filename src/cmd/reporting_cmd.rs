@@ -3,11 +3,11 @@
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
-use std::path::PathBuf;
-
+#[cfg(test)]
+use crate::TraceFile;
 use crate::{
-    Config, FlakeBudget, FozzyError, FozzyResult, ProfileCommand, Reporter, RunSummary, TraceFile,
-    render_html, render_junit_xml,
+    Config, FlakeBudget, FozzyError, FozzyResult, Reporter, RunSummary, render_html,
+    render_junit_xml,
 };
 
 #[derive(Debug, Subcommand)]
@@ -19,8 +19,8 @@ pub enum ReportCommand {
     },
     Query {
         run: String,
-        #[arg(long)]
-        jq: Option<String>,
+        #[arg(long = "path")]
+        path_expr: Option<String>,
         #[arg(long, default_value_t = false)]
         list_paths: bool,
     },
@@ -57,12 +57,12 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
     match command {
         ReportCommand::Show { run, format } => {
             let summary = load_summary(config, run)?;
-            let doc = report_doc_with_profile(config, run, &summary);
+            let doc = report_doc(&summary);
             match format {
                 Reporter::Json => Ok(doc),
                 Reporter::Pretty => Ok(serde_json::to_value(ReportEnvelope {
                     format: *format,
-                    content: render_pretty_with_profile(&summary, &doc),
+                    content: summary.pretty(),
                 })?),
                 Reporter::Junit => Ok(serde_json::to_value(ReportEnvelope {
                     format: *format,
@@ -77,19 +77,19 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
 
         ReportCommand::Query {
             run,
-            jq,
+            path_expr,
             list_paths,
         } => {
             let summary = load_summary(config, run)?;
-            let value = report_doc_with_profile(config, run, &summary);
+            let value = report_doc(&summary);
             if *list_paths {
                 return Ok(serde_json::json!({
                     "paths": list_query_paths(&value)
                 }));
             }
-            let expr = jq.as_deref().ok_or_else(|| {
+            let expr = path_expr.as_deref().ok_or_else(|| {
                 FozzyError::Report(
-                    "missing --jq expression (or pass --list-paths to inspect available paths)"
+                    "missing --path expression (or pass --list-paths to inspect available paths)"
                         .to_string(),
                 )
             })?;
@@ -99,81 +99,8 @@ pub fn report_command(config: &Config, command: &ReportCommand) -> FozzyResult<s
     }
 }
 
-fn report_doc_with_profile(config: &Config, run: &str, summary: &RunSummary) -> serde_json::Value {
-    let mut value = serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}));
-    let run = crate::normalize_run_or_trace_selector(run);
-    let explain = crate::profile_command(
-        config,
-        &ProfileCommand::Explain {
-            run: run.clone(),
-            diff_with: None,
-        },
-        false,
-    )
-    .ok();
-    if let Some(obj) = value.as_object_mut()
-        && let Some(explain) = explain
-        && is_diagnostic_profile_explain(&explain)
-    {
-        obj.insert("profileDiagnosis".to_string(), explain);
-    }
-    value
-}
-
-fn is_diagnostic_profile_explain(explain: &serde_json::Value) -> bool {
-    if explain.get("schemaVersion").and_then(|v| v.as_str()) != Some("fozzy.profile_explain.v1") {
-        return false;
-    }
-    let statement = explain
-        .get("regressionStatement")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let path = explain
-        .get("topShiftedPath")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let cause = explain
-        .get("likelyCauseDomain")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    !statement.is_empty()
-        && statement != "no measurable regression shift found"
-        && !statement.starts_with("run ")
-        && !path.is_empty()
-        && path != "n/a"
-        && !cause.is_empty()
-        && cause != "unknown"
-}
-
-fn render_pretty_with_profile(summary: &RunSummary, doc: &serde_json::Value) -> String {
-    let mut content = summary.pretty();
-    if let Some(profile) = doc.get("profileDiagnosis") {
-        let statement = profile
-            .get("regressionStatement")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let path = profile
-            .get("topShiftedPath")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let cause = profile
-            .get("likelyCauseDomain")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if !statement.is_empty() || !path.is_empty() || !cause.is_empty() {
-            content.push_str("\nprofile:\n");
-            if !statement.is_empty() {
-                content.push_str(&format!("- regression_statement: {statement}\n"));
-            }
-            if !path.is_empty() {
-                content.push_str(&format!("- top_shifted_path: {path}\n"));
-            }
-            if !cause.is_empty() {
-                content.push_str(&format!("- likely_cause_domain: {cause}\n"));
-            }
-        }
-    }
-    content.trim_end().to_string()
+fn report_doc(summary: &RunSummary) -> serde_json::Value {
+    serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}))
 }
 
 fn flaky_command(
@@ -248,21 +175,14 @@ fn flaky_command(
 }
 
 fn load_summary(config: &Config, run: &str) -> FozzyResult<RunSummary> {
-    let input_path = crate::normalize_trace_path(&PathBuf::from(run));
-    let is_direct_trace = input_path.exists()
-        && input_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"));
-    if is_direct_trace {
-        let trace = TraceFile::read_json(&input_path)?;
-        return Ok(trace.summary);
+    if let Some(view) = crate::resolve_artifact_selector_view(config, run)? {
+        return Ok(match view {
+            crate::ArtifactSelectorView::DirectTrace { trace, .. } => trace.summary,
+            crate::ArtifactSelectorView::ValidatedBundle(bundle) => bundle.summary,
+        });
     }
 
     let artifacts_dir = crate::resolve_artifacts_dir(config, run)?;
-    if let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, run)? {
-        return Ok(bundle.summary);
-    }
 
     Err(FozzyError::Report(format!(
         "no report found for {run:?} (looked for {} and trace resolved from artifacts identity)",
@@ -438,7 +358,7 @@ fn apply_query_aliases(expr: &str) -> String {
 fn normalize_query_expr(expr: &str) -> FozzyResult<String> {
     if expr.is_empty() {
         return Err(FozzyError::Report(
-            "empty jq expression; examples: '.', '.identity.runId', 'findings[0].title', '.findings[].title'"
+            "empty report path expression; examples: '.', '.identity.runId', 'findings[0].title', '.findings[].title'"
                 .to_string(),
         ));
     }
@@ -451,7 +371,7 @@ fn normalize_query_expr(expr: &str) -> FozzyResult<String> {
             return Ok(format!(".{rest}"));
         }
         return Err(FozzyError::Report(format!(
-            "unsupported jq expression {expr:?}; supported path subset examples: '.', '.a.b', 'a.b', '.arr[0]', '.arr[].field'"
+            "unsupported report path expression {expr:?}; supported path subset examples: '.', '.a.b', 'a.b', '.arr[0]', '.arr[].field'"
         )));
     }
     if expr.starts_with('.') {
@@ -466,7 +386,7 @@ fn normalize_query_expr(expr: &str) -> FozzyResult<String> {
         return Ok(format!(".{expr}"));
     }
     Err(FozzyError::Report(format!(
-        "unsupported jq expression {expr:?}; supported path subset examples: '.', '.a.b', 'a.b', '.arr[0]', '.arr[].field'"
+        "unsupported report path expression {expr:?}; supported path subset examples: '.', '.a.b', 'a.b', '.arr[0]', '.arr[].field'"
     )))
 }
 

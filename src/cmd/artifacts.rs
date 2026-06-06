@@ -656,19 +656,11 @@ fn trace_delta(left: &TraceFile, right: &TraceFile) -> TraceDelta {
 }
 
 fn load_summary(config: &Config, run: &str) -> FozzyResult<Option<RunSummary>> {
-    let input = crate::normalize_trace_path(&PathBuf::from(run));
-    if input.exists()
-        && input.is_file()
-        && input
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"))
-    {
-        return Ok(Some(TraceFile::read_json(&input)?.summary));
-    }
-
-    if let Some(bundle) = crate::load_validated_artifact_bundle(config, run)? {
-        return Ok(Some(bundle.summary));
+    if let Some(view) = crate::resolve_artifact_selector_view(config, run)? {
+        return Ok(Some(match view {
+            crate::ArtifactSelectorView::DirectTrace { trace, .. } => trace.summary,
+            crate::ArtifactSelectorView::ValidatedBundle(bundle) => bundle.summary,
+        }));
     }
 
     let trace = load_trace(config, run)?;

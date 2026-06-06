@@ -315,31 +315,29 @@ pub struct RunManifest {
     pub profile_schema_versions: std::collections::BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ManifestProfileMetadata {
+    pub profile_capabilities: Vec<String>,
+    pub profile_artifacts: std::collections::BTreeMap<String, String>,
+    pub profile_schema_versions: std::collections::BTreeMap<String, String>,
+}
+
 pub fn write_run_manifest(
     summary: &RunSummary,
     artifacts_dir: &Path,
 ) -> crate::FozzyResult<PathBuf> {
+    write_run_manifest_with_profile(summary, artifacts_dir, None)
+}
+
+pub fn write_run_manifest_with_profile(
+    summary: &RunSummary,
+    artifacts_dir: &Path,
+    profile: Option<&ManifestProfileMetadata>,
+) -> crate::FozzyResult<PathBuf> {
     std::fs::create_dir_all(artifacts_dir)?;
-    let mut profile_capabilities = Vec::new();
-    let mut profile_artifacts = std::collections::BTreeMap::new();
-    let mut profile_schema_versions = std::collections::BTreeMap::new();
-    for (capability, file_name) in [
-        ("timeline", "profile.timeline.json"),
-        ("cpu", "profile.cpu.json"),
-        ("heap", "profile.heap.json"),
-        ("latency", "profile.latency.json"),
-        ("metrics", "profile.metrics.json"),
-        ("symbols", "symbols.json"),
-    ] {
-        let path = artifacts_dir.join(file_name);
-        if path.exists() {
-            profile_capabilities.push(capability.to_string());
-            profile_artifacts.insert(capability.to_string(), path.to_string_lossy().to_string());
-            if let Ok(Some(schema_version)) = profile_schema_version(&path) {
-                profile_schema_versions.insert(capability.to_string(), schema_version);
-            }
-        }
-    }
+    let profile = profile
+        .cloned()
+        .unwrap_or_else(|| scan_profile_manifest_metadata(artifacts_dir));
     let manifest = RunManifest {
         schema_version: "fozzy.run_manifest.v1".to_string(),
         run_id: summary.identity.run_id.clone(),
@@ -360,13 +358,41 @@ pub fn write_run_manifest(
         memory_leaked_bytes: summary.memory.as_ref().map(|m| m.leaked_bytes),
         memory_leaked_allocs: summary.memory.as_ref().map(|m| m.leaked_allocs),
         memory_peak_bytes: summary.memory.as_ref().map(|m| m.peak_bytes),
-        profile_capabilities,
-        profile_artifacts,
-        profile_schema_versions,
+        profile_capabilities: profile.profile_capabilities,
+        profile_artifacts: profile.profile_artifacts,
+        profile_schema_versions: profile.profile_schema_versions,
     };
     let out = artifacts_dir.join("manifest.json");
     std::fs::write(&out, serde_json::to_vec_pretty(&manifest)?)?;
     Ok(out)
+}
+
+fn scan_profile_manifest_metadata(artifacts_dir: &Path) -> ManifestProfileMetadata {
+    let mut profile_capabilities = Vec::new();
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut profile_schema_versions = std::collections::BTreeMap::new();
+    for (capability, file_name) in [
+        ("timeline", "profile.timeline.json"),
+        ("cpu", "profile.cpu.json"),
+        ("heap", "profile.heap.json"),
+        ("latency", "profile.latency.json"),
+        ("metrics", "profile.metrics.json"),
+        ("symbols", "symbols.json"),
+    ] {
+        let path = artifacts_dir.join(file_name);
+        if path.exists() {
+            profile_capabilities.push(capability.to_string());
+            profile_artifacts.insert(capability.to_string(), path.to_string_lossy().to_string());
+            if let Ok(Some(schema_version)) = profile_schema_version(&path) {
+                profile_schema_versions.insert(capability.to_string(), schema_version);
+            }
+        }
+    }
+    ManifestProfileMetadata {
+        profile_capabilities,
+        profile_artifacts,
+        profile_schema_versions,
+    }
 }
 
 fn profile_schema_version(path: &Path) -> crate::FozzyResult<Option<String>> {

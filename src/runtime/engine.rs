@@ -2238,7 +2238,10 @@ impl<'a> ExecCtx<'a> {
                         }
                         let _ = self.replay_take_if(|d| matches!(d, Decision::ProcSpawn { .. }));
                         self.advance_recorded_time(duration_ms);
-                        Some((proc_rule(cmd, &call_args, exit_code, stdout, stderr), "replay"))
+                        Some((
+                            proc_rule(cmd, &call_args, exit_code, stdout, stderr),
+                            "replay",
+                        ))
                     }
                     Some(Decision::ProcSpawnTimeout {
                         cmd: replay_cmd,
@@ -2292,14 +2295,14 @@ impl<'a> ExecCtx<'a> {
                         });
                     }
                     let (dispatch, duration_ms) = measure_duration_ms(|| {
-                        dispatch_host_proc(cmd, &call_args, self.host_deadline).map_err(
-                            |message| Finding {
+                        dispatch_host_proc(cmd, &call_args, self.host_deadline).map_err(|message| {
+                            Finding {
                                 kind: FindingKind::Assertion,
                                 title: "proc_spawn_host".to_string(),
                                 message,
                                 location: None,
-                            },
-                        )
+                            }
+                        })
                     })?;
                     match dispatch {
                         HostProcDispatch::Completed(output) => {

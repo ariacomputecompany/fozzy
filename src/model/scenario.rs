@@ -6,6 +6,64 @@ use std::path::{Path, PathBuf};
 
 use crate::{FozzyError, FozzyResult, parse_duration};
 
+pub const STEP_KIND_NAMES: &[&str] = &[
+    "trace_event",
+    "rand_u64",
+    "assert_ok",
+    "assert_eq_int",
+    "assert_ne_int",
+    "assert_eq_str",
+    "assert_ne_str",
+    "sleep",
+    "advance",
+    "freeze",
+    "unfreeze",
+    "set_kv",
+    "get_kv_assert",
+    "fs_write",
+    "fs_read_assert",
+    "fs_snapshot",
+    "fs_restore",
+    "http_when",
+    "http_request",
+    "proc_when",
+    "proc_spawn",
+    "net_partition",
+    "net_heal",
+    "net_set_drop_rate",
+    "net_set_reorder",
+    "net_send",
+    "net_deliver_one",
+    "net_recv_assert",
+    "memory_alloc",
+    "memory_free",
+    "memory_limit_mb",
+    "memory_fail_after_allocs",
+    "memory_fragmentation",
+    "memory_pressure_wave",
+    "memory_checkpoint",
+    "memory_assert_in_use_bytes",
+    "assert_throws",
+    "assert_rejects",
+    "assert_eventually_kv",
+    "assert_never_kv",
+    "fail",
+    "panic",
+];
+
+pub const DISTRIBUTED_STEP_KIND_NAMES: &[&str] = &[
+    "client_put",
+    "client_get_assert",
+    "partition",
+    "heal",
+    "crash",
+    "restart",
+    "tick",
+];
+
+pub const DISTRIBUTED_INVARIANT_KIND_NAMES: &[&str] =
+    &["kv_all_equal", "kv_present_on_all", "kv_node_equals"];
+
 #[derive(Debug, Clone)]
 pub struct ScenarioPath {
     path: PathBuf,

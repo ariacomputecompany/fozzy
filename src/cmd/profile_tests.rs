@@ -555,7 +555,8 @@ fn resolve_profile_trace_supports_run_with_report_trace_path() {
     trace.summary.identity.run_id = run_id.to_string();
     let external_trace = ws.join("external.trace.fozzy");
     trace.summary.identity.trace_path = Some(external_trace.to_string_lossy().to_string());
-    trace.summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.report_path =
+        Some(run_dir.join("report.json").to_string_lossy().to_string());
     trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
     std::fs::write(
         &external_trace,
@@ -666,7 +667,8 @@ fn resolve_profile_artifacts_accepts_declared_run_dir_for_same_trace() {
     let mut trace = sample_trace();
     let trace_path = ws.join("external.trace.fozzy");
     trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
-    trace.summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.report_path =
+        Some(run_dir.join("report.json").to_string_lossy().to_string());
     trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
     std::fs::write(
         &trace_path,
@@ -701,7 +703,8 @@ fn resolve_profile_artifacts_accepts_manifest_only_declared_run_dir_for_same_tra
     let mut trace = sample_trace();
     let trace_path = ws.join("external.trace.fozzy");
     trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
-    trace.summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.report_path =
+        Some(run_dir.join("report.json").to_string_lossy().to_string());
     trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
     std::fs::write(
         &trace_path,
@@ -876,7 +879,8 @@ fn profile_commands_reject_profile_artifacts_with_mismatched_run_identity() {
     let mut foreign_trace = sample_trace();
     foreign_trace.summary.identity.run_id = "foreign-run".to_string();
     foreign_trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
-    write_profile_artifacts_from_trace(&foreign_trace, &run_dir).expect("foreign profile artifacts");
+    write_profile_artifacts_from_trace(&foreign_trace, &run_dir)
+        .expect("foreign profile artifacts");
 
     let cfg = Config {
         base_dir: base_dir.clone(),
@@ -891,7 +895,8 @@ fn profile_commands_reject_profile_artifacts_with_mismatched_run_identity() {
         sched: false,
         limit: 5,
     };
-    let err = profile_command(&cfg, &cmd, true).expect_err("must reject mismatched profile artifacts");
+    let err =
+        profile_command(&cfg, &cmd, true).expect_err("must reject mismatched profile artifacts");
     assert!(
         err.to_string().contains("belong to runId=foreign-run"),
         "unexpected error: {err}"
@@ -950,7 +955,9 @@ fn explicit_trace_rejects_exact_sibling_profile_artifacts_with_mismatched_run_id
     explicit_trace.summary.identity.report_path =
         Some(ws.join("report.json").to_string_lossy().to_string());
     explicit_trace.summary.identity.artifacts_dir = Some(ws.to_string_lossy().to_string());
-    explicit_trace.write_json(&trace_path).expect("write explicit trace");
+    explicit_trace
+        .write_json(&trace_path)
+        .expect("write explicit trace");
     std::fs::write(
         ws.join("report.json"),
         serde_json::to_vec_pretty(&explicit_trace.summary).expect("report bytes"),
@@ -984,8 +991,8 @@ fn explicit_trace_rejects_exact_sibling_profile_artifacts_with_mismatched_run_id
         sched: false,
         limit: 5,
     };
-    let err =
-        profile_command(&cfg, &cmd, true).expect_err("must reject mismatched explicit sibling artifacts");
+    let err = profile_command(&cfg, &cmd, true)
+        .expect_err("must reject mismatched explicit sibling artifacts");
     assert!(
         err.to_string().contains("belong to runId=foreign-run"),
         "unexpected error: {err}"
@@ -1058,9 +1065,7 @@ fn profile_commands_reject_manifest_only_profile_artifacts_without_report_or_tra
     assert!(
         err.to_string()
             .contains("no coherent report/manifest pair or trace found for profile artifacts")
-            || err
-                .to_string()
-                .contains("invalid manifest")
+            || err.to_string().contains("invalid manifest")
     );
 }
 
@@ -1111,7 +1116,8 @@ fn profile_command_refreshes_manifest_after_lazy_profile_emit() {
     trace.summary.identity.run_id = run_id.to_string();
     let trace_path = run_dir.join("trace.fozzy");
     trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
-    trace.summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.report_path =
+        Some(run_dir.join("report.json").to_string_lossy().to_string());
     trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
     std::fs::write(
         &trace_path,
@@ -1191,7 +1197,10 @@ fn profile_commands_reject_stale_report_without_manifest() {
         limit: 5,
     };
     let err = profile_command(&cfg, &cmd, true).expect_err("profile top must fail");
-    assert!(err.to_string().contains("missing required files: manifest.json"));
+    assert!(
+        err.to_string()
+            .contains("missing required files: manifest.json")
+    );
 }
 
 #[test]
@@ -1219,7 +1228,10 @@ fn direct_trace_profile_cache_regenerates_on_source_digest_mismatch() {
         limit: 5,
     };
     let first = profile_command(&cfg, &cmd, true).expect("initial profile top");
-    assert_eq!(first.get("run").and_then(|v| v.as_str()), Some(trace_path.to_string_lossy().as_ref()));
+    assert_eq!(
+        first.get("run").and_then(|v| v.as_str()),
+        Some(trace_path.to_string_lossy().as_ref())
+    );
 
     let canonical = std::fs::canonicalize(&trace_path).expect("canonical trace");
     let key = blake3::hash(canonical.to_string_lossy().as_bytes())

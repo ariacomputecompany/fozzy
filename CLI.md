@@ -228,12 +228,12 @@ fozzy gate [--profile targeted] [--scenario-root <dir>] [--scope <comma,list>] \
 
 ```bash
 fozzy report show <run-id|trace> [--format json|pretty|junit|html]
-fozzy report query <run-id|trace> --jq <expr>
+fozzy report query <run-id|trace> --path <expr>
 fozzy report query <run-id|trace> --list-paths
 fozzy report flaky <run-id|trace> <run-id|trace> [more...] [--flake-budget <pct>]
 ```
 
-`report query --jq` supports path-style selectors (subset):
+`report query --path` supports path-style selectors (subset):
 ` .a.b`, `a.b`, `.arr[0]`, `.arr[].field`, `$.a.b`
 Run selectors also support aliases: `latest`, `last-pass`, `last-fail`.
 For race-sensitive CI automation, prefer explicit `runId` or trace paths over aliases.

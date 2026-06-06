@@ -121,17 +121,11 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
         crate::collapse_findings(outcome.findings.clone()),
     );
 
-    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if let Some(record_base) = &opt.record_trace_to {
-        write_test_traces(
-            record_base,
-            &outcome.trace_runs,
-            seed,
-            opt.record_collision,
-        )?;
+        write_test_traces(record_base, &outcome.trace_runs, opt.record_collision)?;
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    write_summary_report(&summary, &report_path, &artifacts_dir, None)?;
 
     Ok(RunResult { summary })
 }
@@ -144,11 +138,13 @@ fn run_serial_tests(
     outcome: &mut TestOutcome,
 ) -> FozzyResult<()> {
     for path in filtered_paths {
+        let scenario_seed =
+            derive_test_seed(seed, filtered_paths.len(), outcome.total_runs(), path);
         let run = run_scenario_inner(
             config,
             RunMode::Test,
             ScenarioPath::new(path.clone()),
-            seed,
+            scenario_seed,
             opt.det,
             opt.timeout,
             opt.proc_backend,
@@ -156,7 +152,11 @@ fn run_serial_tests(
             opt.http_backend,
             opt.memory.clone(),
         )?;
-        outcome.record_run(run);
+        outcome.record_run(TestRunRecord {
+            ordinal: outcome.total_runs(),
+            seed: scenario_seed,
+            run,
+        });
         if opt.fail_fast && outcome.failed > 0 {
             break;
         }
@@ -186,12 +186,14 @@ fn run_parallel_tests(
                 let fs_backend = opt.fs_backend;
                 let http_backend = opt.http_backend;
                 let det = opt.det;
+                let scenario_seed = derive_test_seed(seed, filtered_paths.len(), next, &path);
+                let ordinal = next;
                 scope.spawn(move || {
                     let result = run_scenario_inner(
                         config,
                         RunMode::Test,
                         ScenarioPath::new(path),
-                        seed,
+                        scenario_seed,
                         det,
                         timeout,
                         proc_backend,
@@ -199,43 +201,57 @@ fn run_parallel_tests(
                         http_backend,
                         memory,
                     );
-                    let _ = tx.send(result);
+                    let _ = tx.send((ordinal, scenario_seed, result));
                 });
                 next += 1;
                 in_flight += 1;
             }
 
             if in_flight > 0 {
-                if let Ok(result) = rx.recv() {
+                if let Ok((ordinal, scenario_seed, result)) = rx.recv() {
                     in_flight = in_flight.saturating_sub(1);
-                    match result {
-                        Ok(run) => outcome.record_run(run),
-                        Err(err) => outcome.record_worker_error(err),
-                    }
+                    outcome
+                        .parallel_results
+                        .push((ordinal, scenario_seed, result));
                 } else {
                     break;
                 }
             }
         }
     });
+    outcome
+        .parallel_results
+        .sort_by_key(|(ordinal, _, _)| *ordinal);
+    let parallel_results = std::mem::take(&mut outcome.parallel_results);
+    for (ordinal, scenario_seed, result) in parallel_results {
+        match result {
+            Ok(run) => outcome.record_run(TestRunRecord {
+                ordinal,
+                seed: scenario_seed,
+                run,
+            }),
+            Err(err) => outcome.record_worker_error(err),
+        }
+    }
 }
 
 fn write_test_traces(
     record_base: &Path,
-    runs: &[ScenarioRun],
-    seed: u64,
+    runs: &[TestRunRecord],
     policy: RecordCollisionPolicy,
 ) -> FozzyResult<()> {
     if runs.is_empty() {
         return Ok(());
     }
-    if runs.len() == 1 {
-        let run = &runs[0];
+    let mut ordered_runs = runs.to_vec();
+    ordered_runs.sort_by_key(|run| run.ordinal);
+    if ordered_runs.len() == 1 {
+        let run = &ordered_runs[0];
         write_single_scenario_trace(
             record_base,
-            run,
+            &run.run,
             &Uuid::new_v4().to_string(),
-            seed,
+            run.seed,
             policy,
             RunMode::Test,
             None,
@@ -258,13 +274,13 @@ fn write_test_traces(
     };
     std::fs::create_dir_all(parent)?;
 
-    for (idx, run) in runs.iter().enumerate() {
+    for (idx, run) in ordered_runs.iter().enumerate() {
         let out = parent.join(format!("{base}.{}.fozzy", idx + 1));
         write_single_scenario_trace(
             &out,
-            run,
+            &run.run,
             &Uuid::new_v4().to_string(),
-            seed,
+            run.seed,
             policy,
             RunMode::Test,
             None,
@@ -280,10 +296,11 @@ struct TestOutcome {
     failed: u64,
     skipped: u64,
     findings: Vec<Finding>,
-    trace_runs: Vec<ScenarioRun>,
+    trace_runs: Vec<TestRunRecord>,
     memory_summary: crate::MemorySummary,
     has_memory: bool,
     record_traces: bool,
+    parallel_results: Vec<(usize, u64, FozzyResult<ScenarioRun>)>,
 }
 
 impl TestOutcome {
@@ -295,7 +312,12 @@ impl TestOutcome {
         }
     }
 
-    fn record_run(&mut self, run: ScenarioRun) {
+    fn total_runs(&self) -> usize {
+        (self.passed + self.failed) as usize
+    }
+
+    fn record_run(&mut self, record: TestRunRecord) {
+        let run = &record.run;
         self.findings.extend(run.findings.clone());
         if run.status == ExitStatus::Pass {
             self.passed += 1;
@@ -332,7 +354,7 @@ impl TestOutcome {
                 .saturating_add(mem.summary.leaked_allocs);
         }
         if self.record_traces {
-            self.trace_runs.push(run);
+            self.trace_runs.push(record);
         }
     }
 
@@ -355,6 +377,25 @@ impl TestOutcome {
     }
 }
 
+#[derive(Debug, Clone)]
+struct TestRunRecord {
+    ordinal: usize,
+    seed: u64,
+    run: ScenarioRun,
+}
+
+fn derive_test_seed(suite_seed: u64, total: usize, ordinal: usize, path: &Path) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&suite_seed.to_le_bytes());
+    bytes.extend_from_slice(&(total as u64).to_le_bytes());
+    bytes.extend_from_slice(&(ordinal as u64).to_le_bytes());
+    bytes.extend_from_slice(path.to_string_lossy().as_bytes());
+    let hash = blake3::hash(&bytes);
+    let mut seed_bytes = [0u8; 8];
+    seed_bytes.copy_from_slice(&hash.as_bytes()[..8]);
+    u64::from_le_bytes(seed_bytes)
+}
+
 fn gen_seed() -> u64 {
     let mut seed = [0u8; 8];
     rand_core::OsRng.fill_bytes(&mut seed);
@@ -366,8 +407,7 @@ mod tests {
     use super::*;
     use crate::{
         FsBackend, HttpBackend, MemoryOptions, ProcBackend, ProfileCaptureLevel,
-        RecordCollisionPolicy, Reporter,
-        TraceFile,
+        RecordCollisionPolicy, Reporter, TraceFile,
     };
 
     fn write_memory_leak_scenario(root: &Path, name: &str) -> PathBuf {
@@ -561,10 +601,7 @@ mod tests {
 
         let run = run_tests(
             &cfg,
-            &[
-                first.display().to_string(),
-                second.display().to_string(),
-            ],
+            &[first.display().to_string(), second.display().to_string()],
             &RunOptions {
                 record_trace_to: Some(record_base.clone()),
                 ..run_options(MemoryOptions::default())
@@ -572,24 +609,21 @@ mod tests {
         )
         .expect("run tests");
 
-        let first_trace = TraceFile::read_json(&root.join("recorded-test.1.fozzy"))
-            .expect("read first trace");
-        let second_trace = TraceFile::read_json(&root.join("recorded-test.2.fozzy"))
-            .expect("read second trace");
+        let first_trace =
+            TraceFile::read_json(&root.join("recorded-test.1.fozzy")).expect("read first trace");
+        let second_trace =
+            TraceFile::read_json(&root.join("recorded-test.2.fozzy")).expect("read second trace");
 
         assert_ne!(
-            first_trace.summary.identity.run_id,
-            run.summary.identity.run_id,
+            first_trace.summary.identity.run_id, run.summary.identity.run_id,
             "recorded trace must not reuse aggregate test run id"
         );
         assert_ne!(
-            second_trace.summary.identity.run_id,
-            run.summary.identity.run_id,
+            second_trace.summary.identity.run_id, run.summary.identity.run_id,
             "recorded trace must not reuse aggregate test run id"
         );
         assert_ne!(
-            first_trace.summary.identity.run_id,
-            second_trace.summary.identity.run_id,
+            first_trace.summary.identity.run_id, second_trace.summary.identity.run_id,
             "each recorded test trace must have its own execution identity"
         );
         assert!(first_trace.summary.identity.report_path.is_none());

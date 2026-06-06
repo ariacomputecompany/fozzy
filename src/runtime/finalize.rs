@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::engine::ScenarioRun;
 use crate::{
-    ExitStatus, FozzyResult, MemorySummary, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
-    RunSummary, TestCounts, TraceFile,
+    ExitStatus, FozzyResult, ManifestProfileMetadata, MemorySummary, RecordCollisionPolicy,
+    Reporter, RunIdentity, RunMode, RunSummary, TestCounts, TraceFile,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -92,15 +92,8 @@ pub(crate) fn write_single_scenario_trace(
     artifacts_dir: Option<String>,
 ) -> FozzyResult<PathBuf> {
     let target = crate::resolve_record_target(requested_path, policy)?;
-    let trace = build_single_scenario_trace(
-        &target,
-        run,
-        run_id,
-        seed,
-        mode,
-        report_path,
-        artifacts_dir,
-    );
+    let trace =
+        build_single_scenario_trace(&target, run, run_id, seed, mode, report_path, artifacts_dir);
     crate::write_trace_to_target(&trace, &target)?;
     Ok(target)
 }
@@ -143,9 +136,10 @@ pub(crate) fn write_summary_report(
     summary: &RunSummary,
     report_path: &Path,
     artifacts_dir: &Path,
+    profile: Option<&ManifestProfileMetadata>,
 ) -> FozzyResult<()> {
     std::fs::write(report_path, serde_json::to_vec(summary)?)?;
-    crate::write_run_manifest(summary, artifacts_dir)?;
+    crate::write_run_manifest_with_profile(summary, artifacts_dir, profile)?;
     Ok(())
 }
 
@@ -178,7 +172,12 @@ pub(crate) fn trace_timing_for_run(run: &ScenarioRun) -> (String, String, u64, u
     } else {
         run.finished_at.clone()
     };
-    (run.started_at.clone(), finished_at, duration_ms, duration_ns)
+    (
+        run.started_at.clone(),
+        finished_at,
+        duration_ms,
+        duration_ns,
+    )
 }
 
 fn shifted_iso_utc(started_at: &str, duration_ms: u64) -> Option<String> {

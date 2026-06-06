@@ -116,6 +116,62 @@ impl MemoryGraph {
     }
 }
 
+pub fn validate_memory_graph_structure(graph: &MemoryGraph, path: &Path) -> crate::FozzyResult<()> {
+    let mut node_ids = std::collections::BTreeSet::new();
+    for node in &graph.nodes {
+        if node.id.trim().is_empty() {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "memory graph {} contains a node with a blank id",
+                path.display()
+            )));
+        }
+        if node.kind.trim().is_empty() {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "memory graph {} contains node {} with a blank kind",
+                path.display(),
+                node.id
+            )));
+        }
+        if !node_ids.insert(node.id.clone()) {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "memory graph {} contains duplicate node id {}",
+                path.display(),
+                node.id
+            )));
+        }
+    }
+
+    let mut edges = std::collections::BTreeSet::new();
+    for edge in &graph.edges {
+        if edge.kind.trim().is_empty() {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "memory graph {} contains edge {} -> {} with a blank kind",
+                path.display(),
+                edge.from,
+                edge.to
+            )));
+        }
+        if !node_ids.contains(&edge.from) || !node_ids.contains(&edge.to) {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "memory graph {} contains edge {} -> {} that references a missing node",
+                path.display(),
+                edge.from,
+                edge.to
+            )));
+        }
+        if !edges.insert((edge.from.clone(), edge.to.clone(), edge.kind.clone())) {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "memory graph {} contains duplicate edge {} -> {} ({})",
+                path.display(),
+                edge.from,
+                edge.to,
+                edge.kind
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryRunReport {
     #[serde(rename = "schemaVersion")]

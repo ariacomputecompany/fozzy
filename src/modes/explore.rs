@@ -242,7 +242,6 @@ pub fn explore(
         trace.memory = memory_report.as_ref().map(|m| m.to_trace());
         crate::write_trace_to_target(&trace, &out)?;
     }
-    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     let emit_heavy = should_emit_heavy_artifacts(status, should_record)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
     if emit_heavy {
@@ -257,15 +256,25 @@ pub fn explore(
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
     }
+    let mut profile_metadata = None;
     if should_emit_profile_artifacts(opt.profile_capture, status, should_record) {
         profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace_with_source(
+        profile_metadata = Some(write_profile_artifacts_from_trace_with_source(
             &profile_trace,
-            summary.identity.trace_path.as_deref().map(std::path::Path::new),
+            summary
+                .identity
+                .trace_path
+                .as_deref()
+                .map(std::path::Path::new),
             &artifacts_dir,
-        )?;
+        )?);
     }
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    write_summary_report(
+        &summary,
+        &report_path,
+        &artifacts_dir,
+        profile_metadata.as_ref(),
+    )?;
 
     Ok(crate::RunResult { summary })
 }
@@ -343,7 +352,6 @@ pub fn replay_explore_trace(
         summary.findings = crate::collapse_findings(summary.findings.clone());
     }
 
-    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     let explicit_capture = opt.dump_events;
     let emit_heavy = should_emit_heavy_artifacts(status, explicit_capture)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
@@ -359,12 +367,22 @@ pub fn replay_explore_trace(
             write_memory_artifacts(mem, &artifacts_dir)?;
         }
     }
+    let mut profile_metadata = None;
     if should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture) {
         profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace_with_source(&profile_trace, None, &artifacts_dir)?;
+        profile_metadata = Some(write_profile_artifacts_from_trace_with_source(
+            &profile_trace,
+            None,
+            &artifacts_dir,
+        )?);
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
+    write_summary_report(
+        &summary,
+        &report_path,
+        &artifacts_dir,
+        profile_metadata.as_ref(),
+    )?;
 
     Ok(crate::RunResult { summary })
 }

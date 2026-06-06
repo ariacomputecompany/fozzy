@@ -308,15 +308,20 @@ pub fn trace_schema_warnings(version: u32) -> Vec<String> {
 
 pub fn verify_trace_file(path: &Path) -> FozzyResult<TraceVerifyReport> {
     let path = normalize_trace_path(path);
-    let t = TraceFile::read_json(&path)?;
+    let display_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let bytes = std::fs::read(&path)?;
+    let t: TraceFile = serde_json::from_slice(&bytes)
+        .map_err(|e| FozzyError::Trace(format!("failed to parse trace {}: {e}", path.display())))?;
+    validate_trace_header(&t, &path)?;
+    let checksum_valid = checksum_validity(&t)?;
     let mut warnings = trace_schema_warnings(t.version);
     warnings.extend(trace_replay_warnings(&t));
     Ok(TraceVerifyReport {
         ok: true,
-        path: path.display().to_string(),
+        path: display_path.display().to_string(),
         version: t.version,
         checksum_present: t.checksum.is_some(),
-        checksum_valid: t.checksum.is_some(),
+        checksum_valid: checksum_valid.unwrap_or(false),
         warnings,
     })
 }
@@ -535,14 +540,12 @@ fn unix_time_ms(now: SystemTime) -> u128 {
 const RECORD_LOCK_STALE_AFTER: Duration = Duration::from_secs(300);
 
 fn verify_checksum(trace: &TraceFile, path: &Path) -> FozzyResult<()> {
-    let Some(expected) = trace.checksum.as_ref() else {
+    let Some(valid) = checksum_validity(trace)? else {
         return Ok(());
     };
-    let mut canonical = trace.clone();
-    canonical.checksum = None;
-    let bytes = serde_json::to_vec(&canonical)?;
-    let got = blake3::hash(&bytes).to_hex().to_string();
-    if &got != expected {
+    if !valid {
+        let expected = trace.checksum.as_deref().unwrap_or_default();
+        let got = checksum_digest(trace)?;
         return Err(FozzyError::Trace(format!(
             "trace checksum mismatch for {} (expected {}, got {})",
             path.display(),
@@ -551,6 +554,20 @@ fn verify_checksum(trace: &TraceFile, path: &Path) -> FozzyResult<()> {
         )));
     }
     Ok(())
+}
+
+fn checksum_validity(trace: &TraceFile) -> FozzyResult<Option<bool>> {
+    let Some(expected) = trace.checksum.as_ref() else {
+        return Ok(None);
+    };
+    Ok(Some(checksum_digest(trace)? == *expected))
+}
+
+fn checksum_digest(trace: &TraceFile) -> FozzyResult<String> {
+    let mut canonical = trace.clone();
+    canonical.checksum = None;
+    let bytes = serde_json::to_vec(&canonical)?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
 fn validate_trace_header(trace: &TraceFile, path: &Path) -> FozzyResult<()> {

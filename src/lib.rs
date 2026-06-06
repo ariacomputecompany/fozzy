@@ -2,12 +2,16 @@
 
 #[path = "cmd/artifact_bundle.rs"]
 mod artifact_bundle;
+#[path = "cmd/artifact_cache.rs"]
+mod artifact_cache;
 #[path = "cmd/artifact_catalog.rs"]
 mod artifact_catalog;
 #[path = "cmd/artifact_integrity.rs"]
 mod artifact_integrity;
 #[path = "cmd/artifact_resolver.rs"]
 mod artifact_resolver;
+#[path = "cmd/artifact_selector.rs"]
+mod artifact_selector;
 #[path = "cmd/artifacts.rs"]
 mod artifacts;
 #[path = "cmd/ci.rs"]
@@ -74,9 +78,11 @@ mod tracefile;
 mod usage;
 
 pub(crate) use artifact_bundle::*;
+pub(crate) use artifact_cache::*;
 pub(crate) use artifact_catalog::*;
 pub(crate) use artifact_integrity::*;
 pub(crate) use artifact_resolver::*;
+pub(crate) use artifact_selector::*;
 pub use artifacts::*;
 pub use ci::*;
 pub use clock::*;

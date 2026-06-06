@@ -235,6 +235,7 @@ export interface FullOptions {
   requireTopologyCoverage?: string;
   topologyMinRisk?: number;
   topologyProfile?: TopologyProfile;
+  topologyShrinkPolicy?: "failure-only" | "exercised-ok" | "no-known-failures";
 }
 
 export interface MapHotspotsOptions {
@@ -376,6 +377,7 @@ export class Fozzy {
     kv(args, "--require-topology-coverage", opts.requireTopologyCoverage);
     kv(args, "--topology-min-risk", opts.topologyMinRisk);
     kv(args, "--topology-profile", opts.topologyProfile);
+    kv(args, "--topology-shrink-policy", opts.topologyShrinkPolicy);
     return await this.execJson(args);
   }
 
@@ -506,6 +508,10 @@ export class Fozzy {
 
   async artifactsPack(runOrTrace: string, out: string): Promise<void> {
     await this.execOrThrow(["artifacts", "pack", runOrTrace, "--out", out]);
+  }
+
+  async artifactsBundle(runOrTrace: string, out: string): Promise<void> {
+    await this.execOrThrow(["artifacts", "bundle", runOrTrace, "--out", out]);
   }
 
   async reportShow(runOrTrace: string, opts: ReportShowOptions = {}): Promise<unknown> {
