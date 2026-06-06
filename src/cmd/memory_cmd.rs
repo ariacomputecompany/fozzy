@@ -262,11 +262,16 @@ fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<Pa
 }
 
 fn load_summary_from_report(artifacts_dir: &Path) -> FozzyResult<MemorySummary> {
-    let report_path = artifacts_dir.join("report.json");
-    if !report_path.exists() {
-        return Ok(MemorySummary::default());
-    }
-    let summary: crate::RunSummary = serde_json::from_slice(&std::fs::read(report_path)?)?;
+    let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
+        artifacts_dir,
+        &artifacts_dir.display().to_string(),
+    )?
+    else {
+        return Err(FozzyError::InvalidArgument(format!(
+            "no coherent report/manifest pair found for memory artifacts in {}",
+            artifacts_dir.display()
+        )));
+    };
     Ok(summary.memory.unwrap_or_default())
 }
 
@@ -318,8 +323,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> FozzyResult<()> {
 mod tests {
     use super::*;
     use crate::{
-        ExitStatus, MemoryGraphNode, MemoryOptions, MemorySummary, RunIdentity, RunMode,
-        RunSummary,
+        ExitStatus, MemoryGraphNode, MemoryOptions, MemorySummary, RunIdentity, RunMode, RunSummary,
     };
 
     #[test]
@@ -646,5 +650,68 @@ mod tests {
         assert_eq!(bundle.summary.leaked_bytes, 32);
         assert_eq!(bundle.leaks.len(), 1);
         assert_eq!(bundle.leaks[0].alloc_id, 9);
+    }
+
+    #[test]
+    fn memory_artifacts_reject_stale_report_without_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-stale-report-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(
+                        root.join("external.trace.fozzy")
+                            .to_string_lossy()
+                            .to_string(),
+                    ),
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    leaked_bytes: 16,
+                    leaked_allocs: 1,
+                    peak_bytes: 16,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            })
+            .expect("report json"),
+        )
+        .expect("write report");
+        std::fs::write(
+            run_dir.join("memory.leaks.json"),
+            serde_json::to_vec_pretty(&vec![MemoryLeak {
+                alloc_id: 1,
+                bytes: 16,
+                callsite_hash: "alloc:stale".to_string(),
+                tag: None,
+            }])
+            .expect("leaks json"),
+        )
+        .expect("write leaks");
+
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            ..Config::default()
+        };
+        let err = load_memory_bundle(&cfg, "r1").expect_err("must reject stale report");
+        assert!(
+            err.to_string()
+                .contains("missing required files: manifest.json")
+        );
     }
 }

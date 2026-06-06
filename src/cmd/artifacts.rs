@@ -765,7 +765,8 @@ pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<P
             return Ok(path);
         }
 
-        if path.is_file() && crate::is_trace_path(&path)
+        if path.is_file()
+            && crate::is_trace_path(&path)
             && let Some(artifacts_dir) = trace_declared_artifacts_dir(&path)?
         {
             return Ok(artifacts_dir);
@@ -801,8 +802,7 @@ pub(crate) fn resolve_trace_path_from_artifacts_dir(
     let local_trace = local_trace.exists().then_some(local_trace);
     let report_path = artifacts_dir.join("report.json");
     let report_trace = if report_path.exists()
-        && let Ok(summary) =
-            serde_json::from_slice::<RunSummary>(&std::fs::read(&report_path)?)
+        && let Ok(summary) = serde_json::from_slice::<RunSummary>(&std::fs::read(&report_path)?)
         && let Some(path) = summary.identity.trace_path
     {
         let trace_path = PathBuf::from(path);
@@ -817,8 +817,7 @@ pub(crate) fn resolve_trace_path_from_artifacts_dir(
 
     let manifest_path = artifacts_dir.join("manifest.json");
     let manifest_trace = if manifest_path.exists()
-        && let Ok(manifest) =
-            serde_json::from_slice::<RunManifest>(&std::fs::read(&manifest_path)?)
+        && let Ok(manifest) = serde_json::from_slice::<RunManifest>(&std::fs::read(&manifest_path)?)
         && let Some(path) = manifest.trace_path
     {
         let trace_path = PathBuf::from(path);
@@ -863,6 +862,28 @@ pub(crate) fn resolve_trace_path_from_artifacts_dir(
     }
 
     Ok(None)
+}
+
+pub(crate) fn load_checked_report_summary_from_artifacts_dir(
+    artifacts_dir: &Path,
+    run: &str,
+) -> FozzyResult<Option<RunSummary>> {
+    let report_path = artifacts_dir.join("report.json");
+    if !report_path.exists() {
+        return Ok(None);
+    }
+
+    let mut files = vec![report_path.clone()];
+    let manifest_path = artifacts_dir.join("manifest.json");
+    if manifest_path.exists() {
+        files.push(manifest_path);
+    }
+    if let Some(trace_path) = resolve_trace_path_from_artifacts_dir(artifacts_dir)? {
+        files.push(trace_path);
+    }
+    validate_manifest_integrity(&files, run)?;
+
+    Ok(Some(serde_json::from_slice(&std::fs::read(report_path)?)?))
 }
 
 fn trace_identity_key(path: &Path) -> FozzyResult<PathBuf> {
@@ -1610,8 +1631,11 @@ mod tests {
         std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), b"[]").expect("events");
         std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
-            .expect("trace");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
         let out = root.join("pack.zip");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
@@ -1658,8 +1682,11 @@ mod tests {
         std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
-            .expect("trace");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -1706,8 +1733,11 @@ mod tests {
         std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
-            .expect("trace");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -1762,8 +1792,11 @@ mod tests {
         std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
-            .expect("trace");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
 
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
@@ -1958,7 +1991,10 @@ mod tests {
 
         let entries = artifacts_list(&cfg, &trace.to_string_lossy()).expect("artifacts list");
         assert!(entries.iter().any(|entry| {
-            entry.path == detached_artifacts.join("profile.metrics.json").to_string_lossy()
+            entry.path
+                == detached_artifacts
+                    .join("profile.metrics.json")
+                    .to_string_lossy()
         }));
     }
 
@@ -2010,8 +2046,7 @@ mod tests {
             ),
         )
         .expect("report");
-        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1"))
-            .expect("manifest");
+        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1")).expect("manifest");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -2041,8 +2076,10 @@ mod tests {
 
     #[test]
     fn resolve_trace_path_rejects_conflicting_local_and_declared_trace_identities() {
-        let root = std::env::temp_dir()
-            .join(format!("fozzy-artifacts-conflict-local-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-conflict-local-{}",
+            uuid::Uuid::new_v4()
+        ));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
         let local_trace = run_dir.join("trace.fozzy");
@@ -2065,13 +2102,18 @@ mod tests {
 
         let err =
             resolve_trace_path_from_artifacts_dir(&run_dir).expect_err("must reject conflict");
-        assert!(err.to_string().contains("conflicting local and declared trace identities"));
+        assert!(
+            err.to_string()
+                .contains("conflicting local and declared trace identities")
+        );
     }
 
     #[test]
     fn resolve_trace_path_rejects_conflicting_report_and_manifest_trace_identities() {
-        let root = std::env::temp_dir()
-            .join(format!("fozzy-artifacts-conflict-declared-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-conflict-declared-{}",
+            uuid::Uuid::new_v4()
+        ));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
         let report_trace = root.join("report.trace.fozzy");
@@ -2079,15 +2121,14 @@ mod tests {
         let report_path = run_dir.join("report.json");
         std::fs::write(
             &report_path,
-            valid_report_json("r1", &report_path, &run_dir)
-                .replace(
-                    &format!(r#""artifactsDir":"{}""#, run_dir.display()),
-                    &format!(
-                        r#""artifactsDir":"{}","tracePath":"{}""#,
-                        run_dir.display(),
-                        report_trace.display()
-                    ),
+            valid_report_json("r1", &report_path, &run_dir).replace(
+                &format!(r#""artifactsDir":"{}""#, run_dir.display()),
+                &format!(
+                    r#""artifactsDir":"{}","tracePath":"{}""#,
+                    run_dir.display(),
+                    report_trace.display()
                 ),
+            ),
         )
         .expect("report");
         std::fs::write(
@@ -2127,7 +2168,10 @@ mod tests {
 
         let err =
             resolve_trace_path_from_artifacts_dir(&run_dir).expect_err("must reject conflict");
-        assert!(err.to_string().contains("conflicting declared trace identities"));
+        assert!(
+            err.to_string()
+                .contains("conflicting declared trace identities")
+        );
     }
 
     #[test]
@@ -2168,15 +2212,22 @@ mod tests {
 
     #[test]
     fn direct_trace_export_and_pack_reject_partial_sibling_metadata() {
-        let root =
-            std::env::temp_dir().join(format!("fozzy-direct-trace-partial-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-partial-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).expect("mkdir");
         let trace_path = root.join("direct.trace.fozzy");
         let artifacts_dir = root.join("artifacts");
         std::fs::create_dir_all(&artifacts_dir).expect("artifacts dir");
         std::fs::write(
             &trace_path,
-            valid_trace_json("r1", &trace_path, &artifacts_dir.join("report.json"), &artifacts_dir),
+            valid_trace_json(
+                "r1",
+                &trace_path,
+                &artifacts_dir.join("report.json"),
+                &artifacts_dir,
+            ),
         )
         .expect("trace");
         std::fs::write(
@@ -2206,14 +2257,18 @@ mod tests {
 
         let err_pack = export_reproducer_pack(&cfg, &trace_path.to_string_lossy(), &out_pack)
             .expect_err("pack must fail");
-        assert!(err_pack
-            .to_string()
-            .contains("report.json and manifest.json must appear together"));
+        assert!(
+            err_pack
+                .to_string()
+                .contains("report.json and manifest.json must appear together")
+        );
         let err_export = export_artifacts(&cfg, &trace_path.to_string_lossy(), &out_export)
             .expect_err("export must fail");
-        assert!(err_export
-            .to_string()
-            .contains("report.json and manifest.json must appear together"));
+        assert!(
+            err_export
+                .to_string()
+                .contains("report.json and manifest.json must appear together")
+        );
     }
 
     #[test]
@@ -2275,8 +2330,11 @@ mod tests {
         std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
-            .expect("trace");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -2368,8 +2426,11 @@ mod tests {
         .expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), br#"not-json"#).expect("manifest");
-        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
-            .expect("trace");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -2412,8 +2473,11 @@ mod tests {
         std::fs::write(&report_path, br#"not-json"#).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
-            .expect("trace");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -2478,8 +2542,11 @@ mod tests {
         std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), mismatched_manifest).expect("manifest");
-        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
-            .expect("trace");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -2527,8 +2594,11 @@ mod tests {
         std::fs::write(&report_path, report).expect("report");
         std::fs::write(run_dir.join("events.json"), br#"[]"#).expect("events");
         std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(&trace_path, valid_trace_json("r1", &trace_path, &report_path, &run_dir))
-            .expect("trace");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,

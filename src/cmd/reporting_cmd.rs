@@ -121,11 +121,7 @@ fn report_doc_with_profile(config: &Config, run: &str, summary: &RunSummary) -> 
 }
 
 fn is_diagnostic_profile_explain(explain: &serde_json::Value) -> bool {
-    if explain
-        .get("schemaVersion")
-        .and_then(|v| v.as_str())
-        != Some("fozzy.profile_explain.v1")
-    {
+    if explain.get("schemaVersion").and_then(|v| v.as_str()) != Some("fozzy.profile_explain.v1") {
         return false;
     }
     let statement = explain
@@ -265,9 +261,9 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<RunSummary> {
 
     let artifacts_dir = crate::resolve_artifacts_dir(config, run)?;
     let report_json = artifacts_dir.join("report.json");
-    if report_json.exists() {
-        let bytes = std::fs::read(report_json)?;
-        let summary: RunSummary = serde_json::from_slice(&bytes)?;
+    if let Some(summary) =
+        crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, run)?
+    {
         return Ok(summary);
     }
 
@@ -589,6 +585,26 @@ mod tests {
             serde_json::to_vec_pretty(&summary).expect("json"),
         )
         .expect("write");
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": "fozzy.run_manifest.v1",
+                "runId": run_id,
+                "mode": "run",
+                "status": if status == ExitStatus::Pass { "pass" } else { "fail" },
+                "seed": 1,
+                "startedAt": "2026-01-01T00:00:00Z",
+                "finishedAt": "2026-01-01T00:00:00Z",
+                "durationMs": 0,
+                "durationNs": 0,
+                "tracePath": serde_json::Value::Null,
+                "reportPath": dir.join("report.json"),
+                "artifactsDir": dir,
+                "findingsCount": summary.findings.len()
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
         run_id.to_string()
     }
 
@@ -815,7 +831,10 @@ mod tests {
 
         let loaded = load_summary(&cfg, "r1").expect("load summary");
         assert_eq!(loaded.identity.run_id, "r1");
-        assert_eq!(loaded.identity.trace_path.as_deref(), Some(external_trace.to_string_lossy().as_ref()));
+        assert_eq!(
+            loaded.identity.trace_path.as_deref(),
+            Some(external_trace.to_string_lossy().as_ref())
+        );
     }
 
     #[test]
@@ -832,7 +851,12 @@ mod tests {
                 run_id: "trace-run".to_string(),
                 seed: 7,
                 trace_path: Some(trace_path.to_string_lossy().to_string()),
-                report_path: Some(artifacts_dir.join("report.json").to_string_lossy().to_string()),
+                report_path: Some(
+                    artifacts_dir
+                        .join("report.json")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
                 artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
             },
             started_at: "2026-01-01T00:00:00Z".to_string(),
@@ -855,7 +879,12 @@ mod tests {
                 run_id: "report-run".to_string(),
                 seed: 1,
                 trace_path: Some(root.join("other.trace.fozzy").to_string_lossy().to_string()),
-                report_path: Some(artifacts_dir.join("report.json").to_string_lossy().to_string()),
+                report_path: Some(
+                    artifacts_dir
+                        .join("report.json")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
                 artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
             },
             started_at: "2026-01-01T00:00:00Z".to_string(),
@@ -915,5 +944,61 @@ mod tests {
         assert_eq!(loaded.status, ExitStatus::Fail);
         assert_eq!(loaded.mode, RunMode::Replay);
         assert_eq!(loaded.findings.len(), 1);
+    }
+
+    #[test]
+    fn load_summary_rejects_stale_report_without_manifest() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-report-stale-report-{}", Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let external_trace = root.join("external.trace.fozzy");
+        let summary = RunSummary {
+            status: ExitStatus::Pass,
+            mode: RunMode::Run,
+            identity: RunIdentity {
+                run_id: "r1".to_string(),
+                seed: 1,
+                trace_path: Some(external_trace.to_string_lossy().to_string()),
+                report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+            },
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:00Z".to_string(),
+            duration_ms: 0,
+            duration_ns: 0,
+            tests: None,
+            memory: None,
+            findings: Vec::new(),
+        };
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&summary).expect("report json"),
+        )
+        .expect("write report");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err = load_summary(&cfg, "r1").expect_err("must reject stale report");
+        assert!(
+            err.to_string()
+                .contains("missing required files: manifest.json")
+        );
     }
 }

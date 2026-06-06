@@ -1130,7 +1130,11 @@ fn shrink_preserves_real_duration_in_output_trace() {
         trace.to_string_lossy().to_string(),
         "--json".into(),
     ]);
-    assert_eq!(run.status.code(), Some(0), "host shrink source run should pass");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "host shrink source run should pass"
+    );
 
     let shrink = run_cli(&[
         "shrink".into(),
@@ -1255,7 +1259,11 @@ fn host_proc_backend_executes_real_command_even_with_proc_when_contract() {
     assert_eq!(run.status.code(), Some(0), "host proc_when run should pass");
 
     let invocations = std::fs::read_to_string(&marker).expect("marker file should exist");
-    assert_eq!(invocations.lines().count(), 1, "host proc should run exactly once");
+    assert_eq!(
+        invocations.lines().count(),
+        1,
+        "host proc should run exactly once"
+    );
 
     let trace_doc = read_trace_json(&trace);
     let proc_event = trace_doc
@@ -2105,7 +2113,10 @@ fn gate_doctor_deep_surfaces_issue_detail() {
         .expect("run gate");
     assert_eq!(out.status.code(), Some(1), "gate should fail doctor_deep");
     let doc = parse_json_stdout(&out);
-    assert_eq!(full_step_status(&doc, "doctor_deep").as_deref(), Some("failed"));
+    assert_eq!(
+        full_step_status(&doc, "doctor_deep").as_deref(),
+        Some("failed")
+    );
     let detail = full_step_detail(&doc, "doctor_deep").expect("doctor detail");
     assert!(detail.contains("proc_unmatched_preflight"));
     assert!(detail.contains("Add a `proc_when` step"));
@@ -2251,7 +2262,11 @@ fn full_rejects_non_pass_primary_summaries_even_without_strict_warnings() {
         "test_det,run_record_trace".into(),
         "--json".into(),
     ]);
-    assert_eq!(out.status.code(), Some(1), "full should fail for non-pass primary scenario");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "full should fail for non-pass primary scenario"
+    );
     let doc = parse_json_stdout(&out);
     assert_eq!(
         full_step_status(&doc, "test_det").as_deref(),
@@ -2310,7 +2325,11 @@ fn full_report_query_rejects_non_pass_primary_status() {
         "run_record_trace,report_query".into(),
         "--json".into(),
     ]);
-    assert_eq!(out.status.code(), Some(1), "full should fail for non-pass primary scenario");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "full should fail for non-pass primary scenario"
+    );
     let doc = parse_json_stdout(&out);
     assert_eq!(
         full_step_status(&doc, "report_query").as_deref(),
@@ -2342,7 +2361,11 @@ fn full_memory_graph_skips_empty_graph_evidence() {
         "run_record_trace,memory_graph".into(),
         "--json".into(),
     ]);
-    assert_eq!(out.status.code(), Some(0), "full example flow should complete");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "full example flow should complete"
+    );
     let doc = parse_json_stdout(&out);
     assert_eq!(
         full_step_status(&doc, "memory_graph").as_deref(),
@@ -2482,7 +2505,10 @@ fn full_fails_discover_when_only_distributed_scenarios_exist() {
     assert!(
         doc.get("guidance")
             .and_then(|v| v.as_array())
-            .is_some_and(|items| items.iter().filter_map(|v| v.as_str()).any(|s| s.contains("distributed-only roots cannot exercise"))),
+            .is_some_and(|items| items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|s| s.contains("distributed-only roots cannot exercise"))),
         "full guidance should explain why distributed-only roots are insufficient"
     );
 }
@@ -2855,11 +2881,10 @@ fn run_recorded_trace_shares_report_identity() {
     );
     let report_path = resolve_output_path(
         &ws,
-        out
-        .get("identity")
-        .and_then(|v| v.get("reportPath"))
-        .and_then(|v| v.as_str())
-        .expect("report path"),
+        out.get("identity")
+            .and_then(|v| v.get("reportPath"))
+            .and_then(|v| v.as_str())
+            .expect("report path"),
     );
     let report_doc: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&report_path).expect("read report"))
@@ -2921,9 +2946,9 @@ fn artifacts_run_id_uses_external_recorded_trace_identity() {
         .get("entries")
         .and_then(|v| v.as_array())
         .and_then(|entries| {
-            entries.iter().find(|entry| {
-                entry.get("kind").and_then(|v| v.as_str()) == Some("trace")
-            })
+            entries
+                .iter()
+                .find(|entry| entry.get("kind").and_then(|v| v.as_str()) == Some("trace"))
         })
         .and_then(|entry| entry.get("path"))
         .and_then(|v| v.as_str())
@@ -2935,12 +2960,7 @@ fn artifacts_run_id_uses_external_recorded_trace_identity() {
 
     let memory = run_cli_in(
         &ws,
-        &[
-            "memory".into(),
-            "top".into(),
-            run_id,
-            "--json".into(),
-        ],
+        &["memory".into(), "top".into(), run_id, "--json".into()],
     );
     assert_eq!(
         memory.status.code(),
@@ -2997,11 +3017,10 @@ fn fuzz_recorded_trace_shares_report_identity() {
         .to_string();
     let report_path = resolve_output_path(
         &ws,
-        out
-        .get("identity")
-        .and_then(|v| v.get("reportPath"))
-        .and_then(|v| v.as_str())
-        .expect("report path"),
+        out.get("identity")
+            .and_then(|v| v.get("reportPath"))
+            .and_then(|v| v.as_str())
+            .expect("report path"),
     );
     let trace_doc = read_trace_json(Path::new(&trace_path));
     let trace_identity = trace_doc
@@ -3066,11 +3085,10 @@ fn explore_recorded_trace_shares_report_identity() {
         .to_string();
     let report_path = resolve_output_path(
         &ws,
-        out
-        .get("identity")
-        .and_then(|v| v.get("reportPath"))
-        .and_then(|v| v.as_str())
-        .expect("report path"),
+        out.get("identity")
+            .and_then(|v| v.get("reportPath"))
+            .and_then(|v| v.as_str())
+            .expect("report path"),
     );
     let trace_doc = read_trace_json(Path::new(&trace_path));
     let trace_identity = trace_doc
@@ -3101,11 +3119,7 @@ fn explore_recorded_trace_shares_report_identity() {
 fn run_manifest_refreshes_profile_capabilities_after_artifact_emit() {
     let ws = temp_workspace("run-manifest-profile-capabilities");
     let scenario = ws.join("memory.pass.fozzy.json");
-    std::fs::write(
-        &scenario,
-        fixture("memory.pass.fozzy.json"),
-    )
-    .expect("write scenario");
+    std::fs::write(&scenario, fixture("memory.pass.fozzy.json")).expect("write scenario");
 
     let output = run_cli_in(
         &ws,
@@ -3252,7 +3266,11 @@ fn replay_embedded_trace_without_scenario_path_reports_real_trace_file_location(
 
     let replay = run_cli_in(
         &ws,
-        &["replay".into(), trace.display().to_string(), "--json".into()],
+        &[
+            "replay".into(),
+            trace.display().to_string(),
+            "--json".into(),
+        ],
     );
     assert_eq!(replay.status.code(), Some(1), "replay should fail");
     let doc = parse_json_stdout(&replay);
@@ -3818,7 +3836,8 @@ fn gate_targeted_profile_runs_scoped_strict_bundle() {
     let profile_explain =
         full_step_detail(&doc, "profile_explain").expect("profile_explain detail");
     let profile_explain_status = full_step_status(&doc, "profile_explain");
-    if profile_explain.contains("cause_domain=unknown") || profile_explain.contains("shifted_path=n/a")
+    if profile_explain.contains("cause_domain=unknown")
+        || profile_explain.contains("shifted_path=n/a")
     {
         assert_eq!(
             profile_explain_status.as_deref(),
@@ -3874,7 +3893,11 @@ fn gate_rejects_non_pass_primary_summaries_even_without_strict_warnings() {
         ])
         .output()
         .expect("run gate");
-    assert_eq!(out.status.code(), Some(1), "gate should fail for non-pass primary scenario");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "gate should fail for non-pass primary scenario"
+    );
     let doc = parse_json_stdout(&out);
     assert_eq!(
         full_step_status(&doc, "test_det_strict").as_deref(),
@@ -4720,16 +4743,39 @@ fn report_show_omits_profile_diagnosis_when_only_contract_warning_is_available()
             "mode": "run",
             "identity": {
                 "runId": "legacy-report",
-                "seed": 7
+                "seed": 7,
+                "reportPath": ".fozzy/runs/legacy-report/report.json",
+                "artifactsDir": ".fozzy/runs/legacy-report"
             },
             "startedAt": "2026-01-01T00:00:00Z",
             "finishedAt": "2026-01-01T00:00:00Z",
             "durationMs": 1,
-            "durationNs": 1000000
+            "durationNs": 1000000,
+            "findings": []
         }))
         .expect("report json"),
     )
     .expect("write report");
+    std::fs::write(
+        run_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": "fozzy.run_manifest.v1",
+            "runId": "legacy-report",
+            "mode": "run",
+            "status": "pass",
+            "seed": 7,
+            "startedAt": "2026-01-01T00:00:00Z",
+            "finishedAt": "2026-01-01T00:00:00Z",
+            "durationMs": 1,
+            "durationNs": 1000000,
+            "tracePath": serde_json::Value::Null,
+            "reportPath": ".fozzy/runs/legacy-report/report.json",
+            "artifactsDir": ".fozzy/runs/legacy-report",
+            "findingsCount": 0
+        }))
+        .expect("manifest json"),
+    )
+    .expect("write manifest");
     std::fs::write(
         run_dir.join("profile.metrics.json"),
         br#"{"schemaVersion":"fozzy.profile_metrics.v2","runId":"legacy-report","timeDomains":{"virtualTime":"deterministic","hostMonotonicTime":"host"},"virtualTimeMs":0,"hostTimeMs":0,"cpuTimeMs":0,"allocBytes":0,"inUseBytes":0,"p50LatencyMs":0,"p95LatencyMs":0,"p99LatencyMs":0,"maxLatencyMs":0,"ioOps":0,"schedOps":0}"#,
