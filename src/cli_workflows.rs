@@ -379,6 +379,17 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
             })
         })
         .count();
+    let normalized_pointers = evidence_pointers
+        .iter()
+        .filter_map(|pointer| pointer.as_str().map(str::trim))
+        .filter(|s| !s.is_empty())
+        .filter_map(|pointer| {
+            std::path::Path::new(pointer)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
     let mut seen_pointers = std::collections::BTreeSet::new();
     let duplicate_evidence_pointers = evidence_pointers
         .iter()
@@ -390,6 +401,14 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
                 .is_some_and(|s| !seen_pointers.insert(s.to_string()))
         })
         .count();
+    let metrics_pointer_present = normalized_pointers.contains("profile.metrics.json");
+    let domain_pointer_required = matches!(cause_domain.trim(), "cpu" | "heap" | "latency");
+    let domain_pointer_present = match cause_domain.trim() {
+        "cpu" => normalized_pointers.contains("profile.cpu.json"),
+        "heap" => normalized_pointers.contains("profile.heap.json"),
+        "latency" => normalized_pointers.contains("profile.latency.json"),
+        _ => true,
+    };
     let evidence_count = evidence_pointers.len();
     let status = if cause_domain == "unknown"
         || cause_domain.trim().is_empty()
@@ -402,6 +421,8 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
         || regression_statement == "no measurable regression shift found"
         || regression_statement.starts_with("run ")
         || evidence_count == 0
+        || !metrics_pointer_present
+        || (domain_pointer_required && !domain_pointer_present)
         || invalid_evidence_pointers > 0
         || duplicate_evidence_pointers > 0
     {
@@ -412,10 +433,13 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
     (
         status,
         format!(
-            "cause_domain={} shifted_path={} evidence_pointers={} invalid_evidence_pointers={} duplicate_evidence_pointers={}",
+            "cause_domain={} shifted_path={} evidence_pointers={} metrics_pointer_present={} domain_pointer_required={} domain_pointer_present={} invalid_evidence_pointers={} duplicate_evidence_pointers={}",
             cause_domain,
             shifted_path,
             evidence_count,
+            metrics_pointer_present,
+            domain_pointer_required,
+            domain_pointer_present,
             invalid_evidence_pointers,
             duplicate_evidence_pointers
         ),
@@ -3860,6 +3884,33 @@ mod tests {
         let (status, detail) = profile_explain_status(&value);
         assert!(matches!(status, FullStepStatus::Passed));
         assert!(detail.contains("invalid_evidence_pointers=0"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_missing_metrics_evidence_pointer() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "metric::p99_latency_ms",
+            "evidencePointers": ["profile.latency.json"]
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("metrics_pointer_present=false"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_missing_domain_specific_evidence_pointer() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "metric::p99_latency_ms",
+            "evidencePointers": ["profile.metrics.json"]
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("domain_pointer_required=true"));
+        assert!(detail.contains("domain_pointer_present=false"));
     }
 
     #[test]
