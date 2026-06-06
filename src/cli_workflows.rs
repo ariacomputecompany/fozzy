@@ -953,6 +953,12 @@ fn summary_artifact_identity_status(summary: &RunSummary) -> (bool, String) {
                     .is_some_and(|name| name == summary.identity.run_id)
         },
     );
+    let manifest_path = artifacts_dir.as_ref().map(|dir| dir.join("manifest.json"));
+    let manifest_exists = manifest_path.as_ref().is_some_and(|path| {
+        std::fs::metadata(path)
+            .map(|metadata| metadata.is_file() && metadata.len() > 0)
+            .unwrap_or(false)
+    });
     let report_content_matches = report_path.as_ref().is_some_and(|path| {
         std::fs::read(path)
             .ok()
@@ -966,21 +972,42 @@ fn summary_artifact_identity_status(summary: &RunSummary) -> (bool, String) {
                     && report.identity.artifacts_dir == summary.identity.artifacts_dir
             })
     });
+    let manifest_content_matches = manifest_path.as_ref().is_some_and(|path| {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<fozzy::RunManifest>(&bytes).ok())
+            .is_some_and(|manifest| {
+                manifest.run_id == summary.identity.run_id
+                    && manifest.seed == summary.identity.seed
+                    && manifest.mode == summary.mode
+                    && manifest.status == summary.status
+                    && manifest.report_path == summary.identity.report_path
+                    && manifest.artifacts_dir == summary.identity.artifacts_dir
+                    && manifest.trace_path == summary.identity.trace_path
+                    && manifest.findings_count == summary.findings.len()
+                    && manifest.duration_ms == summary.duration_ms
+                    && manifest.duration_ns == summary.duration_ns
+            })
+    });
     (
         report_present
             && artifacts_present
             && report_exists
             && artifacts_exists
             && report_matches_dir
-            && report_content_matches,
+            && report_content_matches
+            && manifest_exists
+            && manifest_content_matches,
         format!(
-            "report_present={} artifacts_present={} report_exists={} artifacts_exists={} report_matches_dir={} report_content_matches={}",
+            "report_present={} artifacts_present={} report_exists={} artifacts_exists={} report_matches_dir={} report_content_matches={} manifest_exists={} manifest_content_matches={}",
             report_present,
             artifacts_present,
             report_exists,
             artifacts_exists,
             report_matches_dir,
-            report_content_matches
+            report_content_matches,
+            manifest_exists,
+            manifest_content_matches
         ),
     )
 }
@@ -4282,6 +4309,7 @@ mod tests {
         };
         std::fs::write(&report_path, serde_json::to_vec(&summary).expect("serialize report"))
             .expect("write report");
+        fozzy::write_run_manifest(&summary, &artifacts_dir).expect("write manifest");
         summary
     }
 
@@ -4402,6 +4430,52 @@ mod tests {
         let (status, detail) = run_summary_pass_status(&summary, true, 7, RunMode::Run);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("report_content_matches=false"));
+    }
+
+    #[test]
+    fn run_summary_pass_status_rejects_manifest_content_mismatch() {
+        let summary = sample_run_summary(ExitStatus::Pass);
+        let artifacts_dir = PathBuf::from(
+            summary
+                .identity
+                .artifacts_dir
+                .clone()
+                .expect("artifacts dir present"),
+        );
+        let manifest_path = artifacts_dir.join("manifest.json");
+        let mut mismatched = fozzy::RunManifest {
+            schema_version: "fozzy.run_manifest.v1".to_string(),
+            run_id: summary.identity.run_id.clone(),
+            mode: summary.mode,
+            status: summary.status,
+            seed: 99,
+            started_at: summary.started_at.clone(),
+            finished_at: summary.finished_at.clone(),
+            duration_ms: summary.duration_ms,
+            duration_ns: summary.duration_ns,
+            trace_path: summary.identity.trace_path.clone(),
+            report_path: summary.identity.report_path.clone(),
+            artifacts_dir: summary.identity.artifacts_dir.clone(),
+            findings_count: summary.findings.len(),
+            tests_passed: None,
+            tests_failed: None,
+            tests_skipped: None,
+            memory_leaked_bytes: None,
+            memory_leaked_allocs: None,
+            memory_peak_bytes: None,
+            profile_capabilities: Vec::new(),
+            profile_artifacts: std::collections::BTreeMap::new(),
+            profile_schema_versions: std::collections::BTreeMap::new(),
+        };
+        mismatched.seed = 99;
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&mismatched).expect("serialize mismatch"),
+        )
+        .expect("rewrite manifest");
+        let (status, detail) = run_summary_pass_status(&summary, true, 7, RunMode::Run);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("manifest_content_matches=false"));
     }
 
     #[test]
