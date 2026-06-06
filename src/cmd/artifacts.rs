@@ -178,6 +178,7 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
         let mut out = Vec::new();
         let mut files = vec![run_path.clone()];
         push_if_exists(&mut out, ArtifactKind::Trace, run_path.clone())?;
+        let allow_sidecars_without_metadata = trace_declared_artifacts_dir(&run_path)?.is_some();
         let artifacts_dir = resolve_artifacts_dir(config, run)?;
         if artifacts_dir != run_path {
             for (kind, path) in [
@@ -217,7 +218,7 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
                 push_if_exists(&mut out, kind, path)?;
             }
         }
-        validate_direct_trace_bundle(&files, run)?;
+        validate_direct_trace_bundle(&files, run, allow_sidecars_without_metadata)?;
         return Ok(out);
     }
 
@@ -382,7 +383,12 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
         validate_required_bundle_files(&files, run)?;
         validate_manifest_integrity(&files, run)?;
     } else {
-        validate_direct_trace_bundle(&files, run)?;
+        let trace_path = crate::normalize_trace_path(&PathBuf::from(run));
+        validate_direct_trace_bundle(
+            &files,
+            run,
+            trace_declared_artifacts_dir(&trace_path)?.is_some(),
+        )?;
     }
 
     let meta_dir = std::env::temp_dir().join(format!("fozzy-pack-{}", uuid::Uuid::new_v4()));
@@ -440,7 +446,11 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
     source_files.sort();
     source_files.dedup();
     if direct_trace_input {
-        validate_direct_trace_bundle(&source_files, run)?;
+        validate_direct_trace_bundle(
+            &source_files,
+            run,
+            trace_declared_artifacts_dir(&trace_path)?.is_some(),
+        )?;
     } else {
         validate_required_bundle_files(&source_files, run)?;
         validate_manifest_integrity(&source_files, run)?;
@@ -517,10 +527,6 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
     }
     files.sort();
     files.dedup();
-    if direct_trace_input {
-        validate_direct_trace_bundle(&files, run)?;
-    }
-
     let res = if out
         .extension()
         .and_then(|s| s.to_str())
@@ -554,7 +560,12 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
         validate_required_bundle_files(&files, run)?;
         validate_manifest_integrity(&files, run)?;
     } else {
-        validate_direct_trace_bundle(&files, run)?;
+        let trace_path = crate::normalize_trace_path(&PathBuf::from(run));
+        validate_direct_trace_bundle(
+            &files,
+            run,
+            trace_declared_artifacts_dir(&trace_path)?.is_some(),
+        )?;
     }
 
     if out
@@ -1228,7 +1239,11 @@ fn validate_required_bundle_files(files: &[PathBuf], run: &str) -> FozzyResult<(
     Ok(())
 }
 
-fn validate_direct_trace_bundle(files: &[PathBuf], run: &str) -> FozzyResult<()> {
+fn validate_direct_trace_bundle(
+    files: &[PathBuf],
+    run: &str,
+    allow_sidecars_without_metadata: bool,
+) -> FozzyResult<()> {
     let present: BTreeSet<String> = files
         .iter()
         .filter_map(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
@@ -1238,6 +1253,11 @@ fn validate_direct_trace_bundle(files: &[PathBuf], run: &str) -> FozzyResult<()>
     if has_report != has_manifest {
         return Err(crate::FozzyError::InvalidArgument(format!(
             "incomplete direct trace artifacts for {run:?}; report.json and manifest.json must appear together"
+        )));
+    }
+    if !allow_sidecars_without_metadata && !has_report && !has_manifest && files.len() > 1 {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "untrusted sibling artifacts for direct trace {run:?}; report.json and manifest.json are required to trust sibling files"
         )));
     }
     if has_report && has_manifest {
@@ -2314,6 +2334,163 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("report.json and manifest.json must appear together")
+        );
+    }
+
+    #[test]
+    fn direct_trace_list_rejects_unchecked_sibling_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-list-unchecked-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: crate::RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: None,
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: crate::RunSummary {
+                status: crate::ExitStatus::Pass,
+                mode: crate::RunMode::Run,
+                identity: crate::RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: None,
+                    artifacts_dir: None,
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        }
+        .write_json(&trace_path)
+        .expect("trace");
+        std::fs::write(root.join("memory.graph.json"), br#"{"nodes":[],"edges":[]}"#)
+            .expect("graph");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        assert!(
+            err.to_string()
+                .contains("report.json and manifest.json are required to trust sibling files")
+        );
+    }
+
+    #[test]
+    fn direct_trace_export_and_pack_reject_unchecked_sibling_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-export-unchecked-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: crate::RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: None,
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: crate::RunSummary {
+                status: crate::ExitStatus::Pass,
+                mode: crate::RunMode::Run,
+                identity: crate::RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: None,
+                    artifacts_dir: None,
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        }
+        .write_json(&trace_path)
+        .expect("trace");
+        std::fs::write(root.join("profile.metrics.json"), br#"{"domains":[]}"#)
+            .expect("profile");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+        let out_pack = root.join("pack.zip");
+        let out_export = root.join("export.zip");
+
+        let err_pack = export_reproducer_pack(&cfg, &trace_path.to_string_lossy(), &out_pack)
+            .expect_err("pack must fail");
+        assert!(
+            err_pack
+                .to_string()
+                .contains("report.json and manifest.json are required to trust sibling files")
+        );
+        let err_export = export_artifacts(&cfg, &trace_path.to_string_lossy(), &out_export)
+            .expect_err("export must fail");
+        assert!(
+            err_export
+                .to_string()
+                .contains("report.json and manifest.json are required to trust sibling files")
         );
     }
 
