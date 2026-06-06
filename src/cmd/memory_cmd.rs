@@ -269,11 +269,17 @@ fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<Pa
 }
 
 fn load_summary_from_report(artifacts_dir: &Path) -> FozzyResult<MemorySummary> {
-    let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
+    let summary = if let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
         artifacts_dir,
         &artifacts_dir.display().to_string(),
-    )?
-    else {
+    )? {
+        summary
+    } else if let Some(summary) = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
+        artifacts_dir,
+        &artifacts_dir.display().to_string(),
+    )? {
+        summary
+    } else {
         return Err(FozzyError::InvalidArgument(format!(
             "no coherent report/manifest pair found for memory artifacts in {}",
             artifacts_dir.display()
@@ -294,11 +300,17 @@ fn trusted_declared_memory_graph_path(trace_path: &Path) -> FozzyResult<Option<P
     else {
         return Ok(None);
     };
-    let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
+    let summary = if let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
         &artifacts_dir,
         &trace_path.display().to_string(),
-    )?
-    else {
+    )? {
+        summary
+    } else if let Some(summary) = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
+        &artifacts_dir,
+        &trace_path.display().to_string(),
+    )? {
+        summary
+    } else {
         return Ok(None);
     };
     let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
@@ -794,6 +806,123 @@ mod tests {
     }
 
     #[test]
+    fn run_id_uses_manifest_declared_external_trace_path_for_memory_bundle_without_report() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-runid-manifest-only-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let external_trace = root.join("external.trace.fozzy");
+        let trace = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary {
+                    leaked_bytes: 40,
+                    leaked_allocs: 1,
+                    peak_bytes: 96,
+                    ..MemorySummary::default()
+                },
+                leaks: vec![MemoryLeak {
+                    alloc_id: 11,
+                    bytes: 40,
+                    callsite_hash: "alloc:manifest-only-external".to_string(),
+                    tag: None,
+                }],
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(external_trace.to_string_lossy().to_string()),
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: Some(MemorySummary {
+                    leaked_bytes: 40,
+                    leaked_allocs: 1,
+                    peak_bytes: 96,
+                    ..MemorySummary::default()
+                }),
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&external_trace).expect("write trace");
+        std::fs::write(
+            run_dir.join("memory.leaks.json"),
+            serde_json::to_vec_pretty(&vec![MemoryLeak {
+                alloc_id: 11,
+                bytes: 40,
+                callsite_hash: "alloc:manifest-only-external".to_string(),
+                tag: None,
+            }])
+            .expect("leaks json"),
+        )
+        .expect("write leaks");
+        std::fs::write(
+            run_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&crate::RunManifest {
+                schema_version: "fozzy.run_manifest.v1".to_string(),
+                run_id: "r1".to_string(),
+                mode: RunMode::Run,
+                status: ExitStatus::Pass,
+                seed: 1,
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                trace_path: Some(external_trace.to_string_lossy().to_string()),
+                findings_count: 0,
+                tests_passed: None,
+                tests_failed: None,
+                tests_skipped: None,
+                memory_leaked_bytes: Some(40),
+                memory_leaked_allocs: Some(1),
+                memory_peak_bytes: Some(96),
+                profile_capabilities: Vec::new(),
+                profile_artifacts: std::collections::BTreeMap::new(),
+                profile_schema_versions: std::collections::BTreeMap::new(),
+            })
+            .expect("manifest json"),
+        )
+        .expect("write manifest");
+
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            ..Config::default()
+        };
+        let bundle = load_memory_bundle(&cfg, "r1").expect("bundle");
+        assert_eq!(bundle.summary.leaked_bytes, 40);
+        assert_eq!(bundle.leaks.len(), 1);
+        assert_eq!(bundle.leaks[0].alloc_id, 11);
+    }
+
+    #[test]
     fn latest_alias_uses_report_declared_external_trace_path_for_memory_bundle() {
         let root =
             std::env::temp_dir().join(format!("fozzy-memory-latest-{}", uuid::Uuid::new_v4()));
@@ -958,6 +1087,107 @@ mod tests {
             err.to_string()
                 .contains("missing required files: manifest.json")
         );
+    }
+
+    #[test]
+    fn direct_trace_uses_manifest_only_declared_artifacts_dir_for_memory_graph() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-direct-manifest-only-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("trace.fozzy");
+        let artifacts_dir = root.join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).expect("artifacts dir");
+
+        let trace = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary::default(),
+                leaks: Vec::new(),
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: Some(artifacts_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&trace_path).expect("write trace");
+        std::fs::write(
+            artifacts_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&crate::RunManifest {
+                schema_version: "fozzy.run_manifest.v1".to_string(),
+                run_id: "r1".to_string(),
+                mode: RunMode::Run,
+                status: ExitStatus::Pass,
+                seed: 1,
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                report_path: Some(artifacts_dir.join("report.json").to_string_lossy().to_string()),
+                artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
+                trace_path: Some(trace_path.to_string_lossy().to_string()),
+                findings_count: 0,
+                tests_passed: None,
+                tests_failed: None,
+                tests_skipped: None,
+                memory_leaked_bytes: None,
+                memory_leaked_allocs: None,
+                memory_peak_bytes: None,
+                profile_capabilities: Vec::new(),
+                profile_artifacts: std::collections::BTreeMap::new(),
+                profile_schema_versions: std::collections::BTreeMap::new(),
+            })
+            .expect("manifest json"),
+        )
+        .expect("write manifest");
+        std::fs::write(
+            artifacts_dir.join("memory.graph.json"),
+            serde_json::to_vec_pretty(&MemoryGraph {
+                nodes: vec![MemoryGraphNode {
+                    id: "alloc:manifest-only".to_string(),
+                    kind: "alloc".to_string(),
+                    label: "manifest-only".to_string(),
+                }],
+                edges: Vec::new(),
+            })
+            .expect("graph bytes"),
+        )
+        .expect("write graph");
+
+        let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
+        assert_eq!(bundle.graph.nodes.len(), 1);
+        assert_eq!(bundle.graph.nodes[0].id, "alloc:manifest-only");
     }
 
     #[test]
