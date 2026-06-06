@@ -354,11 +354,28 @@ fn validate_run_artifacts_for_listing(artifacts_dir: &Path, run: &str) -> FozzyR
     }
 
     let mut files = Vec::new();
-    if report.exists() {
-        files.push(report);
-    }
-    if manifest.exists() {
-        files.push(manifest);
+    for path in [
+        report,
+        manifest,
+        artifacts_dir.join("timeline.json"),
+        artifacts_dir.join("profile.timeline.json"),
+        artifacts_dir.join("profile.cpu.json"),
+        artifacts_dir.join("profile.heap.json"),
+        artifacts_dir.join("profile.latency.json"),
+        artifacts_dir.join("profile.metrics.json"),
+        artifacts_dir.join("symbols.json"),
+        artifacts_dir.join("memory.timeline.json"),
+        artifacts_dir.join("memory.leaks.json"),
+        artifacts_dir.join("memory.graph.json"),
+        artifacts_dir.join("memory.delta.json"),
+        artifacts_dir.join("events.json"),
+        artifacts_dir.join("coverage.json"),
+        artifacts_dir.join("report.html"),
+        artifacts_dir.join("junit.xml"),
+    ] {
+        if path.exists() {
+            files.push(path);
+        }
     }
     if let Some(trace) = trace {
         files.push(trace);
@@ -1506,6 +1523,13 @@ fn validate_manifest_trace_integrity(files: &[PathBuf], run: &str) -> FozzyResul
             "invalid manifest for {run:?}: unable to load manifest-backed trace summary"
         )));
     }
+    let manifest: RunManifest = serde_json::from_slice(&std::fs::read(manifest_path)?).map_err(|e| {
+        crate::FozzyError::InvalidArgument(format!(
+            "invalid manifest for {run:?}: {} ({e})",
+            manifest_path.display()
+        ))
+    })?;
+    validate_profile_artifact_identities(files, run, &manifest.run_id, manifest.seed)?;
     Ok(())
 }
 
@@ -1631,7 +1655,134 @@ fn validate_manifest_integrity(files: &[PathBuf], run: &str) -> FozzyResult<()> 
             }
         }
     }
+    validate_profile_artifact_identities(files, run, &manifest.run_id, manifest.seed)?;
     Ok(())
+}
+
+fn validate_profile_artifact_identities(
+    files: &[PathBuf],
+    run: &str,
+    expected_run_id: &str,
+    expected_seed: u64,
+) -> FozzyResult<()> {
+    if let Some(metrics_path) = find_artifact_path(files, "profile.metrics.json") {
+        let metrics: crate::ProfileMetrics =
+            serde_json::from_slice(&std::fs::read(metrics_path)?).map_err(|e| {
+                crate::FozzyError::InvalidArgument(format!(
+                    "invalid profile metrics for {run:?}: {} ({e})",
+                    metrics_path.display()
+                ))
+            })?;
+        if metrics.run_id != expected_run_id {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid profile metrics for {run:?}: {} belong to runId={}, expected {expected_run_id}",
+                metrics_path.display(),
+                metrics.run_id
+            )));
+        }
+    }
+
+    if let Some(timeline_path) = find_artifact_path(files, "profile.timeline.json") {
+        let timeline: crate::ProfileTimelineArtifact =
+            serde_json::from_slice(&std::fs::read(timeline_path)?).map_err(|e| {
+                crate::FozzyError::InvalidArgument(format!(
+                    "invalid profile timeline for {run:?}: {} ({e})",
+                    timeline_path.display()
+                ))
+            })?;
+        if timeline.run_id != expected_run_id {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid profile timeline for {run:?}: {} belong to runId={}, expected {expected_run_id}",
+                timeline_path.display(),
+                timeline.run_id
+            )));
+        }
+        if let Some(event) = timeline
+            .events
+            .iter()
+            .find(|event| event.run_id != expected_run_id || event.seed != expected_seed)
+        {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid profile timeline for {run:?}: {} contains event identity runId={} seed={}, expected runId={} seed={}",
+                timeline_path.display(),
+                event.run_id,
+                event.seed,
+                expected_run_id,
+                expected_seed
+            )));
+        }
+    }
+
+    validate_profile_run_scoped_artifact::<crate::CpuProfile>(
+        files,
+        run,
+        "profile.cpu.json",
+        expected_run_id,
+        |profile| profile.run_id.as_str(),
+        "profile cpu artifact",
+    )?;
+    validate_profile_run_scoped_artifact::<crate::HeapProfile>(
+        files,
+        run,
+        "profile.heap.json",
+        expected_run_id,
+        |profile| profile.run_id.as_str(),
+        "profile heap artifact",
+    )?;
+    validate_profile_run_scoped_artifact::<crate::LatencyProfile>(
+        files,
+        run,
+        "profile.latency.json",
+        expected_run_id,
+        |profile| profile.run_id.as_str(),
+        "profile latency artifact",
+    )?;
+    validate_profile_run_scoped_artifact::<crate::SymbolsMap>(
+        files,
+        run,
+        "symbols.json",
+        expected_run_id,
+        |symbols| symbols.run_id.as_str(),
+        "profile symbols artifact",
+    )?;
+    Ok(())
+}
+
+fn validate_profile_run_scoped_artifact<T>(
+    files: &[PathBuf],
+    run: &str,
+    artifact_name: &str,
+    expected_run_id: &str,
+    run_id_for: impl Fn(&T) -> &str,
+    label: &str,
+) -> FozzyResult<()>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let Some(path) = find_artifact_path(files, artifact_name) else {
+        return Ok(());
+    };
+    let artifact: T = serde_json::from_slice(&std::fs::read(path)?).map_err(|e| {
+        crate::FozzyError::InvalidArgument(format!(
+            "invalid {label} for {run:?}: {} ({e})",
+            path.display()
+        ))
+    })?;
+    let actual_run_id = run_id_for(&artifact);
+    if actual_run_id != expected_run_id {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "invalid {label} for {run:?}: {} belong to runId={}, expected {expected_run_id}",
+            path.display(),
+            actual_run_id
+        )));
+    }
+    Ok(())
+}
+
+fn find_artifact_path<'a>(files: &'a [PathBuf], artifact_name: &str) -> Option<&'a Path> {
+    files.iter()
+        .find(|path| path.file_name().and_then(|s| s.to_str()) == Some(artifact_name))
+        .map(PathBuf::as_path)
 }
 
 fn is_direct_trace_input(run: &str) -> bool {
@@ -1804,6 +1955,53 @@ mod tests {
             trace_path.display(),
             report_path.display(),
             artifacts_dir.display()
+        )
+    }
+
+    fn valid_profile_metrics_json(run_id: &str) -> String {
+        format!(
+            r#"{{
+  "schemaVersion":"fozzy.profile_metrics.v1",
+  "runId":"{run_id}",
+  "timeDomains":{{
+    "virtualTime":"virtual_time",
+    "hostMonotonicTime":"host_monotonic_time"
+  }},
+  "virtualTimeMs":0,
+  "hostTimeMs":0,
+  "cpuTimeMs":0,
+  "allocBytes":0,
+  "inUseBytes":0,
+  "p50LatencyMs":0,
+  "p95LatencyMs":0,
+  "p99LatencyMs":0,
+  "maxLatencyMs":0,
+  "ioOps":0,
+  "schedOps":0
+}}"#
+        )
+    }
+
+    fn valid_profile_timeline_json(run_id: &str, seed: u64) -> String {
+        format!(
+            r#"{{
+  "schemaVersion":"fozzy.profile_timeline.v1",
+  "runId":"{run_id}",
+  "timeDomains":{{
+    "virtualTime":"virtual_time",
+    "hostMonotonicTime":"host_monotonic_time"
+  }},
+  "events":[{{
+    "t_virtual":0,
+    "kind":"event",
+    "run_id":"{run_id}",
+    "seed":{seed},
+    "thread":"main",
+    "span_id":"root",
+    "tags":{{}},
+    "cost":{{}}
+  }}]
+}}"#
         )
     }
 
@@ -2233,7 +2431,7 @@ mod tests {
         std::fs::write(detached_artifacts.join("manifest.json"), manifest).expect("manifest");
         std::fs::write(
             detached_artifacts.join("profile.metrics.json"),
-            br#"{"schemaVersion":"fozzy.profile_metrics.v1"}"#,
+            valid_profile_metrics_json("r1"),
         )
         .expect("write metrics");
 
@@ -2289,7 +2487,7 @@ mod tests {
         std::fs::write(detached_artifacts.join("manifest.json"), manifest).expect("manifest");
         std::fs::write(
             detached_artifacts.join("profile.metrics.json"),
-            br#"{"schemaVersion":"fozzy.profile_metrics.v1"}"#,
+            valid_profile_metrics_json("r1"),
         )
         .expect("write metrics");
 
@@ -2395,6 +2593,105 @@ mod tests {
         let entries = artifacts_list(&cfg, &trace.to_string_lossy()).expect("artifacts list");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, trace.to_string_lossy());
+    }
+
+    #[test]
+    fn artifacts_list_rejects_profile_artifacts_with_mismatched_run_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-profile-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let trace_path = run_dir.join("trace.fozzy");
+        let report_path = run_dir.join("report.json");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&trace_path));
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
+        std::fs::write(&report_path, report).expect("report");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(
+            run_dir.join("profile.metrics.json"),
+            valid_profile_metrics_json("foreign-run"),
+        )
+        .expect("metrics");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err = artifacts_list(&cfg, "r1").expect_err("list must fail");
+        assert!(
+            err.to_string().contains("belong to runId=foreign-run"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn direct_trace_rejects_manifest_only_profile_timeline_with_mismatched_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-profile-timeline-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let report_path = root.join("report.json");
+        let (_, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &root, Some(&trace_path));
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &root),
+        )
+        .expect("trace");
+        std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(
+            root.join("profile.timeline.json"),
+            valid_profile_timeline_json("r1", 99),
+        )
+        .expect("timeline");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err =
+            artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        assert!(
+            err.to_string().contains("contains event identity runId=r1 seed=99"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
