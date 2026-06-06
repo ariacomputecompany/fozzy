@@ -1448,7 +1448,7 @@ fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus,
                         .union(&missing_set)
                         .copied()
                         .collect::<std::collections::BTreeSet<_>>()
-                || suite.covered != missing_set.is_empty();
+                || suite.covered != (!suite.required_by_policy || missing_set.is_empty());
             suite.hotspot_id.trim().is_empty()
                 || suite.component.trim().is_empty()
                 || suite.path.trim().is_empty()
@@ -4583,6 +4583,51 @@ mod tests {
         let (status, detail) = topology_coverage_status(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_suites=1"));
+    }
+
+    #[test]
+    fn topology_coverage_status_allows_non_required_suite_with_missing_coverage() {
+        let report = fozzy::MapSuitesReport {
+            schema_version: "fozzy.map_suites.v5".to_string(),
+            root: "/repo".to_string(),
+            scenario_root: "/repo/tests".to_string(),
+            scanned_files: 10,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
+            base_min_risk: 60,
+            effective_min_risk: 55,
+            scenario_count: 1,
+            skipped_source_files: Vec::new(),
+            unreadable_scenarios: Vec::new(),
+            warnings: Vec::new(),
+            required_hotspot_count: 1,
+            covered_hotspot_count: 1,
+            uncovered_hotspot_count: 0,
+            total_suites: 1,
+            returned_suites: 1,
+            offset: 0,
+            limit: 25,
+            truncated: false,
+            suites: vec![fozzy::SuiteRecommendation {
+                hotspot_id: "hs-1".to_string(),
+                component: "runtime".to_string(),
+                path: "src/runtime.rs".to_string(),
+                risk_score: 40,
+                required_by_policy: false,
+                covered: true,
+                coverage_hints: vec!["run_record_replay_ci".to_string()],
+                required_suites: vec!["run_record_replay_ci".to_string()],
+                covered_suites: Vec::new(),
+                coverage_evidence: Vec::new(),
+                missing_required_suites: vec!["run_record_replay_ci".to_string()],
+                why_required: vec!["below threshold".to_string()],
+                reasons: vec!["runtime risk".to_string()],
+                recommended_suites: vec!["run_record_replay_ci".to_string()],
+            }],
+        };
+        let (status, detail) = topology_coverage_status(&report);
+        assert!(matches!(status, FullStepStatus::Passed));
+        assert!(detail.contains("invalid_suites=0"));
     }
 
     #[test]
