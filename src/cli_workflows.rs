@@ -271,44 +271,70 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .get("flakeRatePct")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
-    let invalid_status_keys = value
+    let status_counts = value
         .get("statusCounts")
         .and_then(|v| v.as_object())
-        .map(|m| {
-            m.keys()
-                .filter(|key| {
-                    let key = key.trim();
-                    key.is_empty() || !matches!(key, "pass" | "fail" | "error" | "timeout")
-                })
-                .count()
+        .cloned()
+        .unwrap_or_default();
+    let invalid_status_keys = status_counts
+        .keys()
+        .filter(|key| {
+            let key = key.trim();
+            key.is_empty() || !matches!(key, "pass" | "fail" | "error" | "timeout")
         })
-        .unwrap_or(0);
-    let status_variant_count = value
-        .get("statusCounts")
-        .and_then(|v| v.as_object())
-        .map(|m| m.len())
-        .unwrap_or(0) as u64;
-    let invalid_finding_rows = value
+        .count();
+    let invalid_status_values = status_counts
+        .values()
+        .filter(|count| count.as_u64().is_none_or(|v| v == 0))
+        .count();
+    let status_variant_count = status_counts.len() as u64;
+    let status_total = status_counts
+        .values()
+        .filter_map(|count| count.as_u64())
+        .sum::<u64>();
+    let finding_title_sets = value
         .get("findingTitleSets")
         .and_then(|v| v.as_array())
-        .map(|sets| {
-            sets.iter()
-                .filter(|set| {
-                    set.as_array().is_none_or(|items| {
-                        items
-                            .iter()
-                            .any(|item| item.as_str().is_none_or(|s| s.trim().is_empty()))
-                    })
-                })
+        .cloned()
+        .unwrap_or_default();
+    let invalid_finding_rows = finding_title_sets
+        .iter()
+        .filter(|set| {
+            set.as_array().is_none_or(|items| {
+                items.iter()
+                    .any(|item| item.as_str().is_none_or(|s| s.trim().is_empty()))
+            })
+        })
+        .count();
+    let duplicate_titles_within_rows = finding_title_sets
+        .iter()
+        .filter_map(|set| set.as_array())
+        .map(|items| {
+            let mut seen = std::collections::BTreeSet::new();
+            items.iter()
+                .filter_map(|item| item.as_str().map(str::trim))
+                .filter(|s| !s.is_empty())
+                .filter(|title| !seen.insert((*title).to_string()))
                 .count()
         })
-        .unwrap_or(0);
-    let finding_variant_count = value
-        .get("findingTitleSets")
-        .and_then(|v| v.as_array())
-        .map(|v| v.len())
-        .unwrap_or(0) as u64;
-    let derived_flaky = status_variant_count > 1 || finding_variant_count > 1;
+        .sum::<usize>();
+    let mut seen_finding_rows = std::collections::BTreeSet::new();
+    let duplicate_finding_rows = finding_title_sets
+        .iter()
+        .filter_map(|set| set.as_array())
+        .filter(|items| {
+            let normalized = items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::trim))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\u{0}");
+            !normalized.is_empty() && !seen_finding_rows.insert(normalized)
+        })
+        .count();
+    let unique_finding_variant_count = seen_finding_rows.len() as u64;
+    let finding_variant_count = finding_title_sets.len() as u64;
+    let derived_flaky = status_variant_count > 1 || unique_finding_variant_count > 1;
     let rate_ok = if derived_flaky {
         flake_rate > 0.0 && flake_rate <= 100.0
     } else {
@@ -318,7 +344,11 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         && is_flaky == derived_flaky
         && rate_ok
         && invalid_status_keys == 0
-        && invalid_finding_rows == 0;
+        && invalid_status_values == 0
+        && status_total == run_count
+        && invalid_finding_rows == 0
+        && duplicate_titles_within_rows == 0
+        && duplicate_finding_rows == 0;
     (
         if !consistent || is_flaky {
             FullStepStatus::Failed
@@ -326,15 +356,20 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
             FullStepStatus::Passed
         },
         format!(
-            "run_count={} is_flaky={} derived_flaky={} flake_rate_pct={} status_variants={} finding_variants={} invalid_status_keys={} invalid_finding_rows={}",
+            "run_count={} status_total={} is_flaky={} derived_flaky={} flake_rate_pct={} status_variants={} finding_variants={} unique_finding_variants={} invalid_status_keys={} invalid_status_values={} invalid_finding_rows={} duplicate_titles_within_rows={} duplicate_finding_rows={}",
             run_count,
+            status_total,
             is_flaky,
             derived_flaky,
             flake_rate,
             status_variant_count,
             finding_variant_count,
+            unique_finding_variant_count,
             invalid_status_keys,
-            invalid_finding_rows
+            invalid_status_values,
+            invalid_finding_rows,
+            duplicate_titles_within_rows,
+            duplicate_finding_rows
         ),
     )
 }
@@ -3898,6 +3933,35 @@ mod tests {
     }
 
     #[test]
+    fn flaky_report_status_rejects_invalid_status_values() {
+        let value = serde_json::json!({
+            "runCount": 2,
+            "statusCounts": {"pass": 0},
+            "findingTitleSets": [[]],
+            "isFlaky": false,
+            "flakeRatePct": 0.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_status_values=1"));
+    }
+
+    #[test]
+    fn flaky_report_status_rejects_status_total_mismatch() {
+        let value = serde_json::json!({
+            "runCount": 3,
+            "statusCounts": {"pass": 2},
+            "findingTitleSets": [[]],
+            "isFlaky": false,
+            "flakeRatePct": 0.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("status_total=2"));
+        assert!(detail.contains("run_count=3"));
+    }
+
+    #[test]
     fn flaky_report_status_rejects_invalid_finding_rows() {
         let value = serde_json::json!({
             "runCount": 2,
@@ -3912,6 +3976,34 @@ mod tests {
     }
 
     #[test]
+    fn flaky_report_status_rejects_duplicate_titles_within_row() {
+        let value = serde_json::json!({
+            "runCount": 2,
+            "statusCounts": {"pass": 2},
+            "findingTitleSets": [["boom", "boom"]],
+            "isFlaky": false,
+            "flakeRatePct": 0.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_titles_within_rows=1"));
+    }
+
+    #[test]
+    fn flaky_report_status_rejects_duplicate_finding_rows() {
+        let value = serde_json::json!({
+            "runCount": 2,
+            "statusCounts": {"pass": 2},
+            "findingTitleSets": [["boom"], ["boom"]],
+            "isFlaky": false,
+            "flakeRatePct": 0.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_finding_rows=1"));
+    }
+
+    #[test]
     fn flaky_report_status_allows_empty_finding_rows_for_clean_runs() {
         let value = serde_json::json!({
             "runCount": 2,
@@ -3923,6 +4015,7 @@ mod tests {
         let (status, detail) = flaky_report_status(&value);
         assert!(matches!(status, FullStepStatus::Passed));
         assert!(detail.contains("invalid_finding_rows=0"));
+        assert!(detail.contains("status_total=2"));
     }
 
     #[test]
