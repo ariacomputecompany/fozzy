@@ -419,9 +419,26 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
 }
 
 fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
+    let direct_trace_input = is_direct_trace_input(run);
     let trace_path = resolve_trace_path(config, run)?;
     let trace_input = trace_path.to_string_lossy().to_string();
     let artifacts_dir = resolve_artifacts_dir(config, run)?;
+
+    let mut source_files: Vec<PathBuf> = vec![trace_path.clone()];
+    for name in ["report.json", "manifest.json"] {
+        let path = artifacts_dir.join(name);
+        if path.exists() && path.is_file() {
+            source_files.push(path);
+        }
+    }
+    source_files.sort();
+    source_files.dedup();
+    if direct_trace_input {
+        validate_direct_trace_bundle(&source_files, run)?;
+    } else {
+        validate_required_bundle_files(&source_files, run)?;
+        validate_manifest_integrity(&source_files, run)?;
+    }
 
     let replay = crate::replay_trace(
         config,
@@ -447,13 +464,7 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
     )?;
     let verify = crate::verify_trace_file(&trace_path)?;
 
-    let mut files: Vec<PathBuf> = vec![trace_path.clone()];
-    for name in ["report.json", "manifest.json"] {
-        let path = artifacts_dir.join(name);
-        if path.exists() && path.is_file() {
-            files.push(path);
-        }
-    }
+    let mut files = source_files;
 
     let meta_dir = std::env::temp_dir().join(format!("fozzy-bundle-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&meta_dir)?;
@@ -500,7 +511,7 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
     }
     files.sort();
     files.dedup();
-    if is_direct_trace_input(run) {
+    if direct_trace_input {
         validate_direct_trace_bundle(&files, run)?;
     }
 
@@ -2990,5 +3001,50 @@ mod tests {
         assert!(names.iter().any(|n| n == "replay.report.json"));
         assert!(names.iter().any(|n| n == "ci.report.json"));
         assert!(names.iter().any(|n| n == "env.json"));
+    }
+
+    #[test]
+    fn bundle_rejects_stale_report_without_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-bundle-stale-report-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let trace_path = run_dir.join("trace.fozzy");
+        let report_path = run_dir.join("report.json");
+
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &run_dir),
+        )
+        .expect("trace");
+        std::fs::write(
+            &report_path,
+            valid_report_json("r1", &report_path, &run_dir),
+        )
+        .expect("report");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+        let out = root.join("bundle.zip");
+
+        let err = export_gate_bundle(&cfg, "r1", &out).expect_err("bundle must fail");
+        assert!(err.to_string().contains("missing required files: manifest.json"));
     }
 }
