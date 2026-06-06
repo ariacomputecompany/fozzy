@@ -338,7 +338,13 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
 fn validate_run_artifacts_for_listing(artifacts_dir: &Path, run: &str) -> FozzyResult<()> {
     let report = artifacts_dir.join("report.json");
     let manifest = artifacts_dir.join("manifest.json");
+    let trace = resolve_trace_path_from_artifacts_dir(artifacts_dir)?;
     if !report.exists() && !manifest.exists() {
+        if trace.is_some() {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "incomplete artifacts for {run:?}; missing required files: report.json, manifest.json"
+            )));
+        }
         return Ok(());
     }
 
@@ -349,7 +355,7 @@ fn validate_run_artifacts_for_listing(artifacts_dir: &Path, run: &str) -> FozzyR
     if manifest.exists() {
         files.push(manifest);
     }
-    if let Some(trace) = resolve_trace_path_from_artifacts_dir(artifacts_dir)? {
+    if let Some(trace) = trace {
         files.push(trace);
     }
     validate_required_bundle_files(&files, run)?;
@@ -2569,6 +2575,38 @@ mod tests {
         };
         let err = artifacts_list(&cfg, "stale").expect_err("must reject stale list");
         assert!(err.to_string().contains("missing required files: manifest.json"));
+    }
+
+    #[test]
+    fn artifacts_list_rejects_trace_only_run_wrapper() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-trace-only-list-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let base_dir = root.join(".fozzy");
+        let run_dir = base_dir.join("runs").join("trace-only");
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        let trace_path = run_dir.join("trace.fozzy");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json(
+                "trace-only",
+                &trace_path,
+                &run_dir.join("report.json"),
+                &run_dir,
+            ),
+        )
+        .expect("write trace");
+
+        let cfg = crate::Config {
+            base_dir,
+            ..crate::Config::default()
+        };
+        let err = artifacts_list(&cfg, "trace-only").expect_err("must reject trace-only list");
+        assert!(
+            err.to_string()
+                .contains("missing required files: report.json, manifest.json")
+        );
     }
 
     #[test]
