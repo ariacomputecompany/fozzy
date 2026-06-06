@@ -215,6 +215,18 @@ fn file_artifact_status(path: &Path) -> (FullStepStatus, String) {
     }
 }
 
+fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatus, String) {
+    let strict_ok = enforce_strict_summary(strict, summary).is_ok();
+    (
+        if summary.status == ExitStatus::Pass && strict_ok {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!("status={:?} strict_ok={}", summary.status, strict_ok),
+    )
+}
+
 fn clean_tree_step_status(detail: &str) -> FullStepStatus {
     if detail.contains("check skipped") {
         FullStepStatus::Skipped
@@ -1710,11 +1722,10 @@ pub(super) fn run_full_command(
                 memory,
             },
         ) {
-            Ok(host_run) => push(
-                "host_backends_run",
-                FullStepStatus::Passed,
-                format!("status={:?}", host_run.summary.status),
-            ),
+            Ok(host_run) => {
+                let (status, detail) = run_summary_pass_status(&host_run.summary, strict);
+                push("host_backends_run", status, detail);
+            }
             Err(err) => push("host_backends_run", FullStepStatus::Failed, err.to_string()),
         }
     } else {
@@ -2090,6 +2101,14 @@ mod tests {
         let (status, detail) = file_artifact_status(&path);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("missing"));
+    }
+
+    #[test]
+    fn run_summary_pass_status_rejects_non_pass() {
+        let summary = sample_run_summary(ExitStatus::Fail);
+        let (status, detail) = run_summary_pass_status(&summary, true);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("status=Fail"));
     }
 
     #[test]
