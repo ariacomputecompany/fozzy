@@ -931,10 +931,19 @@ fn env_step_status(env: &fozzy::EnvInfo) -> (FullStepStatus, String) {
 }
 
 fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
+    let mut seen = std::collections::BTreeSet::new();
     let invalid = report
         .checks
         .iter()
         .filter(|check| check.name.trim().is_empty())
+        .count();
+    let duplicate = report
+        .checks
+        .iter()
+        .filter(|check| {
+            let key = check.name.trim();
+            !key.is_empty() && !seen.insert(key.to_string())
+        })
         .count();
     let failing = report
         .checks
@@ -945,21 +954,23 @@ fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
             _ => check.name.clone(),
         })
         .collect::<Vec<_>>();
-    let derived_ok = failing.is_empty() && invalid == 0;
+    let derived_ok = failing.is_empty() && invalid == 0 && duplicate == 0;
     let detail = if failing.is_empty() {
         format!(
-            "checks={} failed=<none> invalid={} reported_ok={} derived_ok={}",
+            "checks={} failed=<none> invalid={} duplicate={} reported_ok={} derived_ok={}",
             report.checks.len(),
             invalid,
+            duplicate,
             report.ok,
             derived_ok
         )
     } else {
         format!(
-            "checks={} failed={} invalid={} reported_ok={} derived_ok={}",
+            "checks={} failed={} invalid={} duplicate={} reported_ok={} derived_ok={}",
             report.checks.len(),
             failing.join("; "),
             invalid,
+            duplicate,
             report.ok,
             derived_ok
         )
@@ -980,16 +991,29 @@ fn doctor_report_status(
     scenario: &Path,
     runs: u32,
 ) -> (FullStepStatus, String) {
+    let mut seen_issues = std::collections::BTreeSet::new();
     let invalid_issues = report
         .issues
         .iter()
         .filter(|issue| issue.code.trim().is_empty() || issue.message.trim().is_empty())
+        .count();
+    let duplicate_issues = report
+        .issues
+        .iter()
+        .filter(|issue| {
+            let code = issue.code.trim();
+            let message = issue.message.trim();
+            !code.is_empty()
+                && !message.is_empty()
+                && !seen_issues.insert(format!("{code}\u{0}{message}"))
+        })
         .count();
     let signal_count = report
         .nondeterminism_signals
         .as_ref()
         .map(|signals| signals.len())
         .unwrap_or(0);
+    let mut seen_signals = std::collections::BTreeSet::new();
     let invalid_signals = report
         .nondeterminism_signals
         .as_ref()
@@ -1000,7 +1024,27 @@ fn doctor_report_status(
                 .count()
         })
         .unwrap_or(0);
-    let derived_ok = report.issues.is_empty() && invalid_issues == 0 && invalid_signals == 0;
+    let duplicate_signals = report
+        .nondeterminism_signals
+        .as_ref()
+        .map(|signals| {
+            signals
+                .iter()
+                .filter(|signal| {
+                    let source = signal.source.trim();
+                    let detail = signal.detail.trim();
+                    !source.is_empty()
+                        && !detail.is_empty()
+                        && !seen_signals.insert(format!("{source}\u{0}{detail}"))
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let derived_ok = report.issues.is_empty()
+        && invalid_issues == 0
+        && duplicate_issues == 0
+        && invalid_signals == 0
+        && duplicate_signals == 0;
     let policy_ok = !strict || (report.issues.is_empty() && signal_count == 0 && invalid_signals == 0);
     let failing = report
         .issues
@@ -1020,9 +1064,11 @@ fn doctor_report_status(
         .collect::<Vec<_>>();
     let detail = if failing.is_empty() {
         format!(
-            "issues=0 signals=0 invalid_issues={} invalid_signals={} runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues=0 signals=0 invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
             invalid_issues,
+            duplicate_issues,
             invalid_signals,
+            duplicate_signals,
             runs,
             scenario.display(),
             report.ok,
@@ -1031,11 +1077,13 @@ fn doctor_report_status(
         )
     } else {
         format!(
-            "issues={} signals={} invalid_issues={} invalid_signals={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues={} signals={} invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
             report.issues.len(),
             signal_count,
             invalid_issues,
+            duplicate_issues,
             invalid_signals,
+            duplicate_signals,
             runs,
             scenario.display(),
             failing.join("; "),
@@ -3373,6 +3421,30 @@ mod tests {
     }
 
     #[test]
+    fn ci_report_status_rejects_duplicate_check_names() {
+        let report = fozzy::CiReport {
+            schema_version: "fozzy.ci_report.v1".to_string(),
+            ok: true,
+            checks: vec![
+                fozzy::CiCheck {
+                    name: "trace_verify".to_string(),
+                    ok: true,
+                    detail: Some("ok".to_string()),
+                },
+                fozzy::CiCheck {
+                    name: "trace_verify".to_string(),
+                    ok: true,
+                    detail: Some("ok again".to_string()),
+                },
+            ],
+        };
+        let (status, detail) = ci_report_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
     fn doctor_report_status_surfaces_issue_and_hint() {
         let report = fozzy::DoctorReport {
             ok: false,
@@ -3432,6 +3504,32 @@ mod tests {
     }
 
     #[test]
+    fn doctor_report_status_rejects_duplicate_issue_rows() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: vec![
+                fozzy::DoctorIssue {
+                    code: "determinism_audit_mismatch".to_string(),
+                    message: "mismatch".to_string(),
+                    hint: None,
+                },
+                fozzy::DoctorIssue {
+                    code: "determinism_audit_mismatch".to_string(),
+                    message: "mismatch".to_string(),
+                    hint: Some("same issue repeated".to_string()),
+                },
+            ],
+            nondeterminism_signals: None,
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_issues=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
     fn doctor_report_status_rejects_invalid_signal_rows() {
         let report = fozzy::DoctorReport {
             ok: true,
@@ -3446,6 +3544,30 @@ mod tests {
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_signals=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_duplicate_signal_rows() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: Vec::new(),
+            nondeterminism_signals: Some(vec![
+                fozzy::NondeterminismSignal {
+                    source: "stdout".to_string(),
+                    detail: "line ordering drift".to_string(),
+                },
+                fozzy::NondeterminismSignal {
+                    source: "stdout".to_string(),
+                    detail: "line ordering drift".to_string(),
+                },
+            ]),
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_signals=1"));
         assert!(detail.contains("derived_ok=false"));
     }
 
