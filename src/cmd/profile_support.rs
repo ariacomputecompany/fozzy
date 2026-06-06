@@ -18,7 +18,7 @@ pub(super) fn load_profile_bundle(
     spec: ProfileLoadSpec,
 ) -> FozzyResult<ProfileBundle> {
     let source = resolve_profile_source(config, selector)?;
-    let (artifacts_dir, trace_path, expected_identity) = match &source {
+    let (artifacts_dir, trace_path, expected_identity, can_refresh_from_trace) = match &source {
         ResolvedProfileSource::DirectTrace {
             artifacts_dir,
             trace_path,
@@ -28,25 +28,31 @@ pub(super) fn load_profile_bundle(
                 artifacts_dir.clone(),
                 Some(trace_path.clone()),
                 Some((trace.summary.identity.run_id, trace.summary.identity.seed)),
+                false,
             )
         }
         ResolvedProfileSource::Artifacts {
             artifacts_dir,
             validated_bundle,
-        } => (
-            artifacts_dir.clone(),
-            validated_bundle
+        } => {
+            let trace_path = validated_bundle
                 .as_ref()
-                .and_then(|bundle| bundle.trace_path.clone()),
-            validated_bundle.as_ref().map(|bundle| {
-                (
-                    bundle.summary.identity.run_id.clone(),
-                    bundle.summary.identity.seed,
-                )
-            }),
-        ),
+                .and_then(|bundle| bundle.trace_path.clone());
+            let expected_identity = if let Some(trace_path) = trace_path.as_ref() {
+                let trace = TraceFile::read_json(trace_path)?;
+                Some((trace.summary.identity.run_id, trace.summary.identity.seed))
+            } else {
+                validated_bundle.as_ref().map(|bundle| {
+                    (
+                        bundle.summary.identity.run_id.clone(),
+                        bundle.summary.identity.seed,
+                    )
+                })
+            };
+            (artifacts_dir.clone(), trace_path, expected_identity, true)
+        }
     };
-    if let Some(trace_path) = trace_path {
+    if let Some(ref trace_path) = trace_path {
         if profile_artifacts_stale(&artifacts_dir, &trace_path)? {
             let trace = TraceFile::read_json(&trace_path)?;
             write_profile_artifacts_from_trace_with_source(
@@ -62,6 +68,36 @@ pub(super) fn load_profile_bundle(
         )));
     }
 
+    let mut bundle = read_profile_bundle_from_dir(&artifacts_dir, spec)?;
+    if let Some((expected_run_id, expected_seed)) = expected_identity {
+        if let Err(err) = validate_profile_bundle_identity(&bundle, &expected_run_id, expected_seed)
+        {
+            if can_refresh_from_trace {
+                if let Some(trace_path) = trace_path.clone() {
+                    let trace = TraceFile::read_json(&trace_path)?;
+                    write_profile_artifacts_from_trace_with_source(
+                        &trace,
+                        Some(&trace_path),
+                        &artifacts_dir,
+                    )?;
+                    refresh_manifest_for_profile_artifacts(&artifacts_dir)?;
+                    bundle = read_profile_bundle_from_dir(&artifacts_dir, spec)?;
+                    validate_profile_bundle_identity(&bundle, &expected_run_id, expected_seed)?;
+                } else {
+                    return Err(err);
+                }
+            } else {
+                return Err(err);
+            }
+        }
+    }
+    Ok(bundle)
+}
+
+fn read_profile_bundle_from_dir(
+    artifacts_dir: &Path,
+    spec: ProfileLoadSpec,
+) -> FozzyResult<ProfileBundle> {
     let metrics: ProfileMetrics =
         serde_json::from_slice(&std::fs::read(artifacts_dir.join("profile.metrics.json"))?)?;
     let timeline = if spec.timeline {
@@ -103,19 +139,15 @@ pub(super) fn load_profile_bundle(
         None
     };
 
-    let bundle = ProfileBundle {
-        artifacts_dir,
+    Ok(ProfileBundle {
+        artifacts_dir: artifacts_dir.to_path_buf(),
         timeline,
         cpu,
         heap,
         latency,
         metrics,
         symbols,
-    };
-    if let Some((expected_run_id, expected_seed)) = expected_identity {
-        validate_profile_bundle_identity(&bundle, &expected_run_id, expected_seed)?;
-    }
-    Ok(bundle)
+    })
 }
 
 pub(super) fn parse_selector_group(value: &str) -> Vec<String> {

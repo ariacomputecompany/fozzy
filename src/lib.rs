@@ -4,6 +4,8 @@
 mod artifact_bundle;
 #[path = "cmd/artifact_catalog.rs"]
 mod artifact_catalog;
+#[path = "cmd/artifact_integrity.rs"]
+mod artifact_integrity;
 #[path = "cmd/artifact_resolver.rs"]
 mod artifact_resolver;
 #[path = "cmd/artifacts.rs"]
@@ -73,6 +75,7 @@ mod usage;
 
 pub(crate) use artifact_bundle::*;
 pub(crate) use artifact_catalog::*;
+pub(crate) use artifact_integrity::*;
 pub(crate) use artifact_resolver::*;
 pub use artifacts::*;
 pub use ci::*;
