@@ -468,11 +468,20 @@ pub(super) fn run_gate_command(
     }
 
     let discovered = discover_scenarios(scenario_root);
-    if !discovered.parse_errors.is_empty() {
+    let discovered_count = discovered.steps.len() + discovered.distributed.len();
+    if !discovered.parse_errors.is_empty() || discovered_count == 0 {
         push(
             "discover",
             FullStepStatus::Failed,
-            format!("parse_errors={}", discovered.parse_errors.join(" | ")),
+            if !discovered.parse_errors.is_empty() {
+                format!("parse_errors={}", discovered.parse_errors.join(" | "))
+            } else {
+                format!(
+                    "step_scenarios={} distributed_scenarios={}",
+                    discovered.steps.len(),
+                    discovered.distributed.len()
+                )
+            },
         );
     } else {
         push(
