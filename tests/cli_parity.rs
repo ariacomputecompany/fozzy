@@ -2158,6 +2158,43 @@ fn full_allow_expected_failures_controls_shrink_status_for_fail_class_runs() {
 }
 
 #[test]
+fn full_fails_when_no_scenarios_are_discovered() {
+    let ws = temp_workspace("full-no-scenarios");
+    let scenario_root = ws.join("tests");
+    std::fs::create_dir_all(&scenario_root).expect("create tests dir");
+
+    let out = run_cli(&[
+        "full".into(),
+        "--scenario-root".into(),
+        scenario_root.to_string_lossy().to_string(),
+        "--seed".into(),
+        "7".into(),
+        "--doctor-runs".into(),
+        "2".into(),
+        "--fuzz-time".into(),
+        "10ms".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "full should fail when no scenarios are discovered: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = parse_json_stdout(&out);
+    assert_eq!(
+        full_step_status(&doc, "discover_scenarios"),
+        Some("failed".to_string())
+    );
+    assert!(
+        full_step_detail(&doc, "discover_scenarios")
+            .unwrap_or_default()
+            .contains("step_scenarios=0"),
+        "discover_scenarios should report empty discovery detail"
+    );
+}
+
+#[test]
 fn steps_alias_matches_schema_output() {
     let schema = run_cli(&["schema".into(), "--json".into()]);
     assert_eq!(

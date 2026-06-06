@@ -969,6 +969,7 @@ pub(super) fn run_full_command(
             .retain(|p| p.to_string_lossy().contains(filter));
     }
     let parse_error_count = discovered.parse_errors.len();
+    let discovered_count = discovered.steps.len() + discovered.distributed.len();
     let parsed_summary = format!(
         "discovered step_scenarios={} distributed_scenarios={} parse_errors={}",
         discovered.steps.len(),
@@ -977,7 +978,7 @@ pub(super) fn run_full_command(
     );
     push(
         "discover_scenarios",
-        if parse_error_count > 0 {
+        if parse_error_count > 0 || discovered_count == 0 {
             FullStepStatus::Failed
         } else {
             FullStepStatus::Passed
@@ -989,6 +990,11 @@ pub(super) fn run_full_command(
             "Fix malformed scenarios before trusting `fozzy full` coverage: {}",
             discovered.parse_errors.join(" | ")
         ));
+    } else if discovered_count == 0 {
+        guidance.push(
+            "Add at least one step or distributed scenario under the selected scenario root before trusting `fozzy full` coverage."
+                .to_string(),
+        );
     }
 
     if let Some(root) = require_topology_coverage {
