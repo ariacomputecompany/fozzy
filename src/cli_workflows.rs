@@ -38,6 +38,27 @@ fn summarize_profile_top(value: &serde_json::Value) -> String {
     format!("warnings={warnings} empty_domains={empty_domains}")
 }
 
+fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let warning_count = value
+        .get("warnings")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let empty_count = value
+        .get("emptyDomains")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    (
+        if warning_count > 0 || empty_count > 0 {
+            FullStepStatus::Failed
+        } else {
+            FullStepStatus::Passed
+        },
+        summarize_profile_top(value),
+    )
+}
+
 fn profile_diff_status(
     value: &serde_json::Value,
     require_stable: bool,
@@ -469,11 +490,10 @@ pub(super) fn run_gate_command(
             },
             strict,
         ) {
-            Ok(value) => push(
-                "profile_top",
-                FullStepStatus::Passed,
-                summarize_profile_top(&value),
-            ),
+            Ok(value) => {
+                let (status, detail) = profile_top_status(&value);
+                push("profile_top", status, detail)
+            }
             Err(err) => push("profile_top", FullStepStatus::Failed, err.to_string()),
         }
         if let Some(replay_run_id) = replay_run_id.as_ref() {
@@ -1344,11 +1364,10 @@ pub(super) fn run_full_command(
             },
             strict,
         ) {
-            Ok(value) => push(
-                "profile_top",
-                FullStepStatus::Passed,
-                summarize_profile_top(&value),
-            ),
+            Ok(value) => {
+                let (status, detail) = profile_top_status(&value);
+                push("profile_top", status, detail)
+            }
             Err(err) => push("profile_top", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -1952,6 +1971,28 @@ mod tests {
 
         let (status_no_stable, _) = profile_diff_status(&value, false);
         assert!(matches!(status_no_stable, FullStepStatus::Passed));
+    }
+
+    #[test]
+    fn profile_top_status_rejects_empty_domains() {
+        let value = serde_json::json!({
+            "warnings": [],
+            "emptyDomains": [{"domain": "heap", "reason": "no heap samples in trace"}]
+        });
+        let (status, detail) = profile_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("heap:no heap samples in trace"));
+    }
+
+    #[test]
+    fn profile_top_status_rejects_warnings() {
+        let value = serde_json::json!({
+            "warnings": ["cpu domain uses host-time sampling"],
+            "emptyDomains": []
+        });
+        let (status, detail) = profile_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("warnings=cpu domain uses host-time sampling"));
     }
 
     #[test]

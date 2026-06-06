@@ -3020,7 +3020,7 @@ fn gate_targeted_profile_runs_scoped_strict_bundle() {
         .expect("run gate");
     assert_eq!(
         out.status.code(),
-        Some(0),
+        Some(1),
         "gate stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -3050,6 +3050,11 @@ fn gate_targeted_profile_runs_scoped_strict_bundle() {
         "clean_tree should be skipped outside a git repo"
     );
     let profile_top = full_step_detail(&doc, "profile_top").expect("profile_top detail");
+    assert_eq!(
+        full_step_status(&doc, "profile_top").as_deref(),
+        Some("failed"),
+        "profile_top should fail when requested domains are empty"
+    );
     assert!(
         profile_top.contains("warnings=<none>")
             && profile_top.contains("empty_domains=")
