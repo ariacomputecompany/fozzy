@@ -111,6 +111,7 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
         || shifted_path == "n/a"
         || regression_statement.is_empty()
         || regression_statement == "no measurable regression shift found"
+        || regression_statement.starts_with("run ")
     {
         FullStepStatus::Skipped
     } else {
@@ -2211,6 +2212,19 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Skipped));
         assert!(detail.contains("cause_domain=latency"));
         assert!(detail.contains("shifted_path=metric::p99_ms"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_single_run_observational_summary() {
+        let value = serde_json::json!({
+            "regressionStatement": "run abc123 shows p50/p95/p99/max=0/0/0/0ms, alloc_bytes=128",
+            "likelyCauseDomain": "heap",
+            "topShiftedPath": "root -> step-0 (0ms)"
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("cause_domain=heap"));
+        assert!(detail.contains("shifted_path=root -> step-0 (0ms)"));
     }
 
     #[test]
