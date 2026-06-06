@@ -178,11 +178,26 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
         .get("regressionStatement")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    let evidence_pointers = value
+        .get("evidencePointers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let invalid_evidence_pointers = evidence_pointers
+        .iter()
+        .filter(|pointer| pointer.as_str().is_none_or(|s| s.trim().is_empty()))
+        .count();
+    let evidence_count = evidence_pointers.len();
     let status = if cause_domain == "unknown"
+        || cause_domain.trim().is_empty()
         || shifted_path == "n/a"
+        || shifted_path.trim().is_empty()
+        || shifted_path == "unknown"
         || regression_statement.is_empty()
         || regression_statement == "no measurable regression shift found"
         || regression_statement.starts_with("run ")
+        || evidence_count == 0
+        || invalid_evidence_pointers > 0
     {
         FullStepStatus::Skipped
     } else {
@@ -190,7 +205,10 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
     };
     (
         status,
-        format!("cause_domain={} shifted_path={}", cause_domain, shifted_path),
+        format!(
+            "cause_domain={} shifted_path={} evidence_pointers={} invalid_evidence_pointers={}",
+            cause_domain, shifted_path, evidence_count, invalid_evidence_pointers
+        ),
     )
 }
 
@@ -2687,7 +2705,8 @@ mod tests {
         let value = serde_json::json!({
             "regressionStatement": "no measurable regression shift found",
             "likelyCauseDomain": "unknown",
-            "topShiftedPath": "n/a"
+            "topShiftedPath": "n/a",
+            "evidencePointers": ["profile.metrics.json"]
         });
         let (status, detail) = profile_explain_status(&value);
         assert!(matches!(status, FullStepStatus::Skipped));
@@ -2699,7 +2718,8 @@ mod tests {
     fn profile_explain_status_skips_missing_regression_statement() {
         let value = serde_json::json!({
             "likelyCauseDomain": "latency",
-            "topShiftedPath": "metric::p99_ms"
+            "topShiftedPath": "metric::p99_ms",
+            "evidencePointers": ["profile.metrics.json"]
         });
         let (status, detail) = profile_explain_status(&value);
         assert!(matches!(status, FullStepStatus::Skipped));
@@ -2712,7 +2732,8 @@ mod tests {
         let value = serde_json::json!({
             "regressionStatement": "run abc123 shows p50/p95/p99/max=0/0/0/0ms, alloc_bytes=128",
             "likelyCauseDomain": "heap",
-            "topShiftedPath": "root -> step-0 (0ms)"
+            "topShiftedPath": "root -> step-0 (0ms)",
+            "evidencePointers": ["profile.metrics.json"]
         });
         let (status, detail) = profile_explain_status(&value);
         assert!(matches!(status, FullStepStatus::Skipped));
@@ -2725,12 +2746,40 @@ mod tests {
         let value = serde_json::json!({
             "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
             "likelyCauseDomain": "latency",
-            "topShiftedPath": "metric::p99_latency_ms"
+            "topShiftedPath": "metric::p99_latency_ms",
+            "evidencePointers": ["profile.metrics.json", "profile.latency.json"]
         });
         let (status, detail) = profile_explain_status(&value);
         assert!(matches!(status, FullStepStatus::Passed));
         assert!(detail.contains("cause_domain=latency"));
         assert!(detail.contains("shifted_path=metric::p99_latency_ms"));
+        assert!(detail.contains("evidence_pointers=2"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_missing_evidence_pointers() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "metric::p99_latency_ms",
+            "evidencePointers": []
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("evidence_pointers=0"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_invalid_evidence_pointer_rows() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "metric::p99_latency_ms",
+            "evidencePointers": ["", null]
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("invalid_evidence_pointers=2"));
     }
 
     fn sample_run_summary(status: ExitStatus) -> RunSummary {
