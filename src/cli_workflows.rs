@@ -69,6 +69,14 @@ fn valid_profile_explain_shifted_path(domain: &str, shifted_path: &str) -> bool 
         .is_some_and(|metric| known_profile_metric(domain, metric))
 }
 
+fn expected_profile_time_domain(metric: &str) -> &'static str {
+    if metric == "cpu_time_ms" {
+        "host_monotonic_time"
+    } else {
+        "virtual_time"
+    }
+}
+
 fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let warnings = value
         .get("warnings")
@@ -219,6 +227,7 @@ fn profile_diff_status(
                 || metric.is_none_or(|s| s.is_empty())
                 || time_domain.is_none_or(|s| s.is_empty() || !known_profile_time_domain(s))
                 || !matches!((domain, metric), (Some(domain), Some(metric)) if known_profile_metric(domain, metric))
+                || !matches!((metric, time_domain), (Some(metric), Some(time_domain)) if expected_profile_time_domain(metric) == time_domain)
                 || row
                     .get("classification")
                     .and_then(|v| v.as_str())
@@ -3397,6 +3406,30 @@ mod tests {
                 "domain": "cpu",
                 "metric": "cpu_time_ms",
                 "timeDomain": "cpu",
+                "classification": "stable",
+                "isRegression": false,
+                "isSignificant": false
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_rows=1"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_metric_time_domain_mismatch() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "domain": "cpu",
+                "metric": "cpu_time_ms",
+                "timeDomain": "virtual_time",
                 "classification": "stable",
                 "isRegression": false,
                 "isSignificant": false
