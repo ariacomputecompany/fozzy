@@ -148,6 +148,7 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
             }
         }
     };
+    let has_manifest = artifacts_dir.join("manifest.json").exists();
     let leaks_path = artifacts_dir.join("memory.leaks.json");
     let graph_path = artifacts_dir.join("memory.graph.json");
     if leaks_path.exists() || graph_path.exists() {
@@ -170,7 +171,13 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
     }
 
     if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
-        return load_from_trace(&trace_path, run);
+        if has_manifest {
+            return load_from_trace(&trace_path, run);
+        }
+        return Err(FozzyError::InvalidArgument(format!(
+            "no coherent report/manifest pair found for memory trace artifacts in {}",
+            artifacts_dir.display()
+        )));
     }
 
     if let Some(dir) = resolve_memory_alias_dir(config, run)? {
@@ -195,7 +202,13 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
             });
         }
         if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&dir)? {
-            return load_from_trace(&trace_path, run);
+            if dir.join("manifest.json").exists() {
+                return load_from_trace(&trace_path, run);
+            }
+            return Err(FozzyError::InvalidArgument(format!(
+                "no coherent report/manifest pair found for memory trace artifacts in {}",
+                dir.display()
+            )));
         }
     }
 
@@ -567,6 +580,35 @@ mod tests {
             serde_json::to_vec_pretty(&trace.summary).expect("report json"),
         )
         .expect("write report");
+        std::fs::write(
+            run_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&crate::RunManifest {
+                schema_version: "fozzy.run_manifest.v1".to_string(),
+                run_id: "r1".to_string(),
+                mode: RunMode::Run,
+                status: ExitStatus::Pass,
+                seed: 1,
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                trace_path: Some(external_trace.to_string_lossy().to_string()),
+                findings_count: 0,
+                tests_passed: None,
+                tests_failed: None,
+                tests_skipped: None,
+                memory_leaked_bytes: Some(64),
+                memory_leaked_allocs: Some(1),
+                memory_peak_bytes: Some(128),
+                profile_capabilities: Vec::new(),
+                profile_artifacts: std::collections::BTreeMap::new(),
+                profile_schema_versions: std::collections::BTreeMap::new(),
+            })
+            .expect("manifest json"),
+        )
+        .expect("write manifest");
 
         let cfg = Config {
             base_dir: root.join(".fozzy"),
@@ -888,5 +930,77 @@ mod tests {
         assert_eq!(bundle.summary.leaked_bytes, 24);
         assert_eq!(bundle.leaks.len(), 1);
         assert_eq!(bundle.leaks[0].alloc_id, 3);
+    }
+
+    #[test]
+    fn memory_run_id_rejects_trace_only_wrapper_without_report_manifest() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-memory-trace-only-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let trace_path = run_dir.join("trace.fozzy");
+
+        let trace = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary {
+                    leaked_bytes: 24,
+                    leaked_allocs: 1,
+                    peak_bytes: 24,
+                    ..MemorySummary::default()
+                },
+                leaks: vec![MemoryLeak {
+                    alloc_id: 3,
+                    bytes: 24,
+                    callsite_hash: "alloc:trace-only".to_string(),
+                    tag: None,
+                }],
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&trace_path).expect("write trace");
+
+        let cfg = Config {
+            base_dir: root.join(".fozzy"),
+            ..Config::default()
+        };
+        let err = load_memory_bundle(&cfg, "r1").expect_err("must reject trace-only wrapper");
+        assert!(
+            err.to_string()
+                .contains("no coherent report/manifest pair found for memory trace artifacts")
+        );
     }
 }

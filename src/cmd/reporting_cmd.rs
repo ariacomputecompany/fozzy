@@ -261,28 +261,28 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<RunSummary> {
 
     let artifacts_dir = crate::resolve_artifacts_dir(config, run)?;
     let report_json = artifacts_dir.join("report.json");
+    let manifest_json = artifacts_dir.join("manifest.json");
     if let Some(summary) =
         crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, run)?
     {
         return Ok(summary);
     }
 
-    let trace_path = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)?
-        .ok_or_else(|| {
-            FozzyError::Report(format!(
-                "no report found for {run:?} (looked for {} and trace resolved from artifacts identity)",
-                report_json.display()
-            ))
-        })?;
-    if trace_path.exists() {
-        let trace = TraceFile::read_json(&trace_path)?;
-        return Ok(trace.summary);
+    let trace_path = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)?;
+    if let Some(trace_path) = trace_path {
+        if manifest_json.exists() {
+            let trace = TraceFile::read_json(&trace_path)?;
+            return Ok(trace.summary);
+        }
+        return Err(FozzyError::Report(format!(
+            "no coherent report/manifest pair found for {run:?} (artifacts dir: {})",
+            artifacts_dir.display()
+        )));
     }
 
     Err(FozzyError::Report(format!(
-        "no report found for {run:?} (looked for {} and {})",
-        report_json.display(),
-        trace_path.display()
+        "no report found for {run:?} (looked for {} and trace resolved from artifacts identity)",
+        report_json.display()
     )))
 }
 
@@ -999,6 +999,77 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("missing required files: manifest.json")
+        );
+    }
+
+    #[test]
+    fn load_summary_rejects_trace_only_run_wrapper_without_report_manifest() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-report-trace-only-{}", Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let trace_path = run_dir.join("trace.fozzy");
+
+        let trace = TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: None,
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: Some(run_dir.join("report.json").to_string_lossy().to_string()),
+                    artifacts_dir: Some(run_dir.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&trace_path).expect("write trace");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: Reporter::Json,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err = load_summary(&cfg, "r1").expect_err("must reject trace-only wrapper");
+        assert!(
+            err.to_string()
+                .contains("no coherent report/manifest pair found")
         );
     }
 }
