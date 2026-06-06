@@ -1,17 +1,50 @@
 use super::*;
 
+#[derive(Debug, Clone)]
+enum ResolvedProfileSource {
+    DirectTrace {
+        artifacts_dir: PathBuf,
+        trace_path: PathBuf,
+    },
+    Artifacts {
+        artifacts_dir: PathBuf,
+        validated_bundle: Option<crate::ValidatedArtifactBundle>,
+    },
+}
+
 pub(super) fn load_profile_bundle(
     config: &Config,
     selector: &str,
     spec: ProfileLoadSpec,
 ) -> FozzyResult<ProfileBundle> {
-    let (artifacts_dir, trace_path) = resolve_profile_artifacts(config, selector)?;
-    let expected_identity = if let Some(trace_path) = trace_path.as_ref() {
-        let trace = TraceFile::read_json(trace_path)?;
-        Some((trace.summary.identity.run_id, trace.summary.identity.seed))
-    } else {
-        crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, selector)?
-            .map(|bundle| (bundle.summary.identity.run_id, bundle.summary.identity.seed))
+    let source = resolve_profile_source(config, selector)?;
+    let (artifacts_dir, trace_path, expected_identity) = match &source {
+        ResolvedProfileSource::DirectTrace {
+            artifacts_dir,
+            trace_path,
+        } => {
+            let trace = TraceFile::read_json(trace_path)?;
+            (
+                artifacts_dir.clone(),
+                Some(trace_path.clone()),
+                Some((trace.summary.identity.run_id, trace.summary.identity.seed)),
+            )
+        }
+        ResolvedProfileSource::Artifacts {
+            artifacts_dir,
+            validated_bundle,
+        } => (
+            artifacts_dir.clone(),
+            validated_bundle
+                .as_ref()
+                .and_then(|bundle| bundle.trace_path.clone()),
+            validated_bundle.as_ref().map(|bundle| {
+                (
+                    bundle.summary.identity.run_id.clone(),
+                    bundle.summary.identity.seed,
+                )
+            }),
+        ),
     };
     if let Some(trace_path) = trace_path {
         if profile_artifacts_stale(&artifacts_dir, &trace_path)? {
@@ -694,38 +727,65 @@ pub(super) fn resolve_profile_trace(
 ) -> FozzyResult<(PathBuf, PathBuf)> {
     let (artifacts_dir, trace_path) = resolve_profile_artifacts(config, selector)?;
     if let Some(trace_path) = trace_path {
-        return Ok((artifacts_dir, trace_path));
+        Ok((artifacts_dir, trace_path))
+    } else {
+        Err(FozzyError::InvalidArgument(format!(
+            "no trace.fozzy found for {selector:?}; profiler requires trace artifacts"
+        )))
     }
-    Err(FozzyError::InvalidArgument(format!(
-        "no trace.fozzy found for {selector:?}; profiler requires trace artifacts"
-    )))
 }
 
 pub(super) fn resolve_profile_artifacts(
     config: &Config,
     selector: &str,
 ) -> FozzyResult<(PathBuf, Option<PathBuf>)> {
+    match resolve_profile_source(config, selector)? {
+        ResolvedProfileSource::DirectTrace {
+            artifacts_dir,
+            trace_path,
+        } => Ok((artifacts_dir, Some(trace_path))),
+        ResolvedProfileSource::Artifacts {
+            artifacts_dir,
+            validated_bundle,
+        } => Ok((
+            artifacts_dir,
+            validated_bundle.and_then(|bundle| bundle.trace_path.clone()),
+        )),
+    }
+}
+
+fn resolve_profile_source(config: &Config, selector: &str) -> FozzyResult<ResolvedProfileSource> {
     let input = PathBuf::from(crate::normalize_run_or_trace_selector(selector));
     let direct_trace_input = input.exists() && input.is_file() && crate::is_trace_path(&input);
     if direct_trace_input {
         if let Some(artifacts_dir) = trusted_explicit_profile_artifacts_dir(&input)? {
-            return Ok((artifacts_dir, Some(input)));
+            return Ok(ResolvedProfileSource::DirectTrace {
+                artifacts_dir,
+                trace_path: input,
+            });
         }
         let canonical = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
         let key = blake3::hash(canonical.to_string_lossy().as_bytes())
             .to_hex()
             .to_string();
         let dir = config.base_dir.join("profile-cache").join(key);
-        return Ok((dir, Some(input)));
+        return Ok(ResolvedProfileSource::DirectTrace {
+            artifacts_dir: dir,
+            trace_path: input,
+        });
     }
 
     let artifacts_dir = resolve_artifacts_dir(config, selector)?;
     let report_exists = artifacts_dir.join("report.json").exists();
     let manifest_exists = artifacts_dir.join("manifest.json").exists();
     let resolved_trace = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)?;
-    if let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, selector)?
-    {
-        return Ok((bundle.artifacts_dir, bundle.trace_path));
+    let validated_bundle =
+        crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, selector)?;
+    if validated_bundle.is_some() {
+        return Ok(ResolvedProfileSource::Artifacts {
+            artifacts_dir,
+            validated_bundle,
+        });
     }
     if resolved_trace.is_some() {
         return Err(FozzyError::InvalidArgument(format!(
@@ -740,7 +800,10 @@ pub(super) fn resolve_profile_artifacts(
         )));
     }
 
-    Ok((artifacts_dir, None))
+    Ok(ResolvedProfileSource::Artifacts {
+        artifacts_dir,
+        validated_bundle: None,
+    })
 }
 
 fn trusted_explicit_profile_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
