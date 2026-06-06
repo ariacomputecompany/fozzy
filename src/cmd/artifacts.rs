@@ -720,10 +720,7 @@ fn trace_delta(left: &TraceFile, right: &TraceFile) -> TraceDelta {
 
 fn load_summary(config: &Config, run: &str) -> FozzyResult<Option<RunSummary>> {
     let artifacts_dir = resolve_artifacts_dir(config, run)?;
-    let report_json = artifacts_dir.join("report.json");
-    if report_json.exists() {
-        let bytes = std::fs::read(report_json)?;
-        let summary: RunSummary = serde_json::from_slice(&bytes)?;
+    if let Some(summary) = load_checked_report_summary_from_artifacts_dir(&artifacts_dir, run)? {
         return Ok(Some(summary));
     }
 
@@ -2394,6 +2391,58 @@ mod tests {
             .expect("summary");
         assert_eq!(summary.mode, crate::RunMode::Replay);
         assert_eq!(summary.identity.run_id, "r1");
+    }
+
+    #[test]
+    fn artifacts_diff_rejects_stale_report_without_manifest() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-artifacts-stale-diff-{}", uuid::Uuid::new_v4()));
+        let base_dir = root.join(".fozzy");
+        let left_dir = base_dir.join("runs").join("left");
+        let right_dir = base_dir.join("runs").join("right");
+        std::fs::create_dir_all(&left_dir).expect("left dir");
+        std::fs::create_dir_all(&right_dir).expect("right dir");
+
+        std::fs::write(
+            left_dir.join("report.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "status": "pass",
+                "mode": "run",
+                "identity": {
+                    "runId": "left",
+                    "seed": 1,
+                    "tracePath": "/tmp/missing-left.trace.fozzy",
+                    "reportPath": left_dir.join("report.json"),
+                    "artifactsDir": left_dir
+                },
+                "startedAt": "2026-01-01T00:00:00Z",
+                "finishedAt": "2026-01-01T00:00:00Z",
+                "durationMs": 0,
+                "durationNs": 0,
+                "findings": []
+            }))
+            .expect("left report json"),
+        )
+        .expect("write left report");
+
+        let trace_path = right_dir.join("trace.fozzy");
+        let report_path = right_dir.join("report.json");
+        let (report, manifest) =
+            valid_report_and_manifest_json("right", &report_path, &right_dir, Some(&trace_path));
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("right", &trace_path, &report_path, &right_dir),
+        )
+        .expect("write right trace");
+        std::fs::write(&report_path, report).expect("write right report");
+        std::fs::write(right_dir.join("manifest.json"), manifest).expect("write right manifest");
+
+        let cfg = crate::Config {
+            base_dir,
+            ..crate::Config::default()
+        };
+        let err = artifacts_diff(&cfg, "left", "right").expect_err("must reject stale left");
+        assert!(err.to_string().contains("missing required files: manifest.json"));
     }
 
     #[test]
