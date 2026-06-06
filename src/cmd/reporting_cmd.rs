@@ -260,22 +260,13 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<RunSummary> {
     }
 
     let artifacts_dir = crate::resolve_artifacts_dir(config, run)?;
-    let report_json = artifacts_dir.join("report.json");
-    if let Some(summary) =
-        crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, run)?
-    {
-        return Ok(summary);
-    }
-
-    if let Some(summary) =
-        crate::load_checked_manifest_trace_summary_from_artifacts_dir(&artifacts_dir, run)?
-    {
-        return Ok(summary);
+    if let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, run)? {
+        return Ok(bundle.summary);
     }
 
     Err(FozzyError::Report(format!(
         "no report found for {run:?} (looked for {} and trace resolved from artifacts identity)",
-        report_json.display()
+        artifacts_dir.join("report.json").display()
     )))
 }
 
@@ -997,8 +988,7 @@ mod tests {
 
     #[test]
     fn load_summary_rejects_trace_only_run_wrapper_without_report_manifest() {
-        let root =
-            std::env::temp_dir().join(format!("fozzy-report-trace-only-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("fozzy-report-trace-only-{}", Uuid::new_v4()));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
         let trace_path = run_dir.join("trace.fozzy");
@@ -1061,7 +1051,8 @@ mod tests {
 
         let err = load_summary(&cfg, "r1").expect_err("must reject trace-only wrapper");
         assert!(
-            err.to_string().contains("no coherent report/manifest pair found")
+            err.to_string()
+                .contains("no coherent report/manifest pair found")
                 || err
                     .to_string()
                     .contains("missing required files: report.json, manifest.json")
@@ -1162,10 +1153,8 @@ mod tests {
             mem_pressure_wave: None,
         };
 
-        let err = load_summary(&cfg, "r1").expect_err("must reject incoherent manifest-only wrapper");
-        assert!(
-            err.to_string()
-                .contains("manifest/trace identity mismatch")
-        );
+        let err =
+            load_summary(&cfg, "r1").expect_err("must reject incoherent manifest-only wrapper");
+        assert!(err.to_string().contains("manifest/trace identity mismatch"));
     }
 }

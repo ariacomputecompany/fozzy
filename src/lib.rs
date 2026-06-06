@@ -1,5 +1,7 @@
 //! Fozzy core library: shared types used by the CLI and future SDK bindings.
 
+#[path = "cmd/artifact_bundle.rs"]
+mod artifact_bundle;
 #[path = "cmd/artifacts.rs"]
 mod artifacts;
 #[path = "cmd/ci.rs"]
@@ -65,6 +67,7 @@ mod tracefile;
 #[path = "cmd/usage.rs"]
 mod usage;
 
+pub(crate) use artifact_bundle::*;
 pub use artifacts::*;
 pub use ci::*;
 pub use clock::*;

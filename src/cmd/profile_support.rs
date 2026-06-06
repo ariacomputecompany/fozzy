@@ -722,29 +722,18 @@ pub(super) fn resolve_profile_artifacts(
     let artifacts_dir = resolve_artifacts_dir(config, selector)?;
     let report_exists = artifacts_dir.join("report.json").exists();
     let manifest_exists = artifacts_dir.join("manifest.json").exists();
-    let mut checked_summary = None;
-    if report_exists {
-        checked_summary =
-            crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, selector)?;
-    }
-    if checked_summary.is_none() && manifest_exists {
-        checked_summary = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
-            &artifacts_dir,
-            selector,
-        )?;
-    }
-    if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
-        if checked_summary.is_none() {
-            return Err(FozzyError::InvalidArgument(format!(
-                "no coherent report/manifest pair found for profile trace artifacts in {}",
-                artifacts_dir.display()
-            )));
-        }
-        return Ok((artifacts_dir, Some(trace_path)));
-    }
-    if checked_summary.is_none()
-        && (profile_artifacts_exist(&artifacts_dir) || report_exists || manifest_exists)
+    let resolved_trace = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)?;
+    if let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, selector)?
     {
+        return Ok((bundle.artifacts_dir, bundle.trace_path));
+    }
+    if resolved_trace.is_some() {
+        return Err(FozzyError::InvalidArgument(format!(
+            "no coherent report/manifest pair found for profile trace artifacts in {}",
+            artifacts_dir.display()
+        )));
+    }
+    if profile_artifacts_exist(&artifacts_dir) || report_exists || manifest_exists {
         return Err(FozzyError::InvalidArgument(format!(
             "no coherent report/manifest pair or trace found for profile artifacts in {}",
             artifacts_dir.display()
@@ -754,105 +743,30 @@ pub(super) fn resolve_profile_artifacts(
     Ok((artifacts_dir, None))
 }
 
-fn trusted_declared_profile_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
+fn trusted_explicit_profile_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
     let trace = TraceFile::read_json(trace_path)?;
-    let Some(artifacts_dir) = trace
+    if let Some(artifacts_dir) = trace
         .summary
         .identity
         .artifacts_dir
         .as_deref()
         .map(PathBuf::from)
         .filter(|dir| dir.exists() && dir.is_dir())
-    else {
-        return Ok(None);
-    };
-
-    if profile_artifacts_exist(&artifacts_dir)
+        && profile_artifacts_exist(&artifacts_dir)
         && !profile_artifacts_stale(&artifacts_dir, trace_path)?
     {
         return Ok(Some(artifacts_dir));
     }
-
-    let summary = if let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
-        &artifacts_dir,
-        &trace_path.display().to_string(),
-    )? {
-        summary
-    } else if let Some(summary) = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
-        &artifacts_dir,
-        &trace_path.display().to_string(),
-    )? {
-        summary
-    } else {
-        return Ok(None);
-    };
-    let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
-        return Ok(None);
-    };
-    let expected_trace =
-        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let actual_trace =
-        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
-    if actual_trace != expected_trace {
-        return Ok(None);
-    }
-    if summary.identity.run_id != trace.summary.identity.run_id
-        || summary.identity.seed != trace.summary.identity.seed
-    {
-        return Ok(None);
-    }
-
-    Ok(Some(artifacts_dir))
-}
-
-fn trusted_explicit_profile_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    if let Some(artifacts_dir) = trusted_declared_profile_artifacts_dir(trace_path)? {
-        return Ok(Some(artifacts_dir));
-    }
-
-    let Some(parent) = trace_path.parent() else {
-        return Ok(None);
-    };
-    let Some(summary) =
-        crate::load_checked_run_summary_from_artifacts_dir(parent, &trace_path.display().to_string())?
-    else {
-        return Ok(None);
-    };
-    let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(parent)? else {
-        return Ok(None);
-    };
-    let expected_trace =
-        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let actual_trace =
-        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
-    if actual_trace != expected_trace {
-        return Ok(None);
-    }
-    let trace = TraceFile::read_json(trace_path)?;
-    if summary.identity.run_id != trace.summary.identity.run_id
-        || summary.identity.seed != trace.summary.identity.seed
-    {
-        return Ok(None);
-    }
-
-    Ok(Some(parent.to_path_buf()))
+    Ok(crate::trusted_artifact_bundle_for_trace(trace_path)?.map(|bundle| bundle.artifacts_dir))
 }
 
 fn refresh_manifest_for_profile_artifacts(artifacts_dir: &Path) -> FozzyResult<()> {
-    let summary = if let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
-        artifacts_dir,
-        &artifacts_dir.display().to_string(),
-    )? {
-        summary
-    } else if let Some(summary) = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
-        artifacts_dir,
-        &artifacts_dir.display().to_string(),
-    )? {
-        summary
-    } else {
+    let selector = artifacts_dir.display().to_string();
+    let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(artifacts_dir, &selector)?
+    else {
         return Ok(());
     };
-    crate::write_run_manifest(&summary, artifacts_dir)?;
+    crate::write_run_manifest(&bundle.summary, artifacts_dir)?;
     Ok(())
 }
 
@@ -1021,7 +935,9 @@ fn profile_artifacts_stale(artifacts_dir: &Path, trace_path: &Path) -> FozzyResu
     let recorded_digest = source.get("traceDigest").and_then(|v| v.as_str());
     let expected_path =
         std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let expected_digest = blake3::hash(&std::fs::read(trace_path)?).to_hex().to_string();
+    let expected_digest = blake3::hash(&std::fs::read(trace_path)?)
+        .to_hex()
+        .to_string();
     if recorded_path.as_deref() != Some(expected_path.as_path()) {
         return Ok(true);
     }

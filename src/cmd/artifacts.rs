@@ -3,9 +3,9 @@
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
-use std::io::Read as _;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use crate::{Config, ExitStatus, FozzyError, FozzyResult, RunManifest, RunSummary, TraceFile};
@@ -188,8 +188,14 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
                     ArtifactKind::Profile,
                     artifacts_dir.join("profile.timeline.json"),
                 ),
-                (ArtifactKind::Profile, artifacts_dir.join("profile.cpu.json")),
-                (ArtifactKind::Profile, artifacts_dir.join("profile.heap.json")),
+                (
+                    ArtifactKind::Profile,
+                    artifacts_dir.join("profile.cpu.json"),
+                ),
+                (
+                    ArtifactKind::Profile,
+                    artifacts_dir.join("profile.heap.json"),
+                ),
                 (
                     ArtifactKind::Profile,
                     artifacts_dir.join("profile.latency.json"),
@@ -203,9 +209,18 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
                     ArtifactKind::Memory,
                     artifacts_dir.join("memory.timeline.json"),
                 ),
-                (ArtifactKind::Memory, artifacts_dir.join("memory.leaks.json")),
-                (ArtifactKind::Memory, artifacts_dir.join("memory.graph.json")),
-                (ArtifactKind::Memory, artifacts_dir.join("memory.delta.json")),
+                (
+                    ArtifactKind::Memory,
+                    artifacts_dir.join("memory.leaks.json"),
+                ),
+                (
+                    ArtifactKind::Memory,
+                    artifacts_dir.join("memory.graph.json"),
+                ),
+                (
+                    ArtifactKind::Memory,
+                    artifacts_dir.join("memory.delta.json"),
+                ),
                 (ArtifactKind::Report, artifacts_dir.join("report.json")),
                 (ArtifactKind::Events, artifacts_dir.join("events.json")),
                 (ArtifactKind::Coverage, artifacts_dir.join("coverage.json")),
@@ -405,11 +420,7 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
     } else {
         let trace_path = crate::normalize_trace_path(&PathBuf::from(run));
         let trusted_artifacts_dir = trusted_explicit_trace_artifacts_dir(&trace_path)?;
-        validate_direct_trace_bundle(
-            &files,
-            run,
-            trusted_artifacts_dir.is_some(),
-        )?;
+        validate_direct_trace_bundle(&files, run, trusted_artifacts_dir.is_some())?;
     }
 
     let meta_dir = std::env::temp_dir().join(format!("fozzy-pack-{}", uuid::Uuid::new_v4()));
@@ -466,11 +477,7 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
                 }
             }
         }
-        validate_direct_trace_bundle(
-            &source_files,
-            run,
-            trusted_artifacts_dir.is_some(),
-        )?;
+        validate_direct_trace_bundle(&source_files, run, trusted_artifacts_dir.is_some())?;
     } else {
         let artifacts_dir = resolve_artifacts_dir(config, run)?;
         for name in ["report.json", "manifest.json"] {
@@ -591,11 +598,7 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
     } else {
         let trace_path = crate::normalize_trace_path(&PathBuf::from(run));
         let trusted_artifacts_dir = trusted_explicit_trace_artifacts_dir(&trace_path)?;
-        validate_direct_trace_bundle(
-            &files,
-            run,
-            trusted_artifacts_dir.is_some(),
-        )?;
+        validate_direct_trace_bundle(&files, run, trusted_artifacts_dir.is_some())?;
     }
 
     if out
@@ -867,80 +870,15 @@ pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<P
     Ok(config.runs_dir().join(run))
 }
 
-fn trace_declared_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    let trace = TraceFile::read_json(trace_path)?;
-    Ok(trace
-        .summary
-        .identity
-        .artifacts_dir
-        .map(PathBuf::from)
-        .filter(|path| path.exists() && path.is_dir()))
-}
-
 fn trusted_trace_declared_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    let Some(artifacts_dir) = trace_declared_artifacts_dir(trace_path)? else {
-        return Ok(None);
-    };
-    let Some(summary) = load_checked_run_summary_from_artifacts_dir(
-        &artifacts_dir,
-        &trace_path.display().to_string(),
-    )?
-    else {
-        return Ok(None);
-    };
-    let Some(resolved_trace) = resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
-        return Ok(None);
-    };
-    let trace = TraceFile::read_json(trace_path)?;
-    let expected_trace =
-        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let actual_trace =
-        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
-    if actual_trace != expected_trace {
-        return Ok(None);
-    }
-    if summary.identity.run_id != trace.summary.identity.run_id
-        || summary.identity.seed != trace.summary.identity.seed
-    {
-        return Ok(None);
-    }
-    Ok(Some(artifacts_dir))
+    Ok(
+        crate::trusted_declared_artifact_bundle_for_trace(trace_path)?
+            .map(|bundle| bundle.artifacts_dir),
+    )
 }
 
 fn trusted_explicit_trace_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    if let Some(artifacts_dir) = trusted_trace_declared_artifacts_dir(trace_path)? {
-        return Ok(Some(artifacts_dir));
-    }
-
-    let Some(parent) = trace_path.parent() else {
-        return Ok(None);
-    };
-    if parent == trace_path {
-        return Ok(None);
-    }
-    let Some(summary) =
-        load_checked_run_summary_from_artifacts_dir(parent, &trace_path.display().to_string())?
-    else {
-        return Ok(None);
-    };
-    let Some(resolved_trace) = resolve_trace_path_from_artifacts_dir(parent)? else {
-        return Ok(None);
-    };
-    let expected_trace =
-        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let actual_trace =
-        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
-    if actual_trace != expected_trace {
-        return Ok(None);
-    }
-    let trace = TraceFile::read_json(trace_path)?;
-    if summary.identity.run_id != trace.summary.identity.run_id
-        || summary.identity.seed != trace.summary.identity.seed
-    {
-        return Ok(None);
-    }
-
-    Ok(Some(parent.to_path_buf()))
+    Ok(crate::trusted_artifact_bundle_for_trace(trace_path)?.map(|bundle| bundle.artifacts_dir))
 }
 
 fn has_untrusted_sibling_artifacts(trace_path: &Path) -> FozzyResult<bool> {
@@ -990,8 +928,10 @@ fn has_untrusted_sibling_artifacts(trace_path: &Path) -> FozzyResult<bool> {
         return Ok(false);
     }
 
-    Ok(load_checked_run_summary_from_artifacts_dir(parent, &trace_path.display().to_string())?
-        .is_none())
+    Ok(
+        load_checked_run_summary_from_artifacts_dir(parent, &trace_path.display().to_string())?
+            .is_none(),
+    )
 }
 
 pub(crate) fn resolve_trace_path_from_artifacts_dir(
@@ -1196,10 +1136,11 @@ fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>>
     }
 
     for (dir, _) in run_dirs {
-        let summary = match load_checked_run_summary_from_artifacts_dir(&dir, &dir.display().to_string()) {
-            Ok(Some(summary)) => summary,
-            Ok(None) | Err(_) => continue,
-        };
+        let summary =
+            match load_checked_run_summary_from_artifacts_dir(&dir, &dir.display().to_string()) {
+                Ok(Some(summary)) => summary,
+                Ok(None) | Err(_) => continue,
+            };
         if key == "latest" {
             return Ok(Some(dir));
         }
@@ -1565,23 +1506,25 @@ fn validate_manifest_trace_integrity(files: &[PathBuf], run: &str) -> FozzyResul
             "invalid manifest for {run:?}: unable to load manifest-backed trace summary"
         )));
     }
-    let manifest: RunManifest = serde_json::from_slice(&std::fs::read(manifest_path)?).map_err(|e| {
-        crate::FozzyError::InvalidArgument(format!(
-            "invalid manifest for {run:?}: {} ({e})",
-            manifest_path.display()
-        ))
-    })?;
+    let manifest: RunManifest =
+        serde_json::from_slice(&std::fs::read(manifest_path)?).map_err(|e| {
+            crate::FozzyError::InvalidArgument(format!(
+                "invalid manifest for {run:?}: {} ({e})",
+                manifest_path.display()
+            ))
+        })?;
     let summary = load_checked_manifest_trace_summary_from_artifacts_dir(artifacts_dir, run)?
         .ok_or_else(|| {
             crate::FozzyError::InvalidArgument(format!(
                 "invalid manifest for {run:?}: unable to load manifest-backed trace summary"
             ))
         })?;
-    let trace_path = crate::resolve_trace_path_from_artifacts_dir(artifacts_dir)?.ok_or_else(|| {
-        crate::FozzyError::InvalidArgument(format!(
-            "invalid manifest for {run:?}: missing declared trace artifact"
-        ))
-    })?;
+    let trace_path =
+        crate::resolve_trace_path_from_artifacts_dir(artifacts_dir)?.ok_or_else(|| {
+            crate::FozzyError::InvalidArgument(format!(
+                "invalid manifest for {run:?}: missing declared trace artifact"
+            ))
+        })?;
     let trace = crate::TraceFile::read_json(&trace_path)?;
     validate_profile_artifact_identities(files, run, &manifest.run_id, manifest.seed)?;
     validate_memory_artifact_coherence(files, run, summary.memory.as_ref())?;
@@ -1729,8 +1672,8 @@ fn validate_profile_artifact_identities(
     expected_seed: u64,
 ) -> FozzyResult<()> {
     if let Some(metrics_path) = find_artifact_path(files, "profile.metrics.json") {
-        let metrics: crate::ProfileMetrics =
-            serde_json::from_slice(&std::fs::read(metrics_path)?).map_err(|e| {
+        let metrics: crate::ProfileMetrics = serde_json::from_slice(&std::fs::read(metrics_path)?)
+            .map_err(|e| {
                 crate::FozzyError::InvalidArgument(format!(
                     "invalid profile metrics for {run:?}: {} ({e})",
                     metrics_path.display()
@@ -1820,7 +1763,11 @@ fn validate_memory_artifact_coherence(
     let graph_path = find_artifact_path(files, "memory.graph.json");
     let timeline_path = find_artifact_path(files, "memory.timeline.json");
     let delta_path = find_artifact_path(files, "memory.delta.json");
-    if leaks_path.is_none() && graph_path.is_none() && timeline_path.is_none() && delta_path.is_none() {
+    if leaks_path.is_none()
+        && graph_path.is_none()
+        && timeline_path.is_none()
+        && delta_path.is_none()
+    {
         return Ok(());
     }
     let summary = summary.ok_or_else(|| {
@@ -1830,8 +1777,8 @@ fn validate_memory_artifact_coherence(
     })?;
 
     if let Some(leaks_path) = leaks_path {
-        let leaks: Vec<crate::MemoryLeak> =
-            serde_json::from_slice(&std::fs::read(leaks_path)?).map_err(|e| {
+        let leaks: Vec<crate::MemoryLeak> = serde_json::from_slice(&std::fs::read(leaks_path)?)
+            .map_err(|e| {
                 crate::FozzyError::InvalidArgument(format!(
                     "invalid memory leaks for {run:?}: {} ({e})",
                     leaks_path.display()
@@ -1852,8 +1799,8 @@ fn validate_memory_artifact_coherence(
     }
 
     if let Some(graph_path) = graph_path {
-        let graph: crate::MemoryGraph =
-            serde_json::from_slice(&std::fs::read(graph_path)?).map_err(|e| {
+        let graph: crate::MemoryGraph = serde_json::from_slice(&std::fs::read(graph_path)?)
+            .map_err(|e| {
                 crate::FozzyError::InvalidArgument(format!(
                     "invalid memory graph for {run:?}: {} ({e})",
                     graph_path.display()
@@ -1907,7 +1854,10 @@ fn validate_memory_artifact_coherence(
                     timeline_path.display()
                 ))
             })?;
-        let alloc_count = timeline.iter().filter(|entry| entry.kind == "alloc").count() as u64;
+        let alloc_count = timeline
+            .iter()
+            .filter(|entry| entry.kind == "alloc")
+            .count() as u64;
         let free_count = timeline.iter().filter(|entry| entry.kind == "free").count() as u64;
         let failed_alloc_count = timeline
             .iter()
@@ -1931,8 +1881,8 @@ fn validate_memory_artifact_coherence(
     }
 
     if let Some(delta_path) = delta_path {
-        let delta: crate::MemoryDelta =
-            serde_json::from_slice(&std::fs::read(delta_path)?).map_err(|e| {
+        let delta: crate::MemoryDelta = serde_json::from_slice(&std::fs::read(delta_path)?)
+            .map_err(|e| {
                 crate::FozzyError::InvalidArgument(format!(
                     "invalid memory delta for {run:?}: {} ({e})",
                     delta_path.display()
@@ -1964,19 +1914,22 @@ fn validate_trace_event_artifacts(
     expected_events: &[crate::TraceEvent],
 ) -> FozzyResult<()> {
     if let Some(events_path) = find_artifact_path(files, "events.json") {
-        let events: Vec<crate::TraceEvent> =
-            serde_json::from_slice(&std::fs::read(events_path)?).map_err(|e| {
-                crate::FozzyError::InvalidArgument(format!(
-                    "invalid events artifact for {run:?}: {} ({e})",
-                    events_path.display()
-                ))
-            })?;
+        let events: Vec<crate::TraceEvent> = serde_json::from_slice(&std::fs::read(events_path)?)
+            .map_err(|e| {
+            crate::FozzyError::InvalidArgument(format!(
+                "invalid events artifact for {run:?}: {} ({e})",
+                events_path.display()
+            ))
+        })?;
         let matches = events.len() == expected_events.len()
-            && events.iter().zip(expected_events.iter()).all(|(actual, expected)| {
-                actual.time_ms == expected.time_ms
-                    && actual.name == expected.name
-                    && actual.fields == expected.fields
-            });
+            && events
+                .iter()
+                .zip(expected_events.iter())
+                .all(|(actual, expected)| {
+                    actual.time_ms == expected.time_ms
+                        && actual.name == expected.name
+                        && actual.fields == expected.fields
+                });
         if !matches {
             return Err(crate::FozzyError::InvalidArgument(format!(
                 "invalid events artifact for {run:?}: {} does not match trace events",
@@ -2086,7 +2039,8 @@ where
 }
 
 fn find_artifact_path<'a>(files: &'a [PathBuf], artifact_name: &str) -> Option<&'a Path> {
-    files.iter()
+    files
+        .iter()
         .find(|path| path.file_name().and_then(|s| s.to_str()) == Some(artifact_name))
         .map(PathBuf::as_path)
 }
@@ -2312,9 +2266,7 @@ mod tests {
     }
 
     fn valid_memory_leaks_json(bytes: u64) -> String {
-        format!(
-            r#"[{{"allocId":1,"bytes":{bytes},"callsiteHash":"callsite-1"}}]"#
-        )
+        format!(r#"[{{"allocId":1,"bytes":{bytes},"callsiteHash":"callsite-1"}}]"#)
     }
 
     fn valid_memory_graph_json() -> &'static str {
@@ -2338,7 +2290,11 @@ mod tests {
 ]"#
     }
 
-    fn valid_memory_delta_json(after_leaked_bytes: u64, after_leaked_allocs: u64, after_alloc_count: u64) -> String {
+    fn valid_memory_delta_json(
+        after_leaked_bytes: u64,
+        after_leaked_allocs: u64,
+        after_alloc_count: u64,
+    ) -> String {
         format!(
             r#"{{
   "schemaVersion":"fozzy.memory_delta.v1",
@@ -2725,15 +2681,9 @@ mod tests {
                     r#""finishedAt":"2026-01-01T00:00:00Z""#,
                     &format!(r#""finishedAt":"{finished}""#),
                 );
-            let trace = valid_trace_json(id, &trace_path, &report_path, &dir).replace(
-                r#""status":"pass""#,
-                &format!(r#""status":"{status}""#),
-            );
-            std::fs::write(
-                &trace_path,
-                trace,
-            )
-            .expect("trace");
+            let trace = valid_trace_json(id, &trace_path, &report_path, &dir)
+                .replace(r#""status":"pass""#, &format!(r#""status":"{status}""#));
+            std::fs::write(&trace_path, trace).expect("trace");
             std::fs::write(&report_path, report).expect("report");
             std::fs::write(dir.join("manifest.json"), manifest).expect("manifest");
         };
@@ -3041,10 +2991,10 @@ mod tests {
             mem_pressure_wave: None,
         };
 
-        let err =
-            artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
         assert!(
-            err.to_string().contains("contains event identity runId=r1 seed=99"),
+            err.to_string()
+                .contains("contains event identity runId=r1 seed=99"),
             "unexpected error: {err}"
         );
     }
@@ -3081,8 +3031,11 @@ mod tests {
         )
         .expect("report");
         crate::write_run_manifest(&trace.summary, &run_dir).expect("manifest");
-        std::fs::write(run_dir.join("memory.leaks.json"), valid_memory_leaks_json(128))
-            .expect("leaks");
+        std::fs::write(
+            run_dir.join("memory.leaks.json"),
+            valid_memory_leaks_json(128),
+        )
+        .expect("leaks");
 
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
@@ -3104,7 +3057,8 @@ mod tests {
 
         let err = artifacts_list(&cfg, "r1").expect_err("list must fail");
         assert!(
-            err.to_string().contains("memory.leaks.json do not match summary"),
+            err.to_string()
+                .contains("memory.leaks.json do not match summary"),
             "unexpected error: {err}"
         );
     }
@@ -3118,13 +3072,9 @@ mod tests {
         std::fs::create_dir_all(&root).expect("mkdir");
         let trace_path = root.join("direct.trace.fozzy");
         let report_path = root.join("report.json");
-        let mut trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
-            "r1",
-            &trace_path,
-            &report_path,
-            &root,
-        ))
-        .expect("trace json");
+        let mut trace: crate::TraceFile =
+            serde_json::from_str(&valid_trace_json("r1", &trace_path, &report_path, &root))
+                .expect("trace json");
         trace.summary.memory = Some(crate::MemorySummary {
             alloc_count: 1,
             free_count: 0,
@@ -3138,8 +3088,11 @@ mod tests {
         let (_, manifest) =
             valid_report_and_manifest_json("r1", &report_path, &root, Some(&trace_path));
         std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(root.join("memory.timeline.json"), valid_memory_timeline_json())
-            .expect("timeline");
+        std::fs::write(
+            root.join("memory.timeline.json"),
+            valid_memory_timeline_json(),
+        )
+        .expect("timeline");
 
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
@@ -3159,10 +3112,10 @@ mod tests {
             mem_pressure_wave: None,
         };
 
-        let err =
-            artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
         assert!(
-            err.to_string().contains("memory.timeline.json does not match summary"),
+            err.to_string()
+                .contains("memory.timeline.json does not match summary"),
             "unexpected error: {err}"
         );
     }
@@ -3222,7 +3175,8 @@ mod tests {
 
         let err = artifacts_list(&cfg, "r1").expect_err("list must fail");
         assert!(
-            err.to_string().contains("memory.graph.json does not match summary"),
+            err.to_string()
+                .contains("memory.graph.json does not match summary"),
             "unexpected error: {err}"
         );
     }
@@ -3236,13 +3190,9 @@ mod tests {
         std::fs::create_dir_all(&root).expect("mkdir");
         let trace_path = root.join("direct.trace.fozzy");
         let report_path = root.join("report.json");
-        let mut trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
-            "r1",
-            &trace_path,
-            &report_path,
-            &root,
-        ))
-        .expect("trace json");
+        let mut trace: crate::TraceFile =
+            serde_json::from_str(&valid_trace_json("r1", &trace_path, &report_path, &root))
+                .expect("trace json");
         trace.summary.memory = Some(crate::MemorySummary {
             alloc_count: 1,
             free_count: 0,
@@ -3256,8 +3206,11 @@ mod tests {
         let (_, manifest) =
             valid_report_and_manifest_json("r1", &report_path, &root, Some(&trace_path));
         std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(root.join("memory.delta.json"), valid_memory_delta_json(0, 0, 0))
-            .expect("delta");
+        std::fs::write(
+            root.join("memory.delta.json"),
+            valid_memory_delta_json(0, 0, 0),
+        )
+        .expect("delta");
 
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
@@ -3277,10 +3230,10 @@ mod tests {
             mem_pressure_wave: None,
         };
 
-        let err =
-            artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
         assert!(
-            err.to_string().contains("memory.delta.json does not match summary"),
+            err.to_string()
+                .contains("memory.delta.json does not match summary"),
             "unexpected error: {err}"
         );
     }
@@ -3335,7 +3288,8 @@ mod tests {
 
         let err = artifacts_list(&cfg, "r1").expect_err("list must fail");
         assert!(
-            err.to_string().contains("events.json does not match trace events"),
+            err.to_string()
+                .contains("events.json does not match trace events"),
             "unexpected error: {err}"
         );
     }
@@ -3349,13 +3303,9 @@ mod tests {
         std::fs::create_dir_all(&root).expect("mkdir");
         let trace_path = root.join("direct.trace.fozzy");
         let report_path = root.join("report.json");
-        let mut trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
-            "r1",
-            &trace_path,
-            &report_path,
-            &root,
-        ))
-        .expect("trace json");
+        let mut trace: crate::TraceFile =
+            serde_json::from_str(&valid_trace_json("r1", &trace_path, &report_path, &root))
+                .expect("trace json");
         trace.events = vec![crate::TraceEvent {
             time_ms: 0,
             name: "real".to_string(),
@@ -3386,10 +3336,10 @@ mod tests {
             mem_pressure_wave: None,
         };
 
-        let err =
-            artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
         assert!(
-            err.to_string().contains("timeline.json does not match trace events"),
+            err.to_string()
+                .contains("timeline.json does not match trace events"),
             "unexpected error: {err}"
         );
     }
@@ -3454,19 +3404,14 @@ mod tests {
         std::fs::create_dir_all(&root).expect("mkdir");
         let trace_path = root.join("direct.trace.fozzy");
         let report_path = root.join("report.json");
-        let trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
-            "r1",
-            &trace_path,
-            &report_path,
-            &root,
-        ))
-        .expect("trace json");
+        let trace: crate::TraceFile =
+            serde_json::from_str(&valid_trace_json("r1", &trace_path, &report_path, &root))
+                .expect("trace json");
         trace.write_json(&trace_path).expect("trace");
         let (_, manifest) =
             valid_report_and_manifest_json("r1", &report_path, &root, Some(&trace_path));
         std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
-        std::fs::write(root.join("junit.xml"), b"<testsuite forged=\"true\"/>\n")
-            .expect("junit");
+        std::fs::write(root.join("junit.xml"), b"<testsuite forged=\"true\"/>\n").expect("junit");
 
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
@@ -3486,8 +3431,7 @@ mod tests {
             mem_pressure_wave: None,
         };
 
-        let err =
-            artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
         assert!(
             err.to_string()
                 .contains("junit.xml does not match summary rendering"),
@@ -3546,8 +3490,10 @@ mod tests {
         .expect("right report write");
         crate::write_run_manifest(&left.summary, &left_dir).expect("left manifest");
         crate::write_run_manifest(&right.summary, &right_dir).expect("right manifest");
-        std::fs::write(left_dir.join("events.json"), valid_events_json("aaaaaa")).expect("left events");
-        std::fs::write(right_dir.join("events.json"), valid_events_json("bbbbbb")).expect("right events");
+        std::fs::write(left_dir.join("events.json"), valid_events_json("aaaaaa"))
+            .expect("left events");
+        std::fs::write(right_dir.join("events.json"), valid_events_json("bbbbbb"))
+            .expect("right events");
 
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
@@ -3574,7 +3520,10 @@ mod tests {
             .find(|file| file.key == "Events:events.json")
             .expect("events delta");
         assert_eq!(events_delta.left_size_bytes, events_delta.right_size_bytes);
-        assert!(events_delta.changed, "same-size content drift must still be marked changed");
+        assert!(
+            events_delta.changed,
+            "same-size content drift must still be marked changed"
+        );
     }
 
     #[test]
@@ -3914,8 +3863,11 @@ mod tests {
         }
         .write_json(&trace_path)
         .expect("trace");
-        std::fs::write(root.join("memory.graph.json"), br#"{"nodes":[],"edges":[]}"#)
-            .expect("graph");
+        std::fs::write(
+            root.join("memory.graph.json"),
+            br#"{"nodes":[],"edges":[]}"#,
+        )
+        .expect("graph");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -4060,8 +4012,7 @@ mod tests {
         }
         .write_json(&trace_path)
         .expect("trace");
-        std::fs::write(root.join("profile.metrics.json"), br#"{"domains":[]}"#)
-            .expect("profile");
+        std::fs::write(root.join("profile.metrics.json"), br#"{"domains":[]}"#).expect("profile");
         let cfg = crate::Config {
             base_dir: root.join(".fozzy"),
             reporter: crate::Reporter::Pretty,
@@ -4201,8 +4152,12 @@ mod tests {
             .expect("pack should succeed");
         export_artifacts(&cfg, &explicit_trace.to_string_lossy(), &out_export)
             .expect("export should succeed");
-        export_gate_bundle(&cfg, &explicit_trace.to_string_lossy(), &root.join("bundle.zip"))
-            .expect("bundle should succeed");
+        export_gate_bundle(
+            &cfg,
+            &explicit_trace.to_string_lossy(),
+            &root.join("bundle.zip"),
+        )
+        .expect("bundle should succeed");
         assert!(out_pack.exists());
         assert!(out_export.exists());
     }
@@ -4316,29 +4271,30 @@ mod tests {
 
     #[test]
     fn load_summary_uses_manifest_declared_external_trace_when_report_missing() {
-        let root =
-            std::env::temp_dir().join(format!("fozzy-artifacts-load-summary-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-load-summary-{}",
+            uuid::Uuid::new_v4()
+        ));
         let base_dir = root.join(".fozzy");
         let run_id = "run-1";
         let run_dir = base_dir.join("runs").join(run_id);
         std::fs::create_dir_all(&run_dir).expect("run dir");
 
-        let mut trace = crate::TraceFile::read_json(
-            &{
-                let p = root.join("seed.trace.fozzy");
-                std::fs::write(
-                    &p,
-                    valid_trace_json("run-1", &p, &run_dir.join("report.json"), &run_dir),
-                )
-                .expect("seed trace");
-                p
-            },
-        )
+        let mut trace = crate::TraceFile::read_json(&{
+            let p = root.join("seed.trace.fozzy");
+            std::fs::write(
+                &p,
+                valid_trace_json("run-1", &p, &run_dir.join("report.json"), &run_dir),
+            )
+            .expect("seed trace");
+            p
+        })
         .expect("read seed trace");
         let external_trace = root.join("external.trace.fozzy");
         trace.summary.identity.run_id = run_id.to_string();
         trace.summary.identity.trace_path = Some(external_trace.to_string_lossy().to_string());
-        trace.summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+        trace.summary.identity.report_path =
+            Some(run_dir.join("report.json").to_string_lossy().to_string());
         trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
         std::fs::write(
             &external_trace,
@@ -4376,8 +4332,10 @@ mod tests {
 
     #[test]
     fn checked_report_loader_allows_replay_runs_to_reference_source_trace() {
-        let root =
-            std::env::temp_dir().join(format!("fozzy-replay-source-trace-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-replay-source-trace-{}",
+            uuid::Uuid::new_v4()
+        ));
         let run_dir = root.join(".fozzy").join("runs").join("r1");
         std::fs::create_dir_all(&run_dir).expect("mkdir");
         let trace_path = root.join("source.trace.fozzy");
@@ -4443,8 +4401,10 @@ mod tests {
 
     #[test]
     fn artifacts_diff_rejects_stale_report_without_manifest() {
-        let root =
-            std::env::temp_dir().join(format!("fozzy-artifacts-stale-diff-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-stale-diff-{}",
+            uuid::Uuid::new_v4()
+        ));
         let base_dir = root.join(".fozzy");
         let left_dir = base_dir.join("runs").join("left");
         let right_dir = base_dir.join("runs").join("right");
@@ -4490,7 +4450,10 @@ mod tests {
             ..crate::Config::default()
         };
         let err = artifacts_diff(&cfg, "left", "right").expect_err("must reject stale left");
-        assert!(err.to_string().contains("missing required files: manifest.json"));
+        assert!(
+            err.to_string()
+                .contains("missing required files: manifest.json")
+        );
     }
 
     #[test]
@@ -4529,7 +4492,10 @@ mod tests {
             ..crate::Config::default()
         };
         let err = artifacts_list(&cfg, "stale").expect_err("must reject stale list");
-        assert!(err.to_string().contains("missing required files: manifest.json"));
+        assert!(
+            err.to_string()
+                .contains("missing required files: manifest.json")
+        );
     }
 
     #[test]
@@ -4598,7 +4564,8 @@ mod tests {
         };
         let entries = artifacts_list(&cfg, "manifest-only").expect("list");
         assert!(entries.iter().any(|entry| {
-            entry.path == external_trace.to_string_lossy() && matches!(entry.kind, ArtifactKind::Trace)
+            entry.path == external_trace.to_string_lossy()
+                && matches!(entry.kind, ArtifactKind::Trace)
         }));
         assert!(entries.iter().any(|entry| {
             entry.path == run_dir.join("manifest.json").to_string_lossy()
@@ -4679,11 +4646,20 @@ mod tests {
         let external_trace = root.join("manifest-only-export.trace.fozzy");
         std::fs::write(
             &external_trace,
-            valid_trace_json("r1", &external_trace, &run_dir.join("report.json"), &run_dir),
+            valid_trace_json(
+                "r1",
+                &external_trace,
+                &run_dir.join("report.json"),
+                &run_dir,
+            ),
         )
         .expect("trace");
-        let (_, manifest) =
-            valid_report_and_manifest_json("r1", &run_dir.join("report.json"), &run_dir, Some(&external_trace));
+        let (_, manifest) = valid_report_and_manifest_json(
+            "r1",
+            &run_dir.join("report.json"),
+            &run_dir,
+            Some(&external_trace),
+        );
         std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
 
         let cfg = crate::Config {
@@ -4735,7 +4711,12 @@ mod tests {
         let older_trace = root.join("older.trace.fozzy");
         std::fs::write(
             &older_trace,
-            valid_trace_json("older", &older_trace, &older_dir.join("report.json"), &older_dir),
+            valid_trace_json(
+                "older",
+                &older_trace,
+                &older_dir.join("report.json"),
+                &older_dir,
+            ),
         )
         .expect("older trace");
         let (older_report, older_manifest) = valid_report_and_manifest_json(
@@ -4750,7 +4731,12 @@ mod tests {
         let newer_trace = root.join("newer.trace.fozzy");
         std::fs::write(
             &newer_trace,
-            valid_trace_json("newer", &newer_trace, &newer_dir.join("report.json"), &newer_dir),
+            valid_trace_json(
+                "newer",
+                &newer_trace,
+                &newer_dir.join("report.json"),
+                &newer_dir,
+            ),
         )
         .expect("newer trace");
         let (_, newer_manifest) = valid_report_and_manifest_json(
@@ -5181,6 +5167,9 @@ mod tests {
         let out = root.join("bundle.zip");
 
         let err = export_gate_bundle(&cfg, "r1", &out).expect_err("bundle must fail");
-        assert!(err.to_string().contains("missing required files: manifest.json"));
+        assert!(
+            err.to_string()
+                .contains("missing required files: manifest.json")
+        );
     }
 }

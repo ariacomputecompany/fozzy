@@ -285,11 +285,9 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
         return Ok(bundle);
     }
 
-    if crate::load_checked_manifest_trace_summary_from_artifacts_dir(&artifacts_dir, run)?
-        .is_some()
+    if let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, run)?
+        && let Some(trace_path) = bundle.trace_path
     {
-        let trace_path = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)?
-            .expect("checked manifest-trace summary resolved trace");
         return load_from_trace(&trace_path, run);
     }
 
@@ -297,9 +295,9 @@ fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
         if let Some(bundle) = load_memory_bundle_from_sidecars(&dir, run)? {
             return Ok(bundle);
         }
-        if crate::load_checked_manifest_trace_summary_from_artifacts_dir(&dir, run)?.is_some() {
-            let trace_path = crate::resolve_trace_path_from_artifacts_dir(&dir)?
-                .expect("checked manifest-trace summary resolved trace");
+        if let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(&dir, run)?
+            && let Some(trace_path) = bundle.trace_path
+        {
             return load_from_trace(&trace_path, run);
         }
     }
@@ -380,154 +378,22 @@ fn trace_has_memory_data(path: &Path) -> bool {
 }
 
 fn load_summary_from_report(artifacts_dir: &Path) -> FozzyResult<MemorySummary> {
-    let summary = if let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
-        artifacts_dir,
-        &artifacts_dir.display().to_string(),
-    )? {
-        summary
-    } else if let Some(summary) = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
-        artifacts_dir,
-        &artifacts_dir.display().to_string(),
-    )? {
-        summary
-    } else {
+    let selector = artifacts_dir.display().to_string();
+    let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(artifacts_dir, &selector)?
+    else {
         return Err(FozzyError::InvalidArgument(format!(
             "no coherent report/manifest pair found for memory artifacts in {}",
             artifacts_dir.display()
         )));
     };
-    Ok(summary.memory.unwrap_or_default())
-}
-
-fn trusted_declared_memory_graph_path(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    let trace = TraceFile::read_json(trace_path)?;
-    let Some(artifacts_dir) = trace
-        .summary
-        .identity
-        .artifacts_dir
-        .as_deref()
-        .map(PathBuf::from)
-        .filter(|dir| dir.exists() && dir.is_dir())
-    else {
-        return Ok(None);
-    };
-    let summary = if let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
-        &artifacts_dir,
-        &trace_path.display().to_string(),
-    )? {
-        summary
-    } else if let Some(summary) = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
-        &artifacts_dir,
-        &trace_path.display().to_string(),
-    )? {
-        summary
-    } else {
-        return Ok(None);
-    };
-    let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
-        return Ok(None);
-    };
-    let expected_trace =
-        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let actual_trace =
-        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
-    if actual_trace != expected_trace {
-        return Ok(None);
-    }
-    if summary.identity.run_id != trace.summary.identity.run_id
-        || summary.identity.seed != trace.summary.identity.seed
-    {
-        return Ok(None);
-    }
-
-    let graph_path = artifacts_dir.join("memory.graph.json");
-    if graph_path.exists() {
-        Ok(Some(graph_path))
-    } else {
-        Ok(None)
-    }
-}
-
-fn trusted_declared_memory_leaks_path(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    let trace = TraceFile::read_json(trace_path)?;
-    let Some(artifacts_dir) = trace
-        .summary
-        .identity
-        .artifacts_dir
-        .as_deref()
-        .map(PathBuf::from)
-        .filter(|dir| dir.exists() && dir.is_dir())
-    else {
-        return Ok(None);
-    };
-    let summary = if let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
-        &artifacts_dir,
-        &trace_path.display().to_string(),
-    )? {
-        summary
-    } else if let Some(summary) = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
-            &artifacts_dir,
-            &trace_path.display().to_string(),
-        )? {
-        summary
-    } else {
-        return Ok(None);
-    };
-    let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
-        return Ok(None);
-    };
-    let expected_trace =
-        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let actual_trace =
-        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
-    if actual_trace != expected_trace {
-        return Ok(None);
-    }
-    if summary.identity.run_id != trace.summary.identity.run_id
-        || summary.identity.seed != trace.summary.identity.seed
-    {
-        return Ok(None);
-    }
-
-    let leaks_path = artifacts_dir.join("memory.leaks.json");
-    if leaks_path.exists() {
-        Ok(Some(leaks_path))
-    } else {
-        Ok(None)
-    }
+    Ok(bundle.summary.memory.unwrap_or_default())
 }
 
 fn trusted_explicit_memory_graph_path(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    if let Some(graph_path) = trusted_declared_memory_graph_path(trace_path)? {
-        return Ok(Some(graph_path));
-    }
-
-    let Some(parent) = trace_path.parent() else {
+    let Some(bundle) = crate::trusted_artifact_bundle_for_trace(trace_path)? else {
         return Ok(None);
     };
-    let Some(summary) =
-        crate::load_checked_run_summary_from_artifacts_dir(parent, &trace_path.display().to_string())?
-    else {
-        return Ok(None);
-    };
-    let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(parent)? else {
-        return Ok(None);
-    };
-    let expected_trace =
-        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let actual_trace =
-        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
-    if actual_trace != expected_trace {
-        return Ok(None);
-    }
-    let trace = TraceFile::read_json(trace_path)?;
-    if summary.identity.run_id != trace.summary.identity.run_id
-        || summary.identity.seed != trace.summary.identity.seed
-    {
-        return Ok(None);
-    }
-
-    let graph_path = parent.join("memory.graph.json");
+    let graph_path = bundle.artifacts_dir.join("memory.graph.json");
     if graph_path.exists() {
         Ok(Some(graph_path))
     } else {
@@ -536,36 +402,10 @@ fn trusted_explicit_memory_graph_path(trace_path: &Path) -> FozzyResult<Option<P
 }
 
 fn trusted_explicit_memory_leaks_path(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    if let Some(leaks_path) = trusted_declared_memory_leaks_path(trace_path)? {
-        return Ok(Some(leaks_path));
-    }
-
-    let Some(parent) = trace_path.parent() else {
+    let Some(bundle) = crate::trusted_artifact_bundle_for_trace(trace_path)? else {
         return Ok(None);
     };
-    let Some(summary) =
-        crate::load_checked_run_summary_from_artifacts_dir(parent, &trace_path.display().to_string())?
-    else {
-        return Ok(None);
-    };
-    let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(parent)? else {
-        return Ok(None);
-    };
-    let expected_trace =
-        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
-    let actual_trace =
-        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
-    if actual_trace != expected_trace {
-        return Ok(None);
-    }
-    let trace = TraceFile::read_json(trace_path)?;
-    if summary.identity.run_id != trace.summary.identity.run_id
-        || summary.identity.seed != trace.summary.identity.seed
-    {
-        return Ok(None);
-    }
-
-    let leaks_path = parent.join("memory.leaks.json");
+    let leaks_path = bundle.artifacts_dir.join("memory.leaks.json");
     if leaks_path.exists() {
         Ok(Some(leaks_path))
     } else {
@@ -606,9 +446,7 @@ fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
         .map(|memory| memory.leaks.clone())
         .unwrap_or_default();
     let embedded_leaks_empty = embedded_leaks.is_empty();
-    let embedded_graph = trace_memory
-        .map(|memory| memory.graph)
-        .unwrap_or_default();
+    let embedded_graph = trace_memory.map(|memory| memory.graph).unwrap_or_default();
     let embedded_graph_empty = embedded_graph.is_empty();
     let final_leaks = if embedded_leaks.is_empty() {
         leaks
@@ -1296,7 +1134,13 @@ mod tests {
 
         let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
         assert_eq!(bundle.graph.nodes.len(), 2);
-        assert!(bundle.graph.nodes.iter().any(|node| node.id == "alloc:exact"));
+        assert!(
+            bundle
+                .graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "alloc:exact")
+        );
         assert_eq!(bundle.leaks.len(), 1);
         assert_eq!(bundle.leaks[0].alloc_id, 41);
     }
@@ -1824,7 +1668,9 @@ mod tests {
             },
             checksum: None,
         };
-        explicit.write_json(&explicit_trace).expect("write explicit trace");
+        explicit
+            .write_json(&explicit_trace)
+            .expect("write explicit trace");
 
         let sibling_summary = RunSummary {
             status: ExitStatus::Pass,
@@ -1876,7 +1722,9 @@ mod tests {
             summary: sibling_summary.clone(),
             checksum: None,
         };
-        sibling.write_json(&sibling_trace).expect("write sibling trace");
+        sibling
+            .write_json(&sibling_trace)
+            .expect("write sibling trace");
         std::fs::write(
             &report_path,
             serde_json::to_vec_pretty(&sibling_summary).expect("report bytes"),
@@ -1971,7 +1819,9 @@ mod tests {
             },
             checksum: None,
         };
-        explicit.write_json(&explicit_trace).expect("write explicit trace");
+        explicit
+            .write_json(&explicit_trace)
+            .expect("write explicit trace");
 
         let sibling_summary = RunSummary {
             status: ExitStatus::Pass,
@@ -2023,7 +1873,9 @@ mod tests {
             summary: sibling_summary.clone(),
             checksum: None,
         };
-        sibling.write_json(&sibling_trace).expect("write sibling trace");
+        sibling
+            .write_json(&sibling_trace)
+            .expect("write sibling trace");
         std::fs::write(
             &report_path,
             serde_json::to_vec_pretty(&sibling_summary).expect("report bytes"),
@@ -2355,7 +2207,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             ..Config::default()
         };
-        let err = load_memory_bundle(&cfg, "r1").expect_err("must reject trace-less partial sidecar");
+        let err =
+            load_memory_bundle(&cfg, "r1").expect_err("must reject trace-less partial sidecar");
         assert!(
             err.to_string().contains("partial memory sidecars"),
             "unexpected error: {err}"
@@ -2707,7 +2560,8 @@ mod tests {
             base_dir: root.join(".fozzy"),
             ..Config::default()
         };
-        let err = load_memory_bundle(&cfg, "r1").expect_err("must reject trace-less partial sidecar");
+        let err =
+            load_memory_bundle(&cfg, "r1").expect_err("must reject trace-less partial sidecar");
         assert!(
             err.to_string().contains("partial memory sidecars"),
             "unexpected error: {err}"
@@ -3293,7 +3147,12 @@ mod tests {
                     run_id: "r1".to_string(),
                     seed: 1,
                     trace_path: Some(trace_path.to_string_lossy().to_string()),
-                    report_path: Some(artifacts_dir.join("report.json").to_string_lossy().to_string()),
+                    report_path: Some(
+                        artifacts_dir
+                            .join("report.json")
+                            .to_string_lossy()
+                            .to_string(),
+                    ),
                     artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
                 },
                 started_at: "2026-01-01T00:00:00Z".to_string(),
@@ -3327,7 +3186,12 @@ mod tests {
                 finished_at: "2026-01-01T00:00:00Z".to_string(),
                 duration_ms: 0,
                 duration_ns: 0,
-                report_path: Some(artifacts_dir.join("report.json").to_string_lossy().to_string()),
+                report_path: Some(
+                    artifacts_dir
+                        .join("report.json")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
                 artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
                 trace_path: Some(trace_path.to_string_lossy().to_string()),
                 findings_count: 0,
@@ -3481,12 +3345,9 @@ mod tests {
             base_dir: root.join(".fozzy"),
             ..Config::default()
         };
-        let err =
-            load_memory_bundle(&cfg, "r1").expect_err("must reject incoherent manifest-only wrapper");
-        assert!(
-            err.to_string()
-                .contains("manifest/trace identity mismatch")
-        );
+        let err = load_memory_bundle(&cfg, "r1")
+            .expect_err("must reject incoherent manifest-only wrapper");
+        assert!(err.to_string().contains("manifest/trace identity mismatch"));
     }
 
     #[test]
@@ -3506,7 +3367,12 @@ mod tests {
                 run_id: "healthy".to_string(),
                 seed: 1,
                 trace_path: Some(external_trace.to_string_lossy().to_string()),
-                report_path: Some(healthy_dir.join("report.json").to_string_lossy().to_string()),
+                report_path: Some(
+                    healthy_dir
+                        .join("report.json")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
                 artifacts_dir: Some(healthy_dir.to_string_lossy().to_string()),
             },
             started_at: "2026-01-01T00:00:00Z".to_string(),
@@ -3572,7 +3438,10 @@ mod tests {
                 duration_ms: 0,
                 duration_ns: 0,
                 report_path: Some(
-                    healthy_dir.join("report.json").to_string_lossy().to_string(),
+                    healthy_dir
+                        .join("report.json")
+                        .to_string_lossy()
+                        .to_string(),
                 ),
                 artifacts_dir: Some(healthy_dir.to_string_lossy().to_string()),
                 trace_path: Some(external_trace.to_string_lossy().to_string()),
