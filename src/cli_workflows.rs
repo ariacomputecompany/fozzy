@@ -773,14 +773,21 @@ fn replay_summary_status(
     let run_id_present = !summary.identity.run_id.trim().is_empty();
     let seed_matches = summary.identity.seed == expected_seed;
     let mode_matches = summary.mode == expected_mode;
+    let (artifact_identity_ok, artifact_identity_detail) = summary_artifact_identity_status(summary);
     (
-        if class_ok && strict_ok && run_id_present && seed_matches && mode_matches {
+        if class_ok
+            && strict_ok
+            && run_id_present
+            && seed_matches
+            && mode_matches
+            && artifact_identity_ok
+        {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
         format!(
-            "status={:?} class_ok={} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?}",
+            "status={:?} class_ok={} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} {}",
             summary.status,
             class_ok,
             strict_ok,
@@ -788,7 +795,8 @@ fn replay_summary_status(
             seed_matches,
             expected_seed,
             mode_matches,
-            expected_mode
+            expected_mode,
+            artifact_identity_detail
         ),
     )
 }
@@ -916,6 +924,48 @@ fn report_query_paths_status(value: &serde_json::Value) -> (FullStepStatus, Stri
     )
 }
 
+fn summary_artifact_identity_status(summary: &RunSummary) -> (bool, String) {
+    let report_path = summary.identity.report_path.as_deref().map(str::trim);
+    let artifacts_dir = summary.identity.artifacts_dir.as_deref().map(str::trim);
+    let report_present = report_path.is_some_and(|path| !path.is_empty());
+    let artifacts_present = artifacts_dir.is_some_and(|path| !path.is_empty());
+    let report_path = report_path.filter(|path| !path.is_empty()).map(PathBuf::from);
+    let artifacts_dir = artifacts_dir
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let report_exists = report_path.as_ref().is_some_and(|path| {
+        std::fs::metadata(path)
+            .map(|metadata| metadata.is_file() && metadata.len() > 0)
+            .unwrap_or(false)
+    });
+    let artifacts_exists = artifacts_dir.as_ref().is_some_and(|path| {
+        std::fs::metadata(path)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
+    });
+    let report_matches_dir = report_path.as_ref().zip(artifacts_dir.as_ref()).is_some_and(
+        |(report, dir)| {
+            report.parent().is_some_and(|parent| parent == dir)
+                && report.file_name().is_some_and(|name| name == "report.json")
+                && dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == summary.identity.run_id)
+        },
+    );
+    (
+        report_present && artifacts_present && report_exists && artifacts_exists && report_matches_dir,
+        format!(
+            "report_present={} artifacts_present={} report_exists={} artifacts_exists={} report_matches_dir={}",
+            report_present,
+            artifacts_present,
+            report_exists,
+            artifacts_exists,
+            report_matches_dir
+        ),
+    )
+}
+
 fn run_summary_pass_status(
     summary: &RunSummary,
     strict: bool,
@@ -926,26 +976,29 @@ fn run_summary_pass_status(
     let run_id_present = !summary.identity.run_id.trim().is_empty();
     let seed_matches = summary.identity.seed == expected_seed;
     let mode_matches = summary.mode == expected_mode;
+    let (artifact_identity_ok, artifact_identity_detail) = summary_artifact_identity_status(summary);
     (
         if summary.status == ExitStatus::Pass
             && strict_ok
             && run_id_present
             && seed_matches
             && mode_matches
+            && artifact_identity_ok
         {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
         format!(
-            "status={:?} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?}",
+            "status={:?} strict_ok={} run_id_present={} seed_matches={} seed={} mode_matches={} mode={:?} {}",
             summary.status,
             strict_ok,
             run_id_present,
             seed_matches,
             expected_seed,
             mode_matches,
-            expected_mode
+            expected_mode,
+            artifact_identity_detail
         ),
     )
 }
@@ -4185,15 +4238,21 @@ mod tests {
     }
 
     fn sample_run_summary(status: ExitStatus) -> RunSummary {
+        let run_id = format!("test-run-{}", uuid::Uuid::new_v4());
+        let artifacts_dir =
+            std::env::temp_dir().join(format!("fozzy-run-summary-{run_id}"));
+        std::fs::create_dir_all(&artifacts_dir).expect("create artifacts dir");
+        let report_path = artifacts_dir.join("report.json");
+        std::fs::write(&report_path, br#"{"status":"pass"}"#).expect("write report");
         RunSummary {
             status,
             mode: RunMode::Run,
             identity: RunIdentity {
-                run_id: "test-run".to_string(),
+                run_id,
                 seed: 7,
                 trace_path: None,
-                report_path: None,
-                artifacts_dir: None,
+                report_path: Some(report_path.to_string_lossy().to_string()),
+                artifacts_dir: Some(artifacts_dir.to_string_lossy().to_string()),
             },
             started_at: "2026-01-01T00:00:00Z".to_string(),
             finished_at: "2026-01-01T00:00:00Z".to_string(),
@@ -4291,6 +4350,26 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("mode_matches=false"));
         assert!(detail.contains("mode=Run"));
+    }
+
+    #[test]
+    fn run_summary_pass_status_rejects_missing_report_path() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.report_path = None;
+        let (status, detail) = run_summary_pass_status(&summary, true, 7, RunMode::Run);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("report_present=false"));
+    }
+
+    #[test]
+    fn replay_summary_status_rejects_missing_artifacts_dir() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.mode = RunMode::Replay;
+        summary.identity.artifacts_dir = None;
+        let (status, detail) =
+            replay_summary_status(Some(ExitStatus::Pass), &summary, true, 7, RunMode::Replay);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("artifacts_present=false"));
     }
 
     #[test]
