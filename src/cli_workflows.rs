@@ -177,6 +177,27 @@ fn memory_diff_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     )
 }
 
+fn memory_graph_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let nodes = value
+        .pointer("/graph/nodes")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let edges = value
+        .pointer("/graph/edges")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    (
+        if nodes == 0 && edges == 0 {
+            FullStepStatus::Skipped
+        } else {
+            FullStepStatus::Passed
+        },
+        format!("nodes={} edges={}", nodes, edges),
+    )
+}
+
 fn replay_summary_status(
     expected: Option<ExitStatus>,
     summary: &RunSummary,
@@ -1530,21 +1551,10 @@ pub(super) fn run_full_command(
                 out: None,
             },
         ) {
-            Ok(value) => push(
-                "memory_graph",
-                FullStepStatus::Passed,
-                format!(
-                    "nodes={} edges={}",
-                    value.pointer("/graph/nodes")
-                        .and_then(|v| v.as_array())
-                        .map(|v| v.len())
-                        .unwrap_or(0),
-                    value.pointer("/graph/edges")
-                        .and_then(|v| v.as_array())
-                        .map(|v| v.len())
-                        .unwrap_or(0)
-                ),
-            ),
+            Ok(value) => {
+                let (status, detail) = memory_graph_status(&value);
+                push("memory_graph", status, detail)
+            }
             Err(err) => push("memory_graph", FullStepStatus::Failed, err.to_string()),
         }
 
@@ -2295,6 +2305,15 @@ mod tests {
         let (status, detail) = corpus_import_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("missing dir path"));
+    }
+
+    #[test]
+    fn memory_graph_status_skips_empty_graph() {
+        let value = serde_json::json!({"graph": {"nodes": [], "edges": []}});
+        let (status, detail) = memory_graph_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("nodes=0"));
+        assert!(detail.contains("edges=0"));
     }
 
     #[test]

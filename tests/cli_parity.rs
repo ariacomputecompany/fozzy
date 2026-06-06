@@ -2264,6 +2264,38 @@ fn full_report_query_rejects_non_pass_primary_status() {
 }
 
 #[test]
+fn full_memory_graph_skips_empty_graph_evidence() {
+    let out = run_cli(&[
+        "full".into(),
+        "--scenario-root".into(),
+        "tests".into(),
+        "--scenario-filter".into(),
+        "example.fozzy.json".into(),
+        "--seed".into(),
+        "7".into(),
+        "--doctor-runs".into(),
+        "2".into(),
+        "--fuzz-time".into(),
+        "10ms".into(),
+        "--required-steps".into(),
+        "run_record_trace,memory_graph".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "full example flow should complete");
+    let doc = parse_json_stdout(&out);
+    assert_eq!(
+        full_step_status(&doc, "memory_graph").as_deref(),
+        Some("skipped"),
+        "memory_graph should skip when the graph payload has no nodes or edges"
+    );
+    assert_eq!(
+        full_step_detail(&doc, "memory_graph").as_deref(),
+        Some("nodes=0 edges=0"),
+        "memory_graph should still report the empty graph evidence explicitly"
+    );
+}
+
+#[test]
 fn full_fails_when_no_scenarios_are_discovered() {
     let ws = temp_workspace("full-no-scenarios");
     let scenario_root = ws.join("tests");
