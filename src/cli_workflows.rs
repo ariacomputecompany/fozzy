@@ -109,6 +109,7 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
         .unwrap_or("");
     let status = if cause_domain == "unknown"
         || shifted_path == "n/a"
+        || regression_statement.is_empty()
         || regression_statement == "no measurable regression shift found"
     {
         FullStepStatus::Skipped
@@ -132,7 +133,7 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
     (
-        if is_flaky {
+        if is_flaky || run_count == 0 {
             FullStepStatus::Failed
         } else {
             FullStepStatus::Passed
@@ -2201,6 +2202,18 @@ mod tests {
     }
 
     #[test]
+    fn profile_explain_status_skips_missing_regression_statement() {
+        let value = serde_json::json!({
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "metric::p99_ms"
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("cause_domain=latency"));
+        assert!(detail.contains("shifted_path=metric::p99_ms"));
+    }
+
+    #[test]
     fn profile_explain_status_accepts_real_diagnosis() {
         let value = serde_json::json!({
             "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
@@ -2346,6 +2359,18 @@ mod tests {
         let (status, detail) = flaky_report_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("is_flaky=true"));
+    }
+
+    #[test]
+    fn flaky_report_status_rejects_zero_run_count() {
+        let value = serde_json::json!({
+            "runCount": 0,
+            "isFlaky": false,
+            "flakeRatePct": 0.0
+        });
+        let (status, detail) = flaky_report_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("run_count=0"));
     }
 
     #[test]
