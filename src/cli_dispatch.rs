@@ -48,6 +48,16 @@ pub(super) fn run_command(
             mem_artifacts,
             profile_capture,
         } => {
+            if *profile_capture != fozzy::ProfileCaptureLevel::Baseline {
+                return Err(anyhow::anyhow!(
+                    "invalid argument: `fozzy test` does not emit aggregate profile artifacts; use `fozzy run`/`fozzy fuzz`/`fozzy explore`, or record traces and profile those explicit traces"
+                ));
+            }
+            if *mem_artifacts {
+                return Err(anyhow::anyhow!(
+                    "invalid argument: `fozzy test` does not emit aggregate memory sidecar artifacts; use recorded traces with `fozzy memory ...`, or use `fozzy run` for artifact-emitting execution"
+                ));
+            }
             let memory = resolve_memory_options(
                 config,
                 *mem_track,

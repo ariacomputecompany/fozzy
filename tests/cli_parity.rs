@@ -2769,6 +2769,65 @@ fn test_rejects_distributed_scenarios_in_default_test_mode() {
 }
 
 #[test]
+fn test_rejects_aggregate_profile_capture_flag() {
+    let ws = temp_workspace("test-profile-capture-reject");
+    let scenario = ws.join("ok.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "test".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--profile-capture".into(),
+            "full".into(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2), "test should reject profile capture");
+    let out = parse_json_stdout(&output);
+    let msg = out
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        msg.contains("does not emit aggregate profile artifacts"),
+        "expected aggregate profile rejection, got: {msg}"
+    );
+}
+
+#[test]
+fn test_rejects_aggregate_memory_sidecar_flag() {
+    let ws = temp_workspace("test-mem-artifacts-reject");
+    let scenario = ws.join("ok.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "test".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--mem-artifacts".into(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2), "test should reject mem artifacts");
+    let out = parse_json_stdout(&output);
+    let msg = out
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        msg.contains("does not emit aggregate memory sidecar artifacts"),
+        "expected aggregate memory artifact rejection, got: {msg}"
+    );
+}
+
+#[test]
 fn init_honors_custom_config_path() {
     let ws = temp_workspace("init-custom-config");
     let output = run_cli_in(
