@@ -14,8 +14,9 @@ use crate::{
     MemoryRunReport, ProfileCaptureLevel, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
     RunSummary, ScenarioFile, ScenarioPath, ScenarioV1Distributed, TraceEvent, TraceFile,
     should_emit_profile_artifacts, wall_time_iso_utc, write_memory_artifacts,
-    write_profile_artifacts_from_trace, write_trace_with_policy,
+    write_profile_artifacts_from_trace,
 };
+use crate::finalize::write_summary_report;
 
 use crate::{FozzyError, FozzyResult};
 use crate::{HeapBudgetPolicy, heap_budget_findings_from_trace};
@@ -206,8 +207,6 @@ pub fn explore(
         summary.findings = crate::collapse_findings(summary.findings.clone());
     }
 
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
-
     if matches!(opt.reporter, Reporter::Junit) {
         std::fs::write(
             artifacts_dir.join("junit.xml"),
@@ -223,10 +222,12 @@ pub fn explore(
 
     let should_record = opt.record_trace_to.is_some() || status != ExitStatus::Pass;
     if should_record {
-        let out = opt
+        let requested = opt
             .record_trace_to
             .clone()
             .unwrap_or_else(|| artifacts_dir.join("trace.fozzy"));
+        let out = crate::resolve_record_target(&requested, opt.record_collision)?;
+        summary.identity.trace_path = Some(out.to_string_lossy().to_string());
         let trace = TraceFile::new_explore(
             ExploreTrace {
                 scenario_path: scenario_path.as_path().to_string_lossy().to_string(),
@@ -239,9 +240,9 @@ pub fn explore(
         );
         let mut trace = trace;
         trace.memory = memory_report.as_ref().map(|m| m.to_trace());
-        let written = write_trace_with_policy(&trace, &out, opt.record_collision)?;
-        summary.identity.trace_path = Some(written.to_string_lossy().to_string());
+        crate::write_trace_to_target(&trace, &out)?;
     }
+    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     let emit_heavy = should_emit_heavy_artifacts(status, should_record)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
     if emit_heavy {
@@ -260,7 +261,6 @@ pub fn explore(
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
 }
@@ -337,7 +337,7 @@ pub fn replay_explore_trace(
         summary.findings = crate::collapse_findings(summary.findings.clone());
     }
 
-    std::fs::write(&report_path, serde_json::to_vec(&summary)?)?;
+    write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if should_emit_heavy_artifacts(status, true) {
         std::fs::write(
             artifacts_dir.join("events.json"),
@@ -352,7 +352,6 @@ pub fn replay_explore_trace(
     }
     profile_trace.summary = summary.clone();
     write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
 }

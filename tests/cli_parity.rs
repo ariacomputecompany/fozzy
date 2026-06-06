@@ -194,6 +194,15 @@ fn read_trace_json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(path).expect("read trace")).expect("trace json")
 }
 
+fn resolve_output_path(base: &Path, raw: &str) -> PathBuf {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
+}
+
 fn parse_first_json_stdout(output: &std::process::Output) -> serde_json::Value {
     let mut docs = serde_json::Deserializer::from_slice(&output.stdout).into_iter();
     docs.next()
@@ -2833,6 +2842,165 @@ fn run_recorded_trace_shares_report_identity() {
         out.get("identity")
             .and_then(|v| v.get("artifactsDir"))
             .and_then(|v| v.as_str())
+    );
+    let report_path = resolve_output_path(
+        &ws,
+        out
+        .get("identity")
+        .and_then(|v| v.get("reportPath"))
+        .and_then(|v| v.as_str())
+        .expect("report path"),
+    );
+    let report_doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read report"))
+            .expect("report json");
+    assert_eq!(
+        report_doc
+            .get("identity")
+            .and_then(|v| v.get("tracePath"))
+            .and_then(|v| v.as_str()),
+        Some(trace_path.as_str())
+    );
+}
+
+#[test]
+fn fuzz_recorded_trace_shares_report_identity() {
+    let ws = temp_workspace("fuzz-trace-report-identity");
+    let requested = ws.join("fuzz.trace.fozzy");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "fuzz".into(),
+            format!(
+                "scenario:{}",
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/memory.pass.fozzy.json")
+                    .display()
+            ),
+            "--det".into(),
+            "--runs".into(),
+            "1".into(),
+            "--seed".into(),
+            "7".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "fuzz should succeed");
+    let out = parse_json_stdout(&output);
+    let trace_path = out
+        .get("identity")
+        .and_then(|v| v.get("tracePath"))
+        .and_then(|v| v.as_str())
+        .expect("trace path")
+        .to_string();
+    let report_identity = out
+        .get("identity")
+        .and_then(|v| v.get("reportPath"))
+        .and_then(|v| v.as_str())
+        .expect("report path")
+        .to_string();
+    let report_path = resolve_output_path(
+        &ws,
+        out
+        .get("identity")
+        .and_then(|v| v.get("reportPath"))
+        .and_then(|v| v.as_str())
+        .expect("report path"),
+    );
+    let trace_doc = read_trace_json(Path::new(&trace_path));
+    let trace_identity = trace_doc
+        .get("summary")
+        .and_then(|v| v.get("identity"))
+        .expect("trace identity");
+    let report_doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read report"))
+            .expect("report json");
+    assert_eq!(
+        trace_identity.get("tracePath").and_then(|v| v.as_str()),
+        Some(trace_path.as_str())
+    );
+    assert_eq!(
+        trace_identity.get("reportPath").and_then(|v| v.as_str()),
+        Some(report_identity.as_str())
+    );
+    assert_eq!(
+        report_doc
+            .get("identity")
+            .and_then(|v| v.get("tracePath"))
+            .and_then(|v| v.as_str()),
+        Some(trace_path.as_str())
+    );
+}
+
+#[test]
+fn explore_recorded_trace_shares_report_identity() {
+    let ws = temp_workspace("explore-trace-report-identity");
+    let requested = ws.join("explore.trace.fozzy");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "explore".into(),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/kv.explore.fozzy.json")
+                .display()
+                .to_string(),
+            "--steps".into(),
+            "10".into(),
+            "--seed".into(),
+            "7".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "explore should succeed");
+    let out = parse_json_stdout(&output);
+    let trace_path = out
+        .get("identity")
+        .and_then(|v| v.get("tracePath"))
+        .and_then(|v| v.as_str())
+        .expect("trace path")
+        .to_string();
+    let report_identity = out
+        .get("identity")
+        .and_then(|v| v.get("reportPath"))
+        .and_then(|v| v.as_str())
+        .expect("report path")
+        .to_string();
+    let report_path = resolve_output_path(
+        &ws,
+        out
+        .get("identity")
+        .and_then(|v| v.get("reportPath"))
+        .and_then(|v| v.as_str())
+        .expect("report path"),
+    );
+    let trace_doc = read_trace_json(Path::new(&trace_path));
+    let trace_identity = trace_doc
+        .get("summary")
+        .and_then(|v| v.get("identity"))
+        .expect("trace identity");
+    let report_doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read report"))
+            .expect("report json");
+    assert_eq!(
+        trace_identity.get("tracePath").and_then(|v| v.as_str()),
+        Some(trace_path.as_str())
+    );
+    assert_eq!(
+        trace_identity.get("reportPath").and_then(|v| v.as_str()),
+        Some(report_identity.as_str())
+    );
+    assert_eq!(
+        report_doc
+            .get("identity")
+            .and_then(|v| v.get("tracePath"))
+            .and_then(|v| v.as_str()),
+        Some(trace_path.as_str())
     );
 }
 
