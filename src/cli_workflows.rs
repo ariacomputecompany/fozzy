@@ -762,21 +762,23 @@ fn replay_summary_status(
     expected: Option<ExitStatus>,
     summary: &RunSummary,
     strict: bool,
+    expected_seed: u64,
 ) -> (FullStepStatus, String) {
     let class_ok = expected
         .map(|s| (s == ExitStatus::Pass) == (summary.status == ExitStatus::Pass))
         .unwrap_or(false);
     let strict_ok = enforce_strict_summary(strict, summary).is_ok();
     let run_id_present = !summary.identity.run_id.trim().is_empty();
+    let seed_matches = summary.identity.seed == expected_seed;
     (
-        if class_ok && strict_ok && run_id_present {
+        if class_ok && strict_ok && run_id_present && seed_matches {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
         format!(
-            "status={:?} class_ok={} strict_ok={} run_id_present={}",
-            summary.status, class_ok, strict_ok, run_id_present
+            "status={:?} class_ok={} strict_ok={} run_id_present={} seed_matches={} seed={}",
+            summary.status, class_ok, strict_ok, run_id_present, seed_matches, expected_seed
         ),
     )
 }
@@ -904,18 +906,23 @@ fn report_query_paths_status(value: &serde_json::Value) -> (FullStepStatus, Stri
     )
 }
 
-fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatus, String) {
+fn run_summary_pass_status(
+    summary: &RunSummary,
+    strict: bool,
+    expected_seed: u64,
+) -> (FullStepStatus, String) {
     let strict_ok = enforce_strict_summary(strict, summary).is_ok();
     let run_id_present = !summary.identity.run_id.trim().is_empty();
+    let seed_matches = summary.identity.seed == expected_seed;
     (
-        if summary.status == ExitStatus::Pass && strict_ok && run_id_present {
+        if summary.status == ExitStatus::Pass && strict_ok && run_id_present && seed_matches {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
         format!(
-            "status={:?} strict_ok={} run_id_present={}",
-            summary.status, strict_ok, run_id_present
+            "status={:?} strict_ok={} run_id_present={} seed_matches={} seed={}",
+            summary.status, strict_ok, run_id_present, seed_matches, expected_seed
         ),
     )
 }
@@ -923,9 +930,10 @@ fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatu
 fn recorded_trace_status(
     summary: &RunSummary,
     strict: bool,
+    expected_seed: u64,
     trace_path: &Path,
 ) -> (FullStepStatus, String) {
-    let (summary_status, summary_detail) = run_summary_pass_status(summary, strict);
+    let (summary_status, summary_detail) = run_summary_pass_status(summary, strict, expected_seed);
     let (file_status, file_detail) = file_artifact_status(trace_path);
     let reported_trace = summary.identity.trace_path.as_deref();
     let reported_matches = reported_trace.is_some_and(|reported| Path::new(reported) == trace_path);
@@ -953,11 +961,13 @@ fn shrink_step_status(
     primary_status: Option<ExitStatus>,
     summary: &RunSummary,
     strict: bool,
+    expected_seed: u64,
     allow_expected_failures: bool,
     out_trace: &Path,
 ) -> (FullStepStatus, String, String) {
     let strict_ok = enforce_strict_summary(strict, summary).is_ok();
     let run_id_present = !summary.identity.run_id.trim().is_empty();
+    let seed_matches = summary.identity.seed == expected_seed;
     let (file_status, file_detail) = file_artifact_status(out_trace);
     let artifact_ok = matches!(file_status, FullStepStatus::Passed);
     let reported_trace = summary.identity.trace_path.as_deref();
@@ -967,12 +977,20 @@ fn shrink_step_status(
             Some(primary) => {
                 let class_ok = shrink_status_matches(primary, summary.status);
                 let classification =
-                    if class_ok && strict_ok && run_id_present && artifact_ok && reported_matches {
+                    if class_ok
+                        && strict_ok
+                        && run_id_present
+                        && seed_matches
+                        && artifact_ok
+                        && reported_matches
+                {
                     "expected_fail_class_preserved"
                 } else if !class_ok {
                     "expected_fail_class_mismatch"
                 } else if !run_id_present {
                     "run_identity_missing"
+                } else if !seed_matches {
+                    "seed_mismatch"
                 } else if !artifact_ok {
                     "out_trace_missing"
                 } else if !reported_matches {
@@ -981,17 +999,25 @@ fn shrink_step_status(
                     "strict_policy_rejected"
                 };
                 (
-                    if class_ok && strict_ok && run_id_present && artifact_ok && reported_matches {
+                    if class_ok
+                        && strict_ok
+                        && run_id_present
+                        && seed_matches
+                        && artifact_ok
+                        && reported_matches
+                    {
                         FullStepStatus::Passed
                     } else {
                         FullStepStatus::Failed
                     },
                     format!(
-                        "status={:?} class_ok={} strict_ok={} run_id_present={} trace_reported={} trace_matches={} {}",
+                        "status={:?} class_ok={} strict_ok={} run_id_present={} seed_matches={} seed={} trace_reported={} trace_matches={} {}",
                         summary.status,
                         class_ok,
                         strict_ok,
                         run_id_present,
+                        seed_matches,
+                        expected_seed,
                         reported_trace.is_some(),
                         reported_matches,
                         file_detail
@@ -1002,10 +1028,12 @@ fn shrink_step_status(
             None => (
                 FullStepStatus::Failed,
                 format!(
-                    "status={:?} class_ok=false strict_ok={} run_id_present={} trace_reported={} trace_matches={} {}",
+                    "status={:?} class_ok=false strict_ok={} run_id_present={} seed_matches={} seed={} trace_reported={} trace_matches={} {}",
                     summary.status,
                     strict_ok,
                     run_id_present,
+                    seed_matches,
+                    expected_seed,
                     reported_trace.is_some(),
                     reported_matches,
                     file_detail
@@ -1016,16 +1044,19 @@ fn shrink_step_status(
     } else if summary.status == ExitStatus::Pass
         && strict_ok
         && run_id_present
+        && seed_matches
         && artifact_ok
         && reported_matches
     {
         (
             FullStepStatus::Passed,
             format!(
-                "status={:?} strict_ok={} run_id_present={} trace_reported={} trace_matches={} {}",
+                "status={:?} strict_ok={} run_id_present={} seed_matches={} seed={} trace_reported={} trace_matches={} {}",
                 summary.status,
                 strict_ok,
                 run_id_present,
+                seed_matches,
+                expected_seed,
                 reported_trace.is_some(),
                 reported_matches,
                 file_detail
@@ -1037,6 +1068,8 @@ fn shrink_step_status(
             "policy_rejected_non_pass"
         } else if !run_id_present {
             "run_identity_missing"
+        } else if !seed_matches {
+            "seed_mismatch"
         } else if !artifact_ok {
             "out_trace_missing"
         } else if !reported_matches {
@@ -1047,10 +1080,12 @@ fn shrink_step_status(
         (
             FullStepStatus::Failed,
             format!(
-                "status={:?} strict_ok={} run_id_present={} trace_reported={} trace_matches={} {}",
+                "status={:?} strict_ok={} run_id_present={} seed_matches={} seed={} trace_reported={} trace_matches={} {}",
                 summary.status,
                 strict_ok,
                 run_id_present,
+                seed_matches,
+                expected_seed,
                 reported_trace.is_some(),
                 reported_matches,
                 file_detail
@@ -1997,7 +2032,11 @@ pub(super) fn run_gate_command(
         },
         ) {
             Ok(test) => {
-                let (status, detail) = run_summary_pass_status(&test.summary, strict);
+                let (status, detail) = run_summary_pass_status(
+                    &test.summary,
+                    strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                );
                 push(
                     "test_det_strict",
                     status,
@@ -2036,7 +2075,12 @@ pub(super) fn run_gate_command(
         ) {
             Ok(run) => {
                 primary_status = Some(run.summary.status);
-                let (status, detail) = recorded_trace_status(&run.summary, strict, &trace_path);
+                let (status, detail) = recorded_trace_status(
+                    &run.summary,
+                    strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                    &trace_path,
+                );
                 push(
                     "run_record_trace",
                     status,
@@ -2089,8 +2133,12 @@ pub(super) fn run_gate_command(
         ) {
             Ok(replay) => {
                 replay_run_id = Some(replay.summary.identity.run_id.clone());
-                let (status, detail) =
-                    replay_summary_status(primary_status, &replay.summary, strict);
+                let (status, detail) = replay_summary_status(
+                    primary_status,
+                    &replay.summary,
+                    strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                );
                 push("replay", status, detail);
             }
             Err(err) => push("replay", FullStepStatus::Failed, err.to_string()),
@@ -2506,7 +2554,11 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(test) => {
-                let (status, detail) = run_summary_pass_status(&test.summary, strict);
+                let (status, detail) = run_summary_pass_status(
+                    &test.summary,
+                    strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                );
                 push(
                     "test_det",
                     status,
@@ -2541,7 +2593,12 @@ pub(super) fn run_full_command(
         ) {
             Ok(run) => {
                 primary_status = Some(run.summary.status);
-                let (status, detail) = recorded_trace_status(&run.summary, strict, &trace_path);
+                let (status, detail) = recorded_trace_status(
+                    &run.summary,
+                    strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                    &trace_path,
+                );
                 let trace_recorded = run.summary.identity.trace_path.is_some()
                     && matches!(file_artifact_status(&trace_path).0, FullStepStatus::Passed);
                 if trace_recorded {
@@ -2599,8 +2656,12 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(replay) => {
-                let (status, detail) =
-                    replay_summary_status(primary_status, &replay.summary, strict);
+                let (status, detail) = replay_summary_status(
+                    primary_status,
+                    &replay.summary,
+                    strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                );
                 push(
                     "replay",
                     status,
@@ -2648,6 +2709,7 @@ pub(super) fn run_full_command(
                     primary_status,
                     &shrink.result.summary,
                     strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
                     allow_expected_failures,
                     Path::new(&shrink.out_trace_path),
                 );
@@ -2673,8 +2735,12 @@ pub(super) fn run_full_command(
                 },
             ) {
                 Ok(replay) => {
-                    let (status, detail) =
-                        replay_summary_status(shrunk_status, &replay.summary, strict);
+                    let (status, detail) = replay_summary_status(
+                        shrunk_status,
+                        &replay.summary,
+                        strict,
+                        seed.unwrap_or(0xC0DEC0DE_u64),
+                    );
                     push("replay_shrunk", status, detail);
                 }
                 Err(err) => push("replay_shrunk", FullStepStatus::Failed, err.to_string()),
@@ -2998,7 +3064,11 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(fuzz_run) => {
-                let (status, detail) = run_summary_pass_status(&fuzz_run.summary, strict);
+                let (status, detail) = run_summary_pass_status(
+                    &fuzz_run.summary,
+                    strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                );
                 push(
                     "fuzz",
                     status,
@@ -3041,7 +3111,11 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(explore) => {
-                let (status, detail) = run_summary_pass_status(&explore.summary, strict);
+                let (status, detail) = run_summary_pass_status(
+                    &explore.summary,
+                    strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                );
                 push(
                     "explore",
                     status,
@@ -3173,7 +3247,11 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(host_run) => {
-                let (status, detail) = run_summary_pass_status(&host_run.summary, strict);
+                let (status, detail) = run_summary_pass_status(
+                    &host_run.summary,
+                    strict,
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                );
                 push("host_backends_run", status, detail);
             }
             Err(err) => push("host_backends_run", FullStepStatus::Failed, err.to_string()),
@@ -4077,7 +4155,7 @@ mod tests {
     #[test]
     fn replay_summary_status_rejects_class_mismatch() {
         let summary = sample_run_summary(ExitStatus::Fail);
-        let (status, detail) = replay_summary_status(Some(ExitStatus::Pass), &summary, true);
+        let (status, detail) = replay_summary_status(Some(ExitStatus::Pass), &summary, true, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("class_ok=false"));
     }
@@ -4086,9 +4164,19 @@ mod tests {
     fn replay_summary_status_rejects_missing_run_id() {
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.identity.run_id = "".to_string();
-        let (status, detail) = replay_summary_status(Some(ExitStatus::Pass), &summary, true);
+        let (status, detail) = replay_summary_status(Some(ExitStatus::Pass), &summary, true, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("run_id_present=false"));
+    }
+
+    #[test]
+    fn replay_summary_status_rejects_seed_mismatch() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.seed = 99;
+        let (status, detail) = replay_summary_status(Some(ExitStatus::Pass), &summary, true, 7);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("seed_matches=false"));
+        assert!(detail.contains("seed=7"));
     }
 
     #[test]
@@ -4105,7 +4193,7 @@ mod tests {
     #[test]
     fn run_summary_pass_status_rejects_non_pass() {
         let summary = sample_run_summary(ExitStatus::Fail);
-        let (status, detail) = run_summary_pass_status(&summary, true);
+        let (status, detail) = run_summary_pass_status(&summary, true, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("status=Fail"));
     }
@@ -4114,9 +4202,19 @@ mod tests {
     fn run_summary_pass_status_rejects_missing_run_id() {
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.identity.run_id = "   ".to_string();
-        let (status, detail) = run_summary_pass_status(&summary, true);
+        let (status, detail) = run_summary_pass_status(&summary, true, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("run_id_present=false"));
+    }
+
+    #[test]
+    fn run_summary_pass_status_rejects_seed_mismatch() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.seed = 99;
+        let (status, detail) = run_summary_pass_status(&summary, true, 7);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("seed_matches=false"));
+        assert!(detail.contains("seed=7"));
     }
 
     #[test]
@@ -4127,7 +4225,7 @@ mod tests {
             "fozzy-missing-trace-{}.fozzy",
             uuid::Uuid::new_v4()
         ));
-        let (status, detail) = recorded_trace_status(&summary, true, &path);
+        let (status, detail) = recorded_trace_status(&summary, true, 7, &path);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("trace_reported=true"));
         assert!(detail.contains("trace_matches=false"));
@@ -4143,10 +4241,27 @@ mod tests {
         std::fs::write(&path, b"trace").expect("write trace");
         let mut summary = sample_run_summary(ExitStatus::Pass);
         summary.identity.trace_path = Some("/tmp/other.trace.fozzy".to_string());
-        let (status, detail) = recorded_trace_status(&summary, true, &path);
+        let (status, detail) = recorded_trace_status(&summary, true, 7, &path);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("trace_reported=true"));
         assert!(detail.contains("trace_matches=false"));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn recorded_trace_status_rejects_seed_mismatch() {
+        let path = std::env::temp_dir().join(format!(
+            "fozzy-trace-seed-{}.fozzy",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, b"trace").expect("write trace");
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.seed = 99;
+        summary.identity.trace_path = Some(path.display().to_string());
+        let (status, detail) = recorded_trace_status(&summary, true, 7, &path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("seed_matches=false"));
+        assert!(detail.contains("seed=7"));
         std::fs::remove_file(path).ok();
     }
 
@@ -5936,6 +6051,7 @@ mod tests {
             Some(ExitStatus::Pass),
             &summary,
             true,
+            7,
             false,
             &out_trace,
         );
@@ -5957,6 +6073,7 @@ mod tests {
             Some(ExitStatus::Pass),
             &summary,
             true,
+            7,
             false,
             &out_trace,
         );
@@ -5972,7 +6089,7 @@ mod tests {
         let missing = std::env::temp_dir().join(format!("missing-{}.fozzy", uuid::Uuid::new_v4()));
         summary.identity.trace_path = Some(missing.display().to_string());
         let (status, detail, classification) =
-            shrink_step_status(Some(ExitStatus::Pass), &summary, true, false, &missing);
+            shrink_step_status(Some(ExitStatus::Pass), &summary, true, 7, false, &missing);
         assert!(matches!(status, FullStepStatus::Failed));
         assert_eq!(classification, "out_trace_missing");
         assert!(detail.contains("missing"));
@@ -5989,6 +6106,7 @@ mod tests {
             Some(ExitStatus::Pass),
             &summary,
             true,
+            7,
             false,
             &out_trace,
         );
@@ -5997,6 +6115,28 @@ mod tests {
         assert_eq!(classification, "out_trace_identity_mismatch");
         assert!(detail.contains("trace_reported=true"));
         assert!(detail.contains("trace_matches=false"));
+    }
+
+    #[test]
+    fn shrink_step_status_rejects_seed_mismatch() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.seed = 99;
+        let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
+        std::fs::write(&out_trace, b"trace").expect("write trace");
+        summary.identity.trace_path = Some(out_trace.display().to_string());
+        let (status, detail, classification) = shrink_step_status(
+            Some(ExitStatus::Pass),
+            &summary,
+            true,
+            7,
+            false,
+            &out_trace,
+        );
+        let _ = std::fs::remove_file(&out_trace);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert_eq!(classification, "seed_mismatch");
+        assert!(detail.contains("seed_matches=false"));
+        assert!(detail.contains("seed=7"));
     }
 
     #[test]
