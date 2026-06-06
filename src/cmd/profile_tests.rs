@@ -692,6 +692,36 @@ fn resolve_profile_artifacts_accepts_declared_run_dir_for_same_trace() {
 }
 
 #[test]
+fn resolve_profile_artifacts_accepts_manifest_only_declared_run_dir_for_same_trace() {
+    let ws = temp_workspace("resolve-manifest-only-declared-run-dir");
+    let base_dir = ws.join(".fozzy");
+    let run_dir = base_dir.join("runs").join("r1");
+    std::fs::create_dir_all(&run_dir).expect("run dir");
+
+    let mut trace = sample_trace();
+    let trace_path = ws.join("external.trace.fozzy");
+    trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    trace.summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
+    std::fs::write(
+        &trace_path,
+        serde_json::to_vec_pretty(&trace).expect("trace bytes"),
+    )
+    .expect("write trace");
+    crate::write_run_manifest(&trace.summary, &run_dir).expect("write manifest");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let (artifacts_dir, resolved_trace) =
+        profile_support::resolve_profile_artifacts(&cfg, &trace_path.to_string_lossy())
+            .expect("resolve profile");
+    assert_eq!(artifacts_dir, run_dir);
+    assert_eq!(resolved_trace, Some(trace_path.clone()));
+}
+
+#[test]
 fn profile_commands_support_run_id_with_profile_artifacts_only() {
     let ws = temp_workspace("artifacts-only-run");
     let base_dir = ws.join(".fozzy");
@@ -727,6 +757,45 @@ fn profile_commands_support_run_id_with_profile_artifacts_only() {
     };
     let out = profile_command(&cfg, &cmd, true).expect("profile top");
     assert_eq!(out.get("run").and_then(|v| v.as_str()), Some(run_id));
+}
+
+#[test]
+fn profile_commands_support_manifest_only_trace_wrapper_without_report() {
+    let ws = temp_workspace("manifest-only-trace-wrapper");
+    let base_dir = ws.join(".fozzy");
+    let run_id = "run-manifest-only-trace-wrapper";
+    let run_dir = base_dir.join("runs").join(run_id);
+    std::fs::create_dir_all(&run_dir).expect("run dir");
+
+    let mut trace = sample_trace();
+    let trace_path = run_dir.join("trace.fozzy");
+    trace.summary.identity.run_id = run_id.to_string();
+    trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    trace.summary.identity.report_path =
+        Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
+    trace.write_json(&trace_path).expect("write trace");
+    crate::write_run_manifest(&trace.summary, &run_dir).expect("write manifest");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let cmd = ProfileCommand::Top {
+        run: run_id.to_string(),
+        cpu: false,
+        heap: true,
+        latency: false,
+        io: false,
+        sched: false,
+        limit: 5,
+    };
+    let out = profile_command(&cfg, &cmd, true).expect("profile top");
+    assert_eq!(out.get("run").and_then(|v| v.as_str()), Some(run_id));
+    assert!(
+        run_dir.join("profile.metrics.json").exists(),
+        "manifest-backed trace wrapper should lazily emit profile artifacts"
+    );
 }
 
 #[test]
@@ -795,6 +864,9 @@ fn profile_commands_reject_manifest_only_profile_artifacts_without_report_or_tra
     assert!(
         err.to_string()
             .contains("no coherent report/manifest pair or trace found for profile artifacts")
+            || err
+                .to_string()
+                .contains("invalid manifest")
     );
 }
 

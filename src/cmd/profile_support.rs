@@ -646,6 +646,12 @@ pub(super) fn resolve_profile_artifacts(
         checked_summary =
             crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, selector)?;
     }
+    if checked_summary.is_none() && manifest_exists {
+        checked_summary = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
+            &artifacts_dir,
+            selector,
+        )?;
+    }
     if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
         if checked_summary.is_none() {
             return Err(FozzyError::InvalidArgument(format!(
@@ -686,9 +692,17 @@ fn trusted_declared_profile_artifacts_dir(trace_path: &Path) -> FozzyResult<Opti
         return Ok(Some(artifacts_dir));
     }
 
-    let Some(summary) =
-        crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, &trace_path.display().to_string())?
-    else {
+    let summary = if let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
+        &artifacts_dir,
+        &trace_path.display().to_string(),
+    )? {
+        summary
+    } else if let Some(summary) = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
+        &artifacts_dir,
+        &trace_path.display().to_string(),
+    )? {
+        summary
+    } else {
         return Ok(None);
     };
     let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
@@ -711,11 +725,17 @@ fn trusted_declared_profile_artifacts_dir(trace_path: &Path) -> FozzyResult<Opti
 }
 
 fn refresh_manifest_for_profile_artifacts(artifacts_dir: &Path) -> FozzyResult<()> {
-    let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
+    let summary = if let Some(summary) = crate::load_checked_report_summary_from_artifacts_dir(
         artifacts_dir,
         &artifacts_dir.display().to_string(),
-    )?
-    else {
+    )? {
+        summary
+    } else if let Some(summary) = crate::load_checked_manifest_trace_summary_from_artifacts_dir(
+        artifacts_dir,
+        &artifacts_dir.display().to_string(),
+    )? {
+        summary
+    } else {
         return Ok(());
     };
     crate::write_run_manifest(&summary, artifacts_dir)?;
