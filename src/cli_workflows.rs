@@ -433,15 +433,38 @@ fn corpus_add_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     file_artifact_status(&added)
 }
 
+fn listed_file_status(path: &Path) -> anyhow::Result<u64> {
+    let metadata =
+        std::fs::metadata(path).map_err(|err| anyhow::anyhow!("{} missing: {err}", path.display()))?;
+    anyhow::ensure!(metadata.is_file(), "{} is not a file", path.display());
+    anyhow::ensure!(metadata.len() > 0, "{} is empty", path.display());
+    Ok(metadata.len())
+}
+
 fn corpus_list_status(value: &serde_json::Value) -> (FullStepStatus, String) {
-    let count = value.as_array().map(|v| v.len()).unwrap_or_default();
+    let entries = value.as_array().cloned().unwrap_or_default();
+    let count = entries.len();
+    let mut invalid = Vec::new();
+    for entry in &entries {
+        let Some(path_str) = entry.as_str() else {
+            invalid.push(format!("non-string entry: {}", entry));
+            continue;
+        };
+        if let Err(err) = listed_file_status(Path::new(path_str)) {
+            invalid.push(err.to_string());
+        }
+    }
     (
-        if count > 0 {
+        if count > 0 && invalid.is_empty() {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
-        format!("files={count}"),
+        if invalid.is_empty() {
+            format!("files={count} invalid=<none>")
+        } else {
+            format!("files={count} invalid={}", invalid.join("; "))
+        },
     )
 }
 
@@ -502,14 +525,44 @@ fn artifacts_list_status(
     fallback: &Path,
 ) -> (FullStepStatus, String) {
     match output {
-        fozzy::ArtifactOutput::List { entries } => (
-            if entries.is_empty() {
+        fozzy::ArtifactOutput::List { entries } => {
+            let mut invalid = Vec::new();
+            for entry in entries {
+                let path = Path::new(&entry.path);
+                match listed_file_status(path) {
+                    Ok(size) => {
+                        if let Some(reported) = entry.size_bytes
+                            && reported != size
+                        {
+                            invalid.push(format!(
+                                "{} size mismatch reported={} actual={}",
+                                path.display(),
+                                reported,
+                                size
+                            ));
+                        }
+                    }
+                    Err(err) => invalid.push(err.to_string()),
+                }
+            }
+            (
+            if entries.is_empty() || !invalid.is_empty() {
                 FullStepStatus::Failed
             } else {
                 FullStepStatus::Passed
             },
-            format!("entries={} run={}", entries.len(), fallback.display()),
-        ),
+            if invalid.is_empty() {
+                format!("entries={} run={} invalid=<none>", entries.len(), fallback.display())
+            } else {
+                format!(
+                    "entries={} run={} invalid={}",
+                    entries.len(),
+                    fallback.display(),
+                    invalid.join("; ")
+                )
+            },
+        )
+        }
         _ => (
             FullStepStatus::Failed,
             format!("unexpected artifacts ls payload for {}", fallback.display()),
@@ -2497,6 +2550,16 @@ mod tests {
     }
 
     #[test]
+    fn corpus_list_status_rejects_missing_entry_file() {
+        let value = serde_json::json!(["/tmp/definitely-missing-fozzy-corpus-entry"]);
+        let (status, detail) = corpus_list_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("files=1"));
+        assert!(detail.contains("invalid="));
+        assert!(detail.contains("definitely-missing-fozzy-corpus-entry"));
+    }
+
+    #[test]
     fn corpus_import_status_rejects_missing_dir_path() {
         let value = serde_json::json!({});
         let (status, detail) = corpus_import_status(&value);
@@ -2520,6 +2583,22 @@ mod tests {
         let (status, detail) = artifacts_list_status(&output, &path);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("entries=0"));
+    }
+
+    #[test]
+    fn artifacts_list_status_rejects_missing_entry_file() {
+        let output = fozzy::ArtifactOutput::List {
+            entries: vec![fozzy::ArtifactEntry {
+                kind: fozzy::ArtifactKind::Trace,
+                path: "/tmp/definitely-missing-fozzy-artifact".to_string(),
+                size_bytes: Some(10),
+            }],
+        };
+        let path = PathBuf::from("/tmp/example.trace.fozzy");
+        let (status, detail) = artifacts_list_status(&output, &path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid="));
+        assert!(detail.contains("definitely-missing-fozzy-artifact"));
     }
 
     #[test]
