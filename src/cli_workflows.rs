@@ -63,6 +63,12 @@ fn known_profile_metric(domain: &str, metric: &str) -> bool {
     }
 }
 
+fn valid_profile_explain_shifted_path(domain: &str, shifted_path: &str) -> bool {
+    shifted_path
+        .strip_prefix("metric::")
+        .is_some_and(|metric| known_profile_metric(domain, metric))
+}
+
 fn profile_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let warnings = value
         .get("warnings")
@@ -320,6 +326,7 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
         || shifted_path == "n/a"
         || shifted_path.trim().is_empty()
         || shifted_path == "unknown"
+        || !valid_profile_explain_shifted_path(cause_domain.trim(), shifted_path.trim())
         || regression_statement.is_empty()
         || regression_statement == "no measurable regression shift found"
         || regression_statement.starts_with("run ")
@@ -3569,6 +3576,33 @@ mod tests {
         let (status, detail) = profile_explain_status(&value);
         assert!(matches!(status, FullStepStatus::Skipped));
         assert!(detail.contains("cause_domain=mystery"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_non_metric_shifted_path() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "critical_path",
+            "evidencePointers": ["profile.metrics.json"]
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("shifted_path=critical_path"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_domain_metric_mismatch() {
+        let value = serde_json::json!({
+            "regressionStatement": "io ops changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "io",
+            "topShiftedPath": "metric::cpu_time_ms",
+            "evidencePointers": ["profile.metrics.json"]
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("cause_domain=io"));
+        assert!(detail.contains("shifted_path=metric::cpu_time_ms"));
     }
 
     #[test]
