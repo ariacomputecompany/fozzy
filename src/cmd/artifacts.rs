@@ -3,6 +3,7 @@
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
+use std::io::Read as _;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -667,13 +668,14 @@ fn artifacts_diff(config: &Config, left: &str, right: &str) -> FozzyResult<Artif
         let right_path = r.map(|e| e.path.clone());
         let left_size = l.and_then(|e| e.size_bytes);
         let right_size = r.and_then(|e| e.size_bytes);
+        let changed = file_delta_changed(left_path.as_deref(), right_path.as_deref())?;
         files.push(ArtifactFileDelta {
             key,
             left_path,
             right_path,
             left_size_bytes: left_size,
             right_size_bytes: right_size,
-            changed: left_size != right_size || l.is_none() || r.is_none(),
+            changed,
         });
     }
 
@@ -693,6 +695,46 @@ fn artifacts_diff(config: &Config, left: &str, right: &str) -> FozzyResult<Artif
         report,
         trace,
     })
+}
+
+fn file_delta_changed(left: Option<&str>, right: Option<&str>) -> FozzyResult<bool> {
+    let Some(left) = left else {
+        return Ok(right.is_some());
+    };
+    let Some(right) = right else {
+        return Ok(true);
+    };
+    let left = Path::new(left);
+    let right = Path::new(right);
+    if !left.exists() || !right.exists() {
+        return Ok(left.exists() != right.exists());
+    }
+    let left_md = std::fs::metadata(left)?;
+    let right_md = std::fs::metadata(right)?;
+    if left_md.len() != right_md.len() {
+        return Ok(true);
+    }
+    Ok(!files_equal(left, right)?)
+}
+
+fn files_equal(left: &Path, right: &Path) -> FozzyResult<bool> {
+    let mut left_file = std::fs::File::open(left)?;
+    let mut right_file = std::fs::File::open(right)?;
+    let mut left_buf = [0u8; 64 * 1024];
+    let mut right_buf = [0u8; 64 * 1024];
+    loop {
+        let left_n = left_file.read(&mut left_buf)?;
+        let right_n = right_file.read(&mut right_buf)?;
+        if left_n != right_n {
+            return Ok(false);
+        }
+        if left_n == 0 {
+            return Ok(true);
+        }
+        if left_buf[..left_n] != right_buf[..right_n] {
+            return Ok(false);
+        }
+    }
 }
 
 fn report_delta(left: &RunSummary, right: &RunSummary) -> ReportDelta {
@@ -3318,6 +3360,88 @@ mod tests {
             err.to_string().contains("timeline.json does not match trace events"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn artifacts_diff_marks_same_size_content_change_as_changed() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-diff-same-size-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let left_dir = root.join(".fozzy").join("runs").join("left");
+        let right_dir = root.join(".fozzy").join("runs").join("right");
+        std::fs::create_dir_all(&left_dir).expect("left dir");
+        std::fs::create_dir_all(&right_dir).expect("right dir");
+
+        let left_trace = left_dir.join("trace.fozzy");
+        let right_trace = right_dir.join("trace.fozzy");
+        let mut left: crate::TraceFile = serde_json::from_str(&valid_trace_json(
+            "left",
+            &left_trace,
+            &left_dir.join("report.json"),
+            &left_dir,
+        ))
+        .expect("left trace");
+        let mut right: crate::TraceFile = serde_json::from_str(&valid_trace_json(
+            "right",
+            &right_trace,
+            &right_dir.join("report.json"),
+            &right_dir,
+        ))
+        .expect("right trace");
+        left.events = vec![crate::TraceEvent {
+            time_ms: 0,
+            name: "aaaaaa".to_string(),
+            fields: serde_json::Map::new(),
+        }];
+        right.events = vec![crate::TraceEvent {
+            time_ms: 0,
+            name: "bbbbbb".to_string(),
+            fields: serde_json::Map::new(),
+        }];
+        left.write_json(&left_trace).expect("left trace write");
+        right.write_json(&right_trace).expect("right trace write");
+        std::fs::write(
+            left_dir.join("report.json"),
+            serde_json::to_vec_pretty(&left.summary).expect("left report"),
+        )
+        .expect("left report write");
+        std::fs::write(
+            right_dir.join("report.json"),
+            serde_json::to_vec_pretty(&right.summary).expect("right report"),
+        )
+        .expect("right report write");
+        crate::write_run_manifest(&left.summary, &left_dir).expect("left manifest");
+        crate::write_run_manifest(&right.summary, &right_dir).expect("right manifest");
+        std::fs::write(left_dir.join("events.json"), valid_events_json("aaaaaa")).expect("left events");
+        std::fs::write(right_dir.join("events.json"), valid_events_json("bbbbbb")).expect("right events");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let diff = artifacts_diff(&cfg, "left", "right").expect("artifacts diff");
+        let events_delta = diff
+            .files
+            .iter()
+            .find(|file| file.key == "Events:events.json")
+            .expect("events delta");
+        assert_eq!(events_delta.left_size_bytes, events_delta.right_size_bytes);
+        assert!(events_delta.changed, "same-size content drift must still be marked changed");
     }
 
     #[test]
