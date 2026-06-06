@@ -89,6 +89,33 @@ fn profile_diff_status(
     )
 }
 
+fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let cause_domain = value
+        .get("likelyCauseDomain")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let shifted_path = value
+        .get("topShiftedPath")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let regression_statement = value
+        .get("regressionStatement")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let status = if cause_domain == "unknown"
+        || shifted_path == "n/a"
+        || regression_statement == "no measurable regression shift found"
+    {
+        FullStepStatus::Skipped
+    } else {
+        FullStepStatus::Passed
+    };
+    (
+        status,
+        format!("cause_domain={} shifted_path={}", cause_domain, shifted_path),
+    )
+}
+
 fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let run_count = value.get("runCount").and_then(|v| v.as_u64()).unwrap_or(0);
     let is_flaky = value
@@ -531,19 +558,10 @@ pub(super) fn run_gate_command(
             },
             strict,
         ) {
-            Ok(value) => push(
-                "profile_explain",
-                FullStepStatus::Passed,
-                format!(
-                    "cause_domain={} shifted_path={}",
-                    value.get("likelyCauseDomain")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown"),
-                    value.get("topShiftedPath")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                ),
-            ),
+            Ok(value) => {
+                let (status, detail) = profile_explain_status(&value);
+                push("profile_explain", status, detail)
+            }
             Err(err) => push("profile_explain", FullStepStatus::Failed, err.to_string()),
         }
     } else {
@@ -1407,19 +1425,10 @@ pub(super) fn run_full_command(
             },
             strict,
         ) {
-            Ok(value) => push(
-                "profile_explain",
-                FullStepStatus::Passed,
-                format!(
-                    "cause_domain={} shifted_path={}",
-                    value.get("likelyCauseDomain")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown"),
-                    value.get("topShiftedPath")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                ),
-            ),
+            Ok(value) => {
+                let (status, detail) = profile_explain_status(&value);
+                push("profile_explain", status, detail)
+            }
             Err(err) => push("profile_explain", FullStepStatus::Failed, err.to_string()),
         }
     } else {
@@ -1993,6 +2002,32 @@ mod tests {
         let (status, detail) = profile_top_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("warnings=cpu domain uses host-time sampling"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_non_diagnostic_results() {
+        let value = serde_json::json!({
+            "regressionStatement": "no measurable regression shift found",
+            "likelyCauseDomain": "unknown",
+            "topShiftedPath": "n/a"
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("cause_domain=unknown"));
+        assert!(detail.contains("shifted_path=n/a"));
+    }
+
+    #[test]
+    fn profile_explain_status_accepts_real_diagnosis() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "metric::p99_latency_ms"
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Passed));
+        assert!(detail.contains("cause_domain=latency"));
+        assert!(detail.contains("shifted_path=metric::p99_latency_ms"));
     }
 
     #[test]

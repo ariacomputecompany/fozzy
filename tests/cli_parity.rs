@@ -3076,6 +3076,21 @@ fn gate_targeted_profile_runs_scoped_strict_bundle() {
     );
     let profile_explain =
         full_step_detail(&doc, "profile_explain").expect("profile_explain detail");
+    let profile_explain_status = full_step_status(&doc, "profile_explain");
+    if profile_explain.contains("cause_domain=unknown") || profile_explain.contains("shifted_path=n/a")
+    {
+        assert_eq!(
+            profile_explain_status.as_deref(),
+            Some("skipped"),
+            "profile_explain should skip when no concrete diagnosis exists"
+        );
+    } else {
+        assert_eq!(
+            profile_explain_status.as_deref(),
+            Some("passed"),
+            "profile_explain should pass when it reports a concrete diagnosis"
+        );
+    }
     assert!(
         profile_explain.contains("cause_domain=") && profile_explain.contains("shifted_path="),
         "profile_explain should report concrete explain evidence, got: {profile_explain}"
