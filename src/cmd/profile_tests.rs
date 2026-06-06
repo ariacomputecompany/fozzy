@@ -731,6 +731,41 @@ fn profile_commands_reject_manifest_only_profile_artifacts_without_report_or_tra
 }
 
 #[test]
+fn profile_commands_reject_run_id_with_trace_only_and_no_report_manifest() {
+    let ws = temp_workspace("trace-only-run-wrapper");
+    let base_dir = ws.join(".fozzy");
+    let run_id = "run-trace-only-wrapper";
+    let run_dir = base_dir.join("runs").join(run_id);
+    std::fs::create_dir_all(&run_dir).expect("run dir");
+
+    let mut trace = sample_trace();
+    let trace_path = run_dir.join("trace.fozzy");
+    trace.summary.identity.run_id = run_id.to_string();
+    trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
+    trace.write_json(&trace_path).expect("write trace");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let cmd = ProfileCommand::Top {
+        run: run_id.to_string(),
+        cpu: false,
+        heap: true,
+        latency: false,
+        io: false,
+        sched: false,
+        limit: 5,
+    };
+    let err = profile_command(&cfg, &cmd, true).expect_err("must reject trace-only wrapper");
+    assert!(
+        err.to_string()
+            .contains("no coherent report/manifest pair found for profile trace artifacts")
+    );
+}
+
+#[test]
 fn profile_command_refreshes_manifest_after_lazy_profile_emit() {
     let ws = temp_workspace("profile-manifest-refresh");
     let base_dir = ws.join(".fozzy");

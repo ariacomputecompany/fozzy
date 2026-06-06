@@ -625,7 +625,8 @@ pub(super) fn resolve_profile_artifacts(
     selector: &str,
 ) -> FozzyResult<(PathBuf, Option<PathBuf>)> {
     let input = PathBuf::from(crate::normalize_run_or_trace_selector(selector));
-    if input.exists() && input.is_file() && crate::is_trace_path(&input) {
+    let direct_trace_input = input.exists() && input.is_file() && crate::is_trace_path(&input);
+    if direct_trace_input {
         let trace = TraceFile::read_json(&input)?;
         if let Some(artifacts_dir) = trace
             .summary
@@ -654,6 +655,12 @@ pub(super) fn resolve_profile_artifacts(
             crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, selector)?;
     }
     if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
+        if checked_summary.is_none() {
+            return Err(FozzyError::InvalidArgument(format!(
+                "no coherent report/manifest pair found for profile trace artifacts in {}",
+                artifacts_dir.display()
+            )));
+        }
         return Ok((artifacts_dir, Some(trace_path)));
     }
     if checked_summary.is_none()
