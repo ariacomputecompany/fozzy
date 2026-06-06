@@ -386,10 +386,11 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
         validate_run_bundle_integrity(&files, run)?;
     } else {
         let trace_path = crate::normalize_trace_path(&PathBuf::from(run));
+        let trusted_artifacts_dir = trusted_explicit_trace_artifacts_dir(&trace_path)?;
         validate_direct_trace_bundle(
             &files,
             run,
-            trusted_trace_declared_artifacts_dir(&trace_path)?.is_some(),
+            trusted_artifacts_dir.is_some(),
         )?;
     }
 
@@ -436,26 +437,36 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
     let direct_trace_input = is_direct_trace_input(run);
     let trace_path = resolve_trace_path(config, run)?;
     let trace_input = trace_path.to_string_lossy().to_string();
-    let artifacts_dir = resolve_artifacts_dir(config, run)?;
-
     let mut source_files: Vec<PathBuf> = vec![trace_path.clone()];
-    for name in ["report.json", "manifest.json"] {
-        let path = artifacts_dir.join(name);
-        if path.exists() && path.is_file() {
-            source_files.push(path);
-        }
-    }
-    source_files.sort();
-    source_files.dedup();
     if direct_trace_input {
+        let trusted_artifacts_dir = trusted_explicit_trace_artifacts_dir(&trace_path)?;
+        if let Some(artifacts_dir) = trusted_artifacts_dir.clone() {
+            for name in ["report.json", "manifest.json"] {
+                let path = artifacts_dir.join(name);
+                if path.exists() && path.is_file() {
+                    source_files.push(path);
+                }
+            }
+        }
         validate_direct_trace_bundle(
             &source_files,
             run,
-            trusted_trace_declared_artifacts_dir(&trace_path)?.is_some(),
+            trusted_artifacts_dir.is_some(),
         )?;
     } else {
+        let artifacts_dir = resolve_artifacts_dir(config, run)?;
+        for name in ["report.json", "manifest.json"] {
+            let path = artifacts_dir.join(name);
+            if path.exists() && path.is_file() {
+                source_files.push(path);
+            }
+        }
+        source_files.sort();
+        source_files.dedup();
         validate_run_bundle_integrity(&source_files, run)?;
     }
+    source_files.sort();
+    source_files.dedup();
 
     let replay = crate::replay_trace(
         config,
@@ -561,10 +572,11 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
         validate_run_bundle_integrity(&files, run)?;
     } else {
         let trace_path = crate::normalize_trace_path(&PathBuf::from(run));
+        let trusted_artifacts_dir = trusted_explicit_trace_artifacts_dir(&trace_path)?;
         validate_direct_trace_bundle(
             &files,
             run,
-            trusted_trace_declared_artifacts_dir(&trace_path)?.is_some(),
+            trusted_artifacts_dir.is_some(),
         )?;
     }
 
@@ -2937,8 +2949,61 @@ mod tests {
             .expect("pack should succeed");
         export_artifacts(&cfg, &explicit_trace.to_string_lossy(), &out_export)
             .expect("export should succeed");
+        export_gate_bundle(&cfg, &explicit_trace.to_string_lossy(), &root.join("bundle.zip"))
+            .expect("bundle should succeed");
         assert!(out_pack.exists());
         assert!(out_export.exists());
+    }
+
+    #[test]
+    fn direct_trace_export_pack_and_bundle_allow_manifest_only_exact_sibling_wrapper() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-manifest-only-sibling-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let report_path = root.join("report.json");
+        let (_, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &root, Some(&trace_path));
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &root),
+        )
+        .expect("trace");
+        std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+        let out_pack = root.join("pack.zip");
+        let out_export = root.join("export.zip");
+        let out_bundle = root.join("bundle.zip");
+
+        export_reproducer_pack(&cfg, &trace_path.to_string_lossy(), &out_pack)
+            .expect("pack should succeed");
+        export_artifacts(&cfg, &trace_path.to_string_lossy(), &out_export)
+            .expect("export should succeed");
+        export_gate_bundle(&cfg, &trace_path.to_string_lossy(), &out_bundle)
+            .expect("bundle should succeed");
+
+        assert!(out_pack.exists());
+        assert!(out_export.exists());
+        assert!(out_bundle.exists());
     }
 
     #[test]
