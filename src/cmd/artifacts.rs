@@ -915,34 +915,34 @@ fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>>
     run_dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     if run_dirs.is_empty() {
         return Err(FozzyError::InvalidArgument(format!(
-            "run alias {run:?} cannot be resolved: no completed runs with report.json found"
+            "run alias {run:?} cannot be resolved: no coherent completed runs found"
         )));
-    }
-    if key == "latest" {
-        return Ok(run_dirs.first().map(|(p, _)| p.clone()));
     }
 
     for (dir, _) in run_dirs {
-        let report = dir.join("report.json");
-        if !report.exists() {
-            continue;
+        let summary = match load_checked_report_summary_from_artifacts_dir(
+            &dir,
+            &dir.display().to_string(),
+        ) {
+            Ok(Some(summary)) => summary,
+            Ok(None) | Err(_) => continue,
+        };
+        if key == "latest" {
+            return Ok(Some(dir));
         }
-        let bytes = match std::fs::read(&report) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let summary: RunSummary = match serde_json::from_slice(&bytes) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
         if (key == "last-pass" && summary.status == ExitStatus::Pass)
             || (key == "last-fail" && summary.status != ExitStatus::Pass)
         {
             return Ok(Some(dir));
         }
     }
+    let reason = if key == "latest" {
+        "no coherent completed runs found"
+    } else {
+        "no matching coherent run found"
+    };
     Err(FozzyError::InvalidArgument(format!(
-        "run alias {run:?} cannot be resolved: no matching run found"
+        "run alias {run:?} cannot be resolved: {reason}"
     )))
 }
 
@@ -1890,17 +1890,33 @@ mod tests {
         let mk = |id: &str, status: &str, finished: &str| {
             let dir = runs.join(id);
             std::fs::create_dir_all(&dir).expect("run dir");
-            let report = format!(
-                r#"{{
-  "status":"{status}",
-  "mode":"run",
-  "identity":{{"runId":"{id}","seed":1}},
-  "startedAt":"2026-02-19T00:00:00Z",
-  "finishedAt":"{finished}",
-  "durationMs":1
-}}"#
+            let report_path = dir.join("report.json");
+            let trace_path = dir.join("trace.fozzy");
+            let (report, manifest) =
+                valid_report_and_manifest_json(id, &report_path, &dir, Some(&trace_path));
+            let report = report
+                .replace(r#""status":"pass""#, &format!(r#""status":"{status}""#))
+                .replace(
+                    r#""finishedAt":"2026-01-01T00:00:00Z""#,
+                    &format!(r#""finishedAt":"{finished}""#),
+                );
+            let manifest = manifest
+                .replace(r#""status":"pass""#, &format!(r#""status":"{status}""#))
+                .replace(
+                    r#""finishedAt":"2026-01-01T00:00:00Z""#,
+                    &format!(r#""finishedAt":"{finished}""#),
+                );
+            let trace = valid_trace_json(id, &trace_path, &report_path, &dir).replace(
+                r#""status":"pass""#,
+                &format!(r#""status":"{status}""#),
             );
-            std::fs::write(dir.join("report.json"), report).expect("report");
+            std::fs::write(
+                &trace_path,
+                trace,
+            )
+            .expect("trace");
+            std::fs::write(&report_path, report).expect("report");
+            std::fs::write(dir.join("manifest.json"), manifest).expect("manifest");
         };
         mk("r1", "pass", "2026-02-19T00:00:01Z");
         mk("r2", "fail", "2026-02-19T00:00:02Z");
@@ -2443,6 +2459,67 @@ mod tests {
         };
         let err = artifacts_diff(&cfg, "left", "right").expect_err("must reject stale left");
         assert!(err.to_string().contains("missing required files: manifest.json"));
+    }
+
+    #[test]
+    fn latest_alias_skips_newer_stale_report_only_run() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-latest-stale-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let base_dir = root.join(".fozzy");
+        let runs_dir = base_dir.join("runs");
+        let healthy_dir = runs_dir.join("healthy");
+        std::fs::create_dir_all(&healthy_dir).expect("healthy dir");
+
+        let healthy_trace = healthy_dir.join("trace.fozzy");
+        let healthy_report = healthy_dir.join("report.json");
+        let (report, manifest) = valid_report_and_manifest_json(
+            "healthy",
+            &healthy_report,
+            &healthy_dir,
+            Some(&healthy_trace),
+        );
+        std::fs::write(
+            &healthy_trace,
+            valid_trace_json("healthy", &healthy_trace, &healthy_report, &healthy_dir),
+        )
+        .expect("healthy trace");
+        std::fs::write(&healthy_report, report).expect("healthy report");
+        std::fs::write(healthy_dir.join("manifest.json"), manifest).expect("healthy manifest");
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let stale_dir = runs_dir.join("stale");
+        std::fs::create_dir_all(&stale_dir).expect("stale dir");
+        std::fs::write(
+            stale_dir.join("report.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "status": "pass",
+                "mode": "run",
+                "identity": {
+                    "runId": "stale",
+                    "seed": 1,
+                    "tracePath": "/tmp/missing-stale.trace.fozzy",
+                    "reportPath": stale_dir.join("report.json"),
+                    "artifactsDir": stale_dir
+                },
+                "startedAt": "2026-01-01T00:00:00Z",
+                "finishedAt": "2026-01-01T00:00:00Z",
+                "durationMs": 0,
+                "durationNs": 0,
+                "findings": []
+            }))
+            .expect("stale report json"),
+        )
+        .expect("stale report");
+
+        let cfg = crate::Config {
+            base_dir,
+            ..crate::Config::default()
+        };
+        let resolved = resolve_artifacts_dir(&cfg, "latest").expect("resolve latest");
+        assert_eq!(resolved, healthy_dir);
     }
 
     #[test]
