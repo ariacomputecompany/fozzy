@@ -63,22 +63,69 @@ fn profile_diff_status(
     value: &serde_json::Value,
     require_stable: bool,
 ) -> (FullStepStatus, String) {
+    let regressions = value
+        .get("regressions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let verdict = value
         .pointer("/summary/verdict")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    let regressions = value
+    let regression_count = value
         .pointer("/summary/regressionCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let improvement_count = value
+        .pointer("/summary/improvementCount")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     let significant = value
         .pointer("/summary/significantRegressionCount")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let top_regression_metric = value
+        .pointer("/summary/topRegressionMetric")
+        .and_then(|v| v.as_str());
+    let derived_regressions = regressions
+        .iter()
+        .filter(|row| row.get("isRegression").and_then(|v| v.as_bool()) == Some(true))
+        .count() as u64;
+    let derived_improvements = regressions
+        .iter()
+        .filter(|row| row.get("classification").and_then(|v| v.as_str()) == Some("improvement"))
+        .count() as u64;
+    let derived_significant = regressions
+        .iter()
+        .filter(|row| {
+            row.get("isRegression").and_then(|v| v.as_bool()) == Some(true)
+                && row.get("isSignificant").and_then(|v| v.as_bool()) == Some(true)
+        })
+        .count() as u64;
+    let derived_top_regression_metric = regressions.iter().find_map(|row| {
+        (row.get("isRegression").and_then(|v| v.as_bool()) == Some(true))
+            .then(|| row.get("metric").and_then(|v| v.as_str()))
+            .flatten()
+    });
+    let expected_verdict = if derived_significant > 0 {
+        "regression_detected"
+    } else if derived_regressions > 0 {
+        "minor_regression"
+    } else if derived_improvements > 0 {
+        "improvement"
+    } else {
+        "stable"
+    };
+    let consistent = regression_count == derived_regressions
+        && improvement_count == derived_improvements
+        && significant == derived_significant
+        && verdict == expected_verdict
+        && top_regression_metric == derived_top_regression_metric;
     let known_non_regression = matches!(verdict, "stable" | "improvement");
     let status = if significant > 0
-        || regressions > 0
+        || regression_count > 0
         || !known_non_regression
+        || !consistent
         || (require_stable && verdict != "stable")
     {
         FullStepStatus::Failed
@@ -88,8 +135,8 @@ fn profile_diff_status(
     (
         status,
         format!(
-            "verdict={} regressions={} significant_regressions={}",
-            verdict, regressions, significant
+            "verdict={} regressions={} significant_regressions={} improvements={} consistent={}",
+            verdict, regression_count, significant, improvement_count, consistent
         ),
     )
 }
@@ -2486,8 +2533,16 @@ mod tests {
             "summary": {
                 "verdict": "minor_regression",
                 "regressionCount": 1,
-                "significantRegressionCount": 0
-            }
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": "cpu_time_ms"
+            },
+            "regressions": [{
+                "metric": "cpu_time_ms",
+                "classification": "regression",
+                "isRegression": true,
+                "isSignificant": false
+            }]
         });
         let (status, detail) = profile_diff_status(&value, false);
         assert!(matches!(status, FullStepStatus::Failed));
@@ -2500,8 +2555,16 @@ mod tests {
             "summary": {
                 "verdict": "improvement",
                 "regressionCount": 0,
-                "significantRegressionCount": 0
-            }
+                "improvementCount": 1,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "metric": "alloc_bytes",
+                "classification": "improvement",
+                "isRegression": false,
+                "isSignificant": false
+            }]
         });
         let (status, _) = profile_diff_status(&value, true);
         assert!(matches!(status, FullStepStatus::Failed));
@@ -2516,12 +2579,37 @@ mod tests {
             "summary": {
                 "verdict": "unknown",
                 "regressionCount": 0,
-                "significantRegressionCount": 0
-            }
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": []
         });
         let (status, detail) = profile_diff_status(&value, false);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("verdict=unknown"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_inconsistent_summary_counts() {
+        let value = serde_json::json!({
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "metric": "cpu_time_ms",
+                "classification": "regression",
+                "isRegression": true,
+                "isSignificant": true
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("consistent=false"));
     }
 
     #[test]
