@@ -1529,7 +1529,14 @@ fn validate_manifest_trace_integrity(files: &[PathBuf], run: &str) -> FozzyResul
             manifest_path.display()
         ))
     })?;
+    let summary = load_checked_manifest_trace_summary_from_artifacts_dir(artifacts_dir, run)?
+        .ok_or_else(|| {
+            crate::FozzyError::InvalidArgument(format!(
+                "invalid manifest for {run:?}: unable to load manifest-backed trace summary"
+            ))
+        })?;
     validate_profile_artifact_identities(files, run, &manifest.run_id, manifest.seed)?;
+    validate_memory_artifact_coherence(files, run, summary.memory.as_ref())?;
     Ok(())
 }
 
@@ -1656,6 +1663,7 @@ fn validate_manifest_integrity(files: &[PathBuf], run: &str) -> FozzyResult<()> 
         }
     }
     validate_profile_artifact_identities(files, run, &manifest.run_id, manifest.seed)?;
+    validate_memory_artifact_coherence(files, run, report.memory.as_ref())?;
     Ok(())
 }
 
@@ -1745,6 +1753,153 @@ fn validate_profile_artifact_identities(
         |symbols| symbols.run_id.as_str(),
         "profile symbols artifact",
     )?;
+    Ok(())
+}
+
+fn validate_memory_artifact_coherence(
+    files: &[PathBuf],
+    run: &str,
+    summary: Option<&crate::MemorySummary>,
+) -> FozzyResult<()> {
+    let leaks_path = find_artifact_path(files, "memory.leaks.json");
+    let graph_path = find_artifact_path(files, "memory.graph.json");
+    let timeline_path = find_artifact_path(files, "memory.timeline.json");
+    let delta_path = find_artifact_path(files, "memory.delta.json");
+    if leaks_path.is_none() && graph_path.is_none() && timeline_path.is_none() && delta_path.is_none() {
+        return Ok(());
+    }
+    let summary = summary.ok_or_else(|| {
+        crate::FozzyError::InvalidArgument(format!(
+            "invalid memory artifacts for {run:?}: memory sidecars are present but the wrapper summary has no memory section"
+        ))
+    })?;
+
+    if let Some(leaks_path) = leaks_path {
+        let leaks: Vec<crate::MemoryLeak> =
+            serde_json::from_slice(&std::fs::read(leaks_path)?).map_err(|e| {
+                crate::FozzyError::InvalidArgument(format!(
+                    "invalid memory leaks for {run:?}: {} ({e})",
+                    leaks_path.display()
+                ))
+            })?;
+        let leaked_allocs = leaks.len() as u64;
+        let leaked_bytes: u64 = leaks.iter().map(|leak| leak.bytes).sum();
+        if leaked_allocs != summary.leaked_allocs || leaked_bytes != summary.leaked_bytes {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid memory leaks for {run:?}: {} do not match summary leaked_bytes={} leaked_allocs={}, sidecar leaked_bytes={} leaked_allocs={}",
+                leaks_path.display(),
+                summary.leaked_bytes,
+                summary.leaked_allocs,
+                leaked_bytes,
+                leaked_allocs
+            )));
+        }
+    }
+
+    if let Some(graph_path) = graph_path {
+        let graph: crate::MemoryGraph =
+            serde_json::from_slice(&std::fs::read(graph_path)?).map_err(|e| {
+                crate::FozzyError::InvalidArgument(format!(
+                    "invalid memory graph for {run:?}: {} ({e})",
+                    graph_path.display()
+                ))
+            })?;
+        let alloc_nodes = graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "alloc")
+            .count() as u64;
+        let free_nodes = graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "free")
+            .count() as u64;
+        let allocates_edges = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == "allocates")
+            .count() as u64;
+        let freed_by_edges = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == "freed_by")
+            .count() as u64;
+        let successful_allocs = summary.free_count.saturating_add(summary.leaked_allocs);
+        if alloc_nodes != successful_allocs
+            || free_nodes != summary.free_count
+            || allocates_edges != successful_allocs
+            || freed_by_edges != summary.free_count
+        {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid memory graph for {run:?}: {} does not match summary successful_allocs={} free_count={} leaked_allocs={}, graph alloc_nodes={} free_nodes={} allocates_edges={} freed_by_edges={}",
+                graph_path.display(),
+                successful_allocs,
+                summary.free_count,
+                summary.leaked_allocs,
+                alloc_nodes,
+                free_nodes,
+                allocates_edges,
+                freed_by_edges
+            )));
+        }
+    }
+
+    if let Some(timeline_path) = timeline_path {
+        let timeline: Vec<crate::MemoryTimelineEntry> =
+            serde_json::from_slice(&std::fs::read(timeline_path)?).map_err(|e| {
+                crate::FozzyError::InvalidArgument(format!(
+                    "invalid memory timeline for {run:?}: {} ({e})",
+                    timeline_path.display()
+                ))
+            })?;
+        let alloc_count = timeline.iter().filter(|entry| entry.kind == "alloc").count() as u64;
+        let free_count = timeline.iter().filter(|entry| entry.kind == "free").count() as u64;
+        let failed_alloc_count = timeline
+            .iter()
+            .filter(|entry| entry.kind == "alloc_fail")
+            .count() as u64;
+        if alloc_count != summary.alloc_count
+            || free_count != summary.free_count
+            || failed_alloc_count != summary.failed_alloc_count
+        {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid memory timeline for {run:?}: {} does not match summary alloc_count={} free_count={} failed_alloc_count={}, timeline alloc={} free={} alloc_fail={}",
+                timeline_path.display(),
+                summary.alloc_count,
+                summary.free_count,
+                summary.failed_alloc_count,
+                alloc_count,
+                free_count,
+                failed_alloc_count
+            )));
+        }
+    }
+
+    if let Some(delta_path) = delta_path {
+        let delta: crate::MemoryDelta =
+            serde_json::from_slice(&std::fs::read(delta_path)?).map_err(|e| {
+                crate::FozzyError::InvalidArgument(format!(
+                    "invalid memory delta for {run:?}: {} ({e})",
+                    delta_path.display()
+                ))
+            })?;
+        if delta.after_leaked_bytes != summary.leaked_bytes
+            || delta.after_leaked_allocs != summary.leaked_allocs
+            || delta.after_alloc_count != summary.alloc_count
+        {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid memory delta for {run:?}: {} does not match summary after_leaked_bytes={} after_leaked_allocs={} after_alloc_count={}, delta after_leaked_bytes={} after_leaked_allocs={} after_alloc_count={}",
+                delta_path.display(),
+                summary.leaked_bytes,
+                summary.leaked_allocs,
+                summary.alloc_count,
+                delta.after_leaked_bytes,
+                delta.after_leaked_allocs,
+                delta.after_alloc_count
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -2001,6 +2156,47 @@ mod tests {
     "tags":{{}},
     "cost":{{}}
   }}]
+}}"#
+        )
+    }
+
+    fn valid_memory_leaks_json(bytes: u64) -> String {
+        format!(
+            r#"[{{"allocId":1,"bytes":{bytes},"callsiteHash":"callsite-1"}}]"#
+        )
+    }
+
+    fn valid_memory_graph_json() -> &'static str {
+        r#"{
+  "nodes":[
+    {"id":"alloc:1","kind":"alloc","label":"1"},
+    {"id":"free:1","kind":"free","label":"1"},
+    {"id":"callsite:callsite-1","kind":"callsite","label":"callsite-1"}
+  ],
+  "edges":[
+    {"from":"callsite:callsite-1","to":"alloc:1","kind":"allocates"},
+    {"from":"alloc:1","to":"free:1","kind":"freed_by"}
+  ]
+}"#
+    }
+
+    fn valid_memory_timeline_json() -> &'static str {
+        r#"[
+  {"index":0,"timeMs":0,"kind":"alloc","fields":{"allocId":1,"bytes":128}},
+  {"index":1,"timeMs":1,"kind":"free","fields":{"allocId":1,"bytes":128}}
+]"#
+    }
+
+    fn valid_memory_delta_json(after_leaked_bytes: u64, after_leaked_allocs: u64, after_alloc_count: u64) -> String {
+        format!(
+            r#"{{
+  "schemaVersion":"fozzy.memory_delta.v1",
+  "beforeLeakedBytes":0,
+  "afterLeakedBytes":{after_leaked_bytes},
+  "beforeLeakedAllocs":0,
+  "afterLeakedAllocs":{after_leaked_allocs},
+  "beforeAllocCount":0,
+  "afterAllocCount":{after_alloc_count}
 }}"#
         )
     }
@@ -2690,6 +2886,242 @@ mod tests {
             artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
         assert!(
             err.to_string().contains("contains event identity runId=r1 seed=99"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn artifacts_list_rejects_memory_leaks_with_mismatched_summary() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-memory-leaks-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let trace_path = run_dir.join("trace.fozzy");
+        let mut trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
+            "r1",
+            &trace_path,
+            &run_dir.join("report.json"),
+            &run_dir,
+        ))
+        .expect("trace json");
+        trace.summary.memory = Some(crate::MemorySummary {
+            alloc_count: 1,
+            free_count: 1,
+            failed_alloc_count: 0,
+            in_use_bytes: 0,
+            peak_bytes: 128,
+            leaked_bytes: 0,
+            leaked_allocs: 0,
+        });
+        trace.write_json(&trace_path).expect("trace");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&trace.summary).expect("report bytes"),
+        )
+        .expect("report");
+        crate::write_run_manifest(&trace.summary, &run_dir).expect("manifest");
+        std::fs::write(run_dir.join("memory.leaks.json"), valid_memory_leaks_json(128))
+            .expect("leaks");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err = artifacts_list(&cfg, "r1").expect_err("list must fail");
+        assert!(
+            err.to_string().contains("memory.leaks.json do not match summary"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn direct_trace_rejects_manifest_only_memory_timeline_with_mismatched_summary() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-memory-timeline-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let report_path = root.join("report.json");
+        let mut trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
+            "r1",
+            &trace_path,
+            &report_path,
+            &root,
+        ))
+        .expect("trace json");
+        trace.summary.memory = Some(crate::MemorySummary {
+            alloc_count: 1,
+            free_count: 0,
+            failed_alloc_count: 0,
+            in_use_bytes: 128,
+            peak_bytes: 128,
+            leaked_bytes: 128,
+            leaked_allocs: 1,
+        });
+        trace.write_json(&trace_path).expect("trace");
+        let (_, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &root, Some(&trace_path));
+        std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(root.join("memory.timeline.json"), valid_memory_timeline_json())
+            .expect("timeline");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err =
+            artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        assert!(
+            err.to_string().contains("memory.timeline.json does not match summary"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn artifacts_list_rejects_memory_graph_with_mismatched_summary() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-memory-graph-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let trace_path = run_dir.join("trace.fozzy");
+        let mut trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
+            "r1",
+            &trace_path,
+            &run_dir.join("report.json"),
+            &run_dir,
+        ))
+        .expect("trace json");
+        trace.summary.memory = Some(crate::MemorySummary {
+            alloc_count: 1,
+            free_count: 0,
+            failed_alloc_count: 0,
+            in_use_bytes: 128,
+            peak_bytes: 128,
+            leaked_bytes: 128,
+            leaked_allocs: 1,
+        });
+        trace.write_json(&trace_path).expect("trace");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&trace.summary).expect("report bytes"),
+        )
+        .expect("report");
+        crate::write_run_manifest(&trace.summary, &run_dir).expect("manifest");
+        std::fs::write(run_dir.join("memory.graph.json"), valid_memory_graph_json())
+            .expect("graph");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err = artifacts_list(&cfg, "r1").expect_err("list must fail");
+        assert!(
+            err.to_string().contains("memory.graph.json does not match summary"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn direct_trace_rejects_manifest_only_memory_delta_with_mismatched_summary() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-memory-delta-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let report_path = root.join("report.json");
+        let mut trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
+            "r1",
+            &trace_path,
+            &report_path,
+            &root,
+        ))
+        .expect("trace json");
+        trace.summary.memory = Some(crate::MemorySummary {
+            alloc_count: 1,
+            free_count: 0,
+            failed_alloc_count: 0,
+            in_use_bytes: 128,
+            peak_bytes: 128,
+            leaked_bytes: 128,
+            leaked_allocs: 1,
+        });
+        trace.write_json(&trace_path).expect("trace");
+        let (_, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &root, Some(&trace_path));
+        std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(root.join("memory.delta.json"), valid_memory_delta_json(0, 0, 0))
+            .expect("delta");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err =
+            artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        assert!(
+            err.to_string().contains("memory.delta.json does not match summary"),
             "unexpected error: {err}"
         );
     }
