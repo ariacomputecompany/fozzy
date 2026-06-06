@@ -1585,6 +1585,7 @@ fn validate_manifest_trace_integrity(files: &[PathBuf], run: &str) -> FozzyResul
     let trace = crate::TraceFile::read_json(&trace_path)?;
     validate_profile_artifact_identities(files, run, &manifest.run_id, manifest.seed)?;
     validate_memory_artifact_coherence(files, run, summary.memory.as_ref())?;
+    validate_reporter_artifacts(files, run, &summary)?;
     validate_trace_event_artifacts(files, run, &trace.events)?;
     Ok(())
 }
@@ -1713,6 +1714,7 @@ fn validate_manifest_integrity(files: &[PathBuf], run: &str) -> FozzyResult<()> 
     }
     validate_profile_artifact_identities(files, run, &manifest.run_id, manifest.seed)?;
     validate_memory_artifact_coherence(files, run, report.memory.as_ref())?;
+    validate_reporter_artifacts(files, run, &report)?;
     if let Some(trace_path) = trace_path {
         let trace = crate::TraceFile::read_json(trace_path)?;
         validate_trace_event_artifacts(files, run, &trace.events)?;
@@ -2015,6 +2017,36 @@ fn validate_trace_event_artifacts(
             return Err(crate::FozzyError::InvalidArgument(format!(
                 "invalid timeline artifact for {run:?}: {} does not match trace events",
                 timeline_path.display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_reporter_artifacts(
+    files: &[PathBuf],
+    run: &str,
+    summary: &crate::RunSummary,
+) -> FozzyResult<()> {
+    if let Some(html_path) = find_artifact_path(files, "report.html") {
+        let actual = std::fs::read(html_path)?;
+        let expected = crate::render_html(summary).into_bytes();
+        if actual != expected {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid html report for {run:?}: {} does not match summary rendering",
+                html_path.display()
+            )));
+        }
+    }
+
+    if let Some(junit_path) = find_artifact_path(files, "junit.xml") {
+        let actual = std::fs::read(junit_path)?;
+        let expected = crate::render_junit_xml(summary).into_bytes();
+        if actual != expected {
+            return Err(crate::FozzyError::InvalidArgument(format!(
+                "invalid junit report for {run:?}: {} does not match summary rendering",
+                junit_path.display()
             )));
         }
     }
@@ -3358,6 +3390,107 @@ mod tests {
             artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
         assert!(
             err.to_string().contains("timeline.json does not match trace events"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn artifacts_list_rejects_report_html_with_mismatched_summary_rendering() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-report-html-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let trace_path = run_dir.join("trace.fozzy");
+        let trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
+            "r1",
+            &trace_path,
+            &run_dir.join("report.json"),
+            &run_dir,
+        ))
+        .expect("trace json");
+        trace.write_json(&trace_path).expect("trace");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_vec_pretty(&trace.summary).expect("report bytes"),
+        )
+        .expect("report");
+        crate::write_run_manifest(&trace.summary, &run_dir).expect("manifest");
+        std::fs::write(run_dir.join("report.html"), b"<html>forged</html>\n").expect("html");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err = artifacts_list(&cfg, "r1").expect_err("list must fail");
+        assert!(
+            err.to_string()
+                .contains("report.html does not match summary rendering"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn direct_trace_rejects_manifest_only_junit_with_mismatched_summary_rendering() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-trace-junit-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let report_path = root.join("report.json");
+        let trace: crate::TraceFile = serde_json::from_str(&valid_trace_json(
+            "r1",
+            &trace_path,
+            &report_path,
+            &root,
+        ))
+        .expect("trace json");
+        trace.write_json(&trace_path).expect("trace");
+        let (_, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &root, Some(&trace_path));
+        std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(root.join("junit.xml"), b"<testsuite forged=\"true\"/>\n")
+            .expect("junit");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let err =
+            artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
+        assert!(
+            err.to_string()
+                .contains("junit.xml does not match summary rendering"),
             "unexpected error: {err}"
         );
     }
