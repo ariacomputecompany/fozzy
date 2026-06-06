@@ -57,6 +57,14 @@ fn known_ci_check_name(name: &str) -> bool {
     )
 }
 
+fn known_doctor_issue_code(code: &str) -> bool {
+    matches!(code, "proc_unmatched_preflight" | "determinism_audit_mismatch")
+}
+
+fn known_doctor_signal_source(source: &str) -> bool {
+    matches!(source, "env")
+}
+
 fn known_profile_time_domain(time_domain: &str) -> bool {
     matches!(time_domain, "host_monotonic_time" | "virtual_time")
 }
@@ -1411,7 +1419,10 @@ fn doctor_report_status(
     let invalid_issues = report
         .issues
         .iter()
-        .filter(|issue| issue.code.trim().is_empty() || issue.message.trim().is_empty())
+        .filter(|issue| {
+            let code = issue.code.trim();
+            code.is_empty() || !known_doctor_issue_code(code) || issue.message.trim().is_empty()
+        })
         .count();
     let duplicate_issues = report
         .issues
@@ -1436,7 +1447,12 @@ fn doctor_report_status(
         .map(|signals| {
             signals
                 .iter()
-                .filter(|signal| signal.source.trim().is_empty() || signal.detail.trim().is_empty())
+                .filter(|signal| {
+                    let source = signal.source.trim();
+                    source.is_empty()
+                        || !known_doctor_signal_source(source)
+                        || signal.detail.trim().is_empty()
+                })
                 .count()
         })
         .unwrap_or(0);
@@ -4715,6 +4731,25 @@ mod tests {
     }
 
     #[test]
+    fn doctor_report_status_rejects_unknown_issue_codes() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: vec![fozzy::DoctorIssue {
+                code: "mystery_issue".to_string(),
+                message: "unexpected".to_string(),
+                hint: None,
+            }],
+            nondeterminism_signals: None,
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_issues=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
     fn doctor_report_status_rejects_duplicate_issue_rows() {
         let report = fozzy::DoctorReport {
             ok: true,
@@ -4759,17 +4794,35 @@ mod tests {
     }
 
     #[test]
+    fn doctor_report_status_rejects_unknown_signal_sources() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: Vec::new(),
+            nondeterminism_signals: Some(vec![fozzy::NondeterminismSignal {
+                source: "stdout".to_string(),
+                detail: "line ordering drift".to_string(),
+            }]),
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_signals=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
     fn doctor_report_status_rejects_duplicate_signal_rows() {
         let report = fozzy::DoctorReport {
             ok: true,
             issues: Vec::new(),
             nondeterminism_signals: Some(vec![
                 fozzy::NondeterminismSignal {
-                    source: "stdout".to_string(),
+                    source: "env".to_string(),
                     detail: "line ordering drift".to_string(),
                 },
                 fozzy::NondeterminismSignal {
-                    source: "stdout".to_string(),
+                    source: "env".to_string(),
                     detail: "line ordering drift".to_string(),
                 },
             ]),
