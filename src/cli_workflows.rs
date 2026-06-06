@@ -69,6 +69,21 @@ fn valid_profile_explain_shifted_path(domain: &str, shifted_path: &str) -> bool 
         .is_some_and(|metric| known_profile_metric(domain, metric))
 }
 
+fn known_profile_evidence_pointer(pointer: &str) -> bool {
+    std::path::Path::new(pointer)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "profile.metrics.json"
+                    | "profile.latency.json"
+                    | "profile.cpu.json"
+                    | "profile.heap.json"
+            )
+        })
+}
+
 fn expected_profile_time_domain(metric: &str) -> &'static str {
     if metric == "cpu_time_ms" {
         "host_monotonic_time"
@@ -315,7 +330,12 @@ fn profile_explain_status(value: &serde_json::Value) -> (FullStepStatus, String)
         .unwrap_or_default();
     let invalid_evidence_pointers = evidence_pointers
         .iter()
-        .filter(|pointer| pointer.as_str().is_none_or(|s| s.trim().is_empty()))
+        .filter(|pointer| {
+            pointer.as_str().is_none_or(|s| {
+                let s = s.trim();
+                s.is_empty() || !known_profile_evidence_pointer(s)
+            })
+        })
         .count();
     let mut seen_pointers = std::collections::BTreeSet::new();
     let duplicate_evidence_pointers = evidence_pointers
@@ -3691,6 +3711,32 @@ mod tests {
         let (status, detail) = profile_explain_status(&value);
         assert!(matches!(status, FullStepStatus::Skipped));
         assert!(detail.contains("invalid_evidence_pointers=2"));
+    }
+
+    #[test]
+    fn profile_explain_status_skips_unknown_evidence_pointer_files() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "metric::p99_latency_ms",
+            "evidencePointers": ["report.json"]
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Skipped));
+        assert!(detail.contains("invalid_evidence_pointers=1"));
+    }
+
+    #[test]
+    fn profile_explain_status_accepts_absolute_known_evidence_pointer_files() {
+        let value = serde_json::json!({
+            "regressionStatement": "latency p99 changed from 10.0 to 25.0 (+150.0%)",
+            "likelyCauseDomain": "latency",
+            "topShiftedPath": "metric::p99_latency_ms",
+            "evidencePointers": ["/tmp/run/profile.metrics.json", "/tmp/run/profile.latency.json"]
+        });
+        let (status, detail) = profile_explain_status(&value);
+        assert!(matches!(status, FullStepStatus::Passed));
+        assert!(detail.contains("invalid_evidence_pointers=0"));
     }
 
     #[test]
