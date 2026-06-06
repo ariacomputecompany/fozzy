@@ -337,6 +337,44 @@ fn trusted_declared_memory_graph_path(trace_path: &Path) -> FozzyResult<Option<P
     }
 }
 
+fn trusted_explicit_memory_graph_path(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
+    if let Some(graph_path) = trusted_declared_memory_graph_path(trace_path)? {
+        return Ok(Some(graph_path));
+    }
+
+    let Some(parent) = trace_path.parent() else {
+        return Ok(None);
+    };
+    let Some(summary) =
+        crate::load_checked_run_summary_from_artifacts_dir(parent, &trace_path.display().to_string())?
+    else {
+        return Ok(None);
+    };
+    let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(parent)? else {
+        return Ok(None);
+    };
+    let expected_trace =
+        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
+    let actual_trace =
+        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
+    if actual_trace != expected_trace {
+        return Ok(None);
+    }
+    let trace = TraceFile::read_json(trace_path)?;
+    if summary.identity.run_id != trace.summary.identity.run_id
+        || summary.identity.seed != trace.summary.identity.seed
+    {
+        return Ok(None);
+    }
+
+    let graph_path = parent.join("memory.graph.json");
+    if graph_path.exists() {
+        Ok(Some(graph_path))
+    } else {
+        Ok(None)
+    }
+}
+
 fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
     let trace = TraceFile::read_json(path)?;
     let Some(memory) = trace.memory else {
@@ -344,8 +382,8 @@ fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
             "trace {run_name:?} does not contain memory data"
         )));
     };
-    let declared_graph = trusted_declared_memory_graph_path(path)?;
-    let graph = if let Some(graph_path) = declared_graph {
+    let trusted_graph = trusted_explicit_memory_graph_path(path)?;
+    let graph = if let Some(graph_path) = trusted_graph {
         serde_json::from_slice(&std::fs::read(graph_path)?)?
     } else {
         MemoryGraph::default()
@@ -692,6 +730,206 @@ mod tests {
         .expect("write graph");
 
         let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
+        assert!(bundle.graph.nodes.is_empty());
+        assert!(bundle.graph.edges.is_empty());
+    }
+
+    #[test]
+    fn direct_trace_uses_exact_coherent_sibling_memory_graph() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-exact-sibling-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let report_path = root.join("report.json");
+
+        let trace = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary::default(),
+                leaks: Vec::new(),
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "r1".to_string(),
+                    seed: 1,
+                    trace_path: Some(trace_path.to_string_lossy().to_string()),
+                    report_path: Some(report_path.to_string_lossy().to_string()),
+                    artifacts_dir: Some(root.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        trace.write_json(&trace_path).expect("write trace");
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&trace.summary).expect("report bytes"),
+        )
+        .expect("write report");
+        crate::write_run_manifest(&trace.summary, &root).expect("write manifest");
+        std::fs::write(
+            root.join("memory.graph.json"),
+            serde_json::to_vec_pretty(&MemoryGraph {
+                nodes: vec![MemoryGraphNode {
+                    id: "alloc:exact".to_string(),
+                    kind: "alloc".to_string(),
+                    label: "exact".to_string(),
+                }],
+                edges: Vec::new(),
+            })
+            .expect("graph bytes"),
+        )
+        .expect("write graph");
+
+        let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
+        assert_eq!(bundle.graph.nodes.len(), 1);
+        assert_eq!(bundle.graph.nodes[0].id, "alloc:exact");
+    }
+
+    #[test]
+    fn direct_trace_ignores_coherent_foreign_sibling_memory_graph() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-memory-foreign-sibling-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let explicit_trace = root.join("direct.trace.fozzy");
+        let sibling_trace = root.join("trace.fozzy");
+        let report_path = root.join("report.json");
+
+        let explicit = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary::default(),
+                leaks: Vec::new(),
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: RunSummary {
+                status: ExitStatus::Pass,
+                mode: RunMode::Run,
+                identity: RunIdentity {
+                    run_id: "explicit-run".to_string(),
+                    seed: 1,
+                    trace_path: Some(explicit_trace.to_string_lossy().to_string()),
+                    report_path: Some(report_path.to_string_lossy().to_string()),
+                    artifacts_dir: Some(root.to_string_lossy().to_string()),
+                },
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                finished_at: "2026-01-01T00:00:00Z".to_string(),
+                duration_ms: 0,
+                duration_ns: 0,
+                tests: None,
+                memory: None,
+                findings: Vec::new(),
+            },
+            checksum: None,
+        };
+        explicit.write_json(&explicit_trace).expect("write explicit trace");
+
+        let sibling_summary = RunSummary {
+            status: ExitStatus::Pass,
+            mode: RunMode::Run,
+            identity: RunIdentity {
+                run_id: "sibling-run".to_string(),
+                seed: 1,
+                trace_path: Some(sibling_trace.to_string_lossy().to_string()),
+                report_path: Some(report_path.to_string_lossy().to_string()),
+                artifacts_dir: Some(root.to_string_lossy().to_string()),
+            },
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:00Z".to_string(),
+            duration_ms: 0,
+            duration_ns: 0,
+            tests: None,
+            memory: None,
+            findings: Vec::new(),
+        };
+        let sibling = crate::TraceFile {
+            format: crate::TRACE_FORMAT.to_string(),
+            version: crate::CURRENT_TRACE_VERSION,
+            engine: crate::version_info(),
+            mode: RunMode::Run,
+            scenario_path: None,
+            scenario: Some(crate::ScenarioV1Steps {
+                version: 1,
+                name: "x".to_string(),
+                steps: Vec::new(),
+            }),
+            fuzz: None,
+            explore: None,
+            memory: Some(crate::MemoryTrace {
+                options: MemoryOptions::default(),
+                summary: MemorySummary::default(),
+                leaks: Vec::new(),
+                graph: MemoryGraph::default(),
+            }),
+            decisions: Vec::new(),
+            events: Vec::new(),
+            summary: sibling_summary.clone(),
+            checksum: None,
+        };
+        sibling.write_json(&sibling_trace).expect("write sibling trace");
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&sibling_summary).expect("report bytes"),
+        )
+        .expect("write report");
+        crate::write_run_manifest(&sibling_summary, &root).expect("write manifest");
+        std::fs::write(
+            root.join("memory.graph.json"),
+            serde_json::to_vec_pretty(&MemoryGraph {
+                nodes: vec![MemoryGraphNode {
+                    id: "alloc:foreign".to_string(),
+                    kind: "alloc".to_string(),
+                    label: "foreign".to_string(),
+                }],
+                edges: Vec::new(),
+            })
+            .expect("graph bytes"),
+        )
+        .expect("write graph");
+
+        let bundle =
+            load_from_trace(&explicit_trace, &explicit_trace.to_string_lossy()).expect("bundle");
         assert!(bundle.graph.nodes.is_empty());
         assert!(bundle.graph.edges.is_empty());
     }
