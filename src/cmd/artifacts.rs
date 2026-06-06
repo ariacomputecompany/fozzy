@@ -694,6 +694,17 @@ fn trace_delta(left: &TraceFile, right: &TraceFile) -> TraceDelta {
 }
 
 fn load_summary(config: &Config, run: &str) -> FozzyResult<Option<RunSummary>> {
+    let input = crate::normalize_trace_path(&PathBuf::from(run));
+    if input.exists()
+        && input.is_file()
+        && input
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("fozzy"))
+    {
+        return Ok(Some(TraceFile::read_json(&input)?.summary));
+    }
+
     let artifacts_dir = resolve_artifacts_dir(config, run)?;
     if let Some(summary) = load_checked_report_summary_from_artifacts_dir(&artifacts_dir, run)? {
         return Ok(Some(summary));
@@ -2333,6 +2344,62 @@ mod tests {
             .expect("export should succeed");
         assert!(out_pack.exists());
         assert!(out_export.exists());
+    }
+
+    #[test]
+    fn load_summary_prefers_explicit_trace_over_sibling_bundle() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-direct-summary-precedence-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+
+        let explicit_trace = root.join("direct.trace.fozzy");
+        let sibling_trace = root.join("trace.fozzy");
+        let report_path = root.join("report.json");
+
+        std::fs::write(
+            &explicit_trace,
+            valid_trace_json("explicit-run", &explicit_trace, &report_path, &root),
+        )
+        .expect("explicit trace");
+
+        let (report, manifest) = valid_report_and_manifest_json(
+            "sibling-run",
+            &report_path,
+            &root,
+            Some(&sibling_trace),
+        );
+        std::fs::write(
+            &sibling_trace,
+            valid_trace_json("sibling-run", &sibling_trace, &report_path, &root),
+        )
+        .expect("sibling trace");
+        std::fs::write(&report_path, report).expect("report");
+        std::fs::write(root.join("manifest.json"), manifest).expect("manifest");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let summary = load_summary(&cfg, &explicit_trace.to_string_lossy())
+            .expect("load summary")
+            .expect("summary");
+        assert_eq!(summary.identity.run_id, "explicit-run");
     }
 
     #[test]
