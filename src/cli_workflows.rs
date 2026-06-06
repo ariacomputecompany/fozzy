@@ -953,15 +953,34 @@ fn summary_artifact_identity_status(summary: &RunSummary) -> (bool, String) {
                     .is_some_and(|name| name == summary.identity.run_id)
         },
     );
+    let report_content_matches = report_path.as_ref().is_some_and(|path| {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<RunSummary>(&bytes).ok())
+            .is_some_and(|report| {
+                report.identity.run_id == summary.identity.run_id
+                    && report.identity.seed == summary.identity.seed
+                    && report.mode == summary.mode
+                    && report.status == summary.status
+                    && report.identity.report_path == summary.identity.report_path
+                    && report.identity.artifacts_dir == summary.identity.artifacts_dir
+            })
+    });
     (
-        report_present && artifacts_present && report_exists && artifacts_exists && report_matches_dir,
+        report_present
+            && artifacts_present
+            && report_exists
+            && artifacts_exists
+            && report_matches_dir
+            && report_content_matches,
         format!(
-            "report_present={} artifacts_present={} report_exists={} artifacts_exists={} report_matches_dir={}",
+            "report_present={} artifacts_present={} report_exists={} artifacts_exists={} report_matches_dir={} report_content_matches={}",
             report_present,
             artifacts_present,
             report_exists,
             artifacts_exists,
-            report_matches_dir
+            report_matches_dir,
+            report_content_matches
         ),
     )
 }
@@ -4243,8 +4262,7 @@ mod tests {
             std::env::temp_dir().join(format!("fozzy-run-summary-{run_id}"));
         std::fs::create_dir_all(&artifacts_dir).expect("create artifacts dir");
         let report_path = artifacts_dir.join("report.json");
-        std::fs::write(&report_path, br#"{"status":"pass"}"#).expect("write report");
-        RunSummary {
+        let summary = RunSummary {
             status,
             mode: RunMode::Run,
             identity: RunIdentity {
@@ -4261,7 +4279,10 @@ mod tests {
             tests: None,
             memory: None,
             findings: Vec::new(),
-        }
+        };
+        std::fs::write(&report_path, serde_json::to_vec(&summary).expect("serialize report"))
+            .expect("write report");
+        summary
     }
 
     #[test]
@@ -4359,6 +4380,28 @@ mod tests {
         let (status, detail) = run_summary_pass_status(&summary, true, 7, RunMode::Run);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("report_present=false"));
+    }
+
+    #[test]
+    fn run_summary_pass_status_rejects_report_content_mismatch() {
+        let summary = sample_run_summary(ExitStatus::Pass);
+        let report_path = PathBuf::from(
+            summary
+                .identity
+                .report_path
+                .clone()
+                .expect("report path present"),
+        );
+        let mut mismatched = summary.clone();
+        mismatched.identity.seed = 99;
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec(&mismatched).expect("serialize mismatch"),
+        )
+        .expect("rewrite report");
+        let (status, detail) = run_summary_pass_status(&summary, true, 7, RunMode::Run);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("report_content_matches=false"));
     }
 
     #[test]
