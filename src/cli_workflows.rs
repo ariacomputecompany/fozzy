@@ -1316,7 +1316,7 @@ pub(super) fn run_full_command(
             Err(err) => push("replay", FullStepStatus::Failed, err.to_string()),
         }
 
-        match fozzy::ci_command(
+        match fozzy::ci_evaluate(
             config,
             &CiOptions {
                 trace: trace.clone(),

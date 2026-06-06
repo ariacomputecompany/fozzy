@@ -2296,6 +2296,43 @@ fn full_memory_graph_skips_empty_graph_evidence() {
 }
 
 #[test]
+fn full_ci_surfaces_concrete_detail() {
+    let out = run_cli(&[
+        "full".into(),
+        "--scenario-root".into(),
+        "tests".into(),
+        "--scenario-filter".into(),
+        "memory.pass".into(),
+        "--seed".into(),
+        "7".into(),
+        "--doctor-runs".into(),
+        "2".into(),
+        "--fuzz-time".into(),
+        "10ms".into(),
+        "--required-steps".into(),
+        "run_record_trace,ci".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "full should complete for CI detail proof: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = parse_json_stdout(&out);
+    assert_eq!(
+        full_step_status(&doc, "ci").as_deref(),
+        Some("passed"),
+        "ci should pass on clean trace"
+    );
+    let detail = full_step_detail(&doc, "ci").expect("ci detail");
+    assert!(
+        detail.contains("checks=") && detail.contains("failed=<none>"),
+        "ci detail should surface concrete check detail instead of a lossy count, got: {detail}"
+    );
+}
+
+#[test]
 fn full_fails_when_no_scenarios_are_discovered() {
     let ws = temp_workspace("full-no-scenarios");
     let scenario_root = ws.join("tests");
