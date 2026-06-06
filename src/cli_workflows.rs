@@ -1108,7 +1108,34 @@ fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus,
     } else {
         report.warnings.join("; ")
     };
-    let ok = report.uncovered_hotspot_count == 0 && report.warnings.is_empty();
+    let hotspot_math_ok = report.covered_hotspot_count <= report.required_hotspot_count
+        && report.uncovered_hotspot_count
+            == report
+                .required_hotspot_count
+                .saturating_sub(report.covered_hotspot_count);
+    let pagination_math_ok = report.returned_suites == report.suites.len()
+        && report.returned_suites <= report.total_suites
+        && report.returned_suites <= report.limit
+        && if report.truncated {
+            report.offset.saturating_add(report.returned_suites) < report.total_suites
+        } else {
+            report.offset.saturating_add(report.returned_suites) >= report.total_suites
+        };
+    let mut seen_hotspots = std::collections::BTreeSet::new();
+    let invalid_suites = report
+        .suites
+        .iter()
+        .filter(|suite| {
+            suite.hotspot_id.trim().is_empty()
+                || suite.path.trim().is_empty()
+                || !seen_hotspots.insert(suite.hotspot_id.trim().to_string())
+        })
+        .count();
+    let ok = report.uncovered_hotspot_count == 0
+        && report.warnings.is_empty()
+        && hotspot_math_ok
+        && pagination_math_ok
+        && invalid_suites == 0;
     (
         if ok {
             FullStepStatus::Passed
@@ -1116,10 +1143,18 @@ fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus,
             FullStepStatus::Failed
         },
         format!(
-            "required_hotspots={} covered={} uncovered={} min_risk={} profile={} root={} scenario_root={} warnings={}",
+            "required_hotspots={} covered={} uncovered={} hotspot_math_ok={} total_suites={} returned_suites={} offset={} limit={} truncated={} pagination_math_ok={} invalid_suites={} min_risk={} profile={} root={} scenario_root={} warnings={}",
             report.required_hotspot_count,
             report.covered_hotspot_count,
             report.uncovered_hotspot_count,
+            hotspot_math_ok,
+            report.total_suites,
+            report.returned_suites,
+            report.offset,
+            report.limit,
+            report.truncated,
+            pagination_math_ok,
+            invalid_suites,
             report.effective_min_risk,
             format!("{:?}", report.profile).to_lowercase(),
             report.root,
@@ -3600,6 +3635,105 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("uncovered=0"));
         assert!(detail.contains("warnings=map scan skipped 1 source file(s); hotspot coverage is incomplete"));
+    }
+
+    #[test]
+    fn topology_coverage_status_rejects_inconsistent_hotspot_math() {
+        let report = fozzy::MapSuitesReport {
+            schema_version: "fozzy.map_suites.v5".to_string(),
+            root: "/repo".to_string(),
+            scenario_root: "/repo/tests".to_string(),
+            scanned_files: 10,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
+            base_min_risk: 60,
+            effective_min_risk: 55,
+            scenario_count: 1,
+            skipped_source_files: Vec::new(),
+            unreadable_scenarios: Vec::new(),
+            warnings: Vec::new(),
+            required_hotspot_count: 2,
+            covered_hotspot_count: 1,
+            uncovered_hotspot_count: 0,
+            total_suites: 1,
+            returned_suites: 1,
+            offset: 0,
+            limit: 25,
+            truncated: false,
+            suites: vec![fozzy::SuiteRecommendation {
+                hotspot_id: "hs-1".to_string(),
+                component: "runtime".to_string(),
+                path: "src/runtime.rs".to_string(),
+                risk_score: 90,
+                required_by_policy: true,
+                covered: true,
+                coverage_hints: vec!["run_record_replay_ci".to_string()],
+                required_suites: vec!["run_record_replay_ci".to_string()],
+                covered_suites: vec!["run_record_replay_ci".to_string()],
+                coverage_evidence: vec![fozzy::SuiteCoverageEvidence {
+                    suite: "run_record_replay_ci".to_string(),
+                    matched_scenarios: vec!["tests/example.fozzy.json".to_string()],
+                    reason: "matched hotspot token".to_string(),
+                }],
+                missing_required_suites: Vec::new(),
+                why_required: vec!["high risk".to_string()],
+                reasons: vec!["host proc".to_string()],
+                recommended_suites: vec!["run_record_replay_ci".to_string()],
+            }],
+        };
+        let (status, detail) = topology_coverage_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("hotspot_math_ok=false"));
+    }
+
+    #[test]
+    fn topology_coverage_status_rejects_duplicate_returned_suite_hotspots() {
+        let suite = fozzy::SuiteRecommendation {
+            hotspot_id: "hs-1".to_string(),
+            component: "runtime".to_string(),
+            path: "src/runtime.rs".to_string(),
+            risk_score: 90,
+            required_by_policy: true,
+            covered: true,
+            coverage_hints: vec!["run_record_replay_ci".to_string()],
+            required_suites: vec!["run_record_replay_ci".to_string()],
+            covered_suites: vec!["run_record_replay_ci".to_string()],
+            coverage_evidence: vec![fozzy::SuiteCoverageEvidence {
+                suite: "run_record_replay_ci".to_string(),
+                matched_scenarios: vec!["tests/example.fozzy.json".to_string()],
+                reason: "matched hotspot token".to_string(),
+            }],
+            missing_required_suites: Vec::new(),
+            why_required: vec!["high risk".to_string()],
+            reasons: vec!["host proc".to_string()],
+            recommended_suites: vec!["run_record_replay_ci".to_string()],
+        };
+        let report = fozzy::MapSuitesReport {
+            schema_version: "fozzy.map_suites.v5".to_string(),
+            root: "/repo".to_string(),
+            scenario_root: "/repo/tests".to_string(),
+            scanned_files: 10,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
+            base_min_risk: 60,
+            effective_min_risk: 55,
+            scenario_count: 1,
+            skipped_source_files: Vec::new(),
+            unreadable_scenarios: Vec::new(),
+            warnings: Vec::new(),
+            required_hotspot_count: 2,
+            covered_hotspot_count: 2,
+            uncovered_hotspot_count: 0,
+            total_suites: 2,
+            returned_suites: 2,
+            offset: 0,
+            limit: 25,
+            truncated: false,
+            suites: vec![suite.clone(), suite],
+        };
+        let (status, detail) = topology_coverage_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_suites=1"));
     }
 
     #[test]
