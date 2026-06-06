@@ -792,53 +792,74 @@ fn shrink_step_status(
     summary: &RunSummary,
     strict: bool,
     allow_expected_failures: bool,
+    out_trace: &Path,
 ) -> (FullStepStatus, String, String) {
     let strict_ok = enforce_strict_summary(strict, summary).is_ok();
+    let run_id_present = !summary.identity.run_id.trim().is_empty();
+    let (file_status, file_detail) = file_artifact_status(out_trace);
+    let artifact_ok = matches!(file_status, FullStepStatus::Passed);
     if allow_expected_failures {
         match primary_status {
             Some(primary) => {
                 let class_ok = shrink_status_matches(primary, summary.status);
-                let classification = if class_ok && strict_ok {
+                let classification = if class_ok && strict_ok && run_id_present && artifact_ok {
                     "expected_fail_class_preserved"
                 } else if !class_ok {
                     "expected_fail_class_mismatch"
+                } else if !run_id_present {
+                    "run_identity_missing"
+                } else if !artifact_ok {
+                    "out_trace_missing"
                 } else {
                     "strict_policy_rejected"
                 };
                 (
-                    if class_ok && strict_ok {
+                    if class_ok && strict_ok && run_id_present && artifact_ok {
                         FullStepStatus::Passed
                     } else {
                         FullStepStatus::Failed
                     },
                     format!(
-                        "status={:?} class_ok={} strict_ok={}",
-                        summary.status, class_ok, strict_ok
+                        "status={:?} class_ok={} strict_ok={} run_id_present={} {}",
+                        summary.status, class_ok, strict_ok, run_id_present, file_detail
                     ),
                     classification.to_string(),
                 )
             }
             None => (
                 FullStepStatus::Failed,
-                format!("status={:?} class_ok=false strict_ok={}", summary.status, strict_ok),
+                format!(
+                    "status={:?} class_ok=false strict_ok={} run_id_present={} {}",
+                    summary.status, strict_ok, run_id_present, file_detail
+                ),
                 "primary_status_missing".to_string(),
             ),
         }
-    } else if summary.status == ExitStatus::Pass && strict_ok {
+    } else if summary.status == ExitStatus::Pass && strict_ok && run_id_present && artifact_ok {
         (
             FullStepStatus::Passed,
-            format!("status={:?} strict_ok={}", summary.status, strict_ok),
+            format!(
+                "status={:?} strict_ok={} run_id_present={} {}",
+                summary.status, strict_ok, run_id_present, file_detail
+            ),
             "pass_required_policy".to_string(),
         )
     } else {
         let classification = if summary.status != ExitStatus::Pass {
             "policy_rejected_non_pass"
+        } else if !run_id_present {
+            "run_identity_missing"
+        } else if !artifact_ok {
+            "out_trace_missing"
         } else {
             "strict_policy_rejected"
         };
         (
             FullStepStatus::Failed,
-            format!("status={:?} strict_ok={}", summary.status, strict_ok),
+            format!(
+                "status={:?} strict_ok={} run_id_present={} {}",
+                summary.status, strict_ok, run_id_present, file_detail
+            ),
             classification.to_string(),
         )
     }
@@ -2175,13 +2196,10 @@ pub(super) fn run_full_command(
                     &shrink.result.summary,
                     strict,
                     allow_expected_failures,
+                    Path::new(&shrink.out_trace_path),
                 );
                 shrink_classification = Some(classification);
-                push(
-                    "shrink",
-                    status,
-                    format!("{detail} out_trace={}", shrink.out_trace_path),
-                );
+                push("shrink", status, detail);
             }
             Err(err) => {
                 shrink_classification = Some("tooling_failure".to_string());
@@ -4149,12 +4167,50 @@ mod tests {
             message: "detected 1 leaked allocation(s)".to_string(),
             location: None,
         }];
-        let (status, detail, classification) =
-            shrink_step_status(Some(ExitStatus::Pass), &summary, true, false);
+        let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
+        std::fs::write(&out_trace, b"trace").expect("write trace");
+        let (status, detail, classification) = shrink_step_status(
+            Some(ExitStatus::Pass),
+            &summary,
+            true,
+            false,
+            &out_trace,
+        );
+        let _ = std::fs::remove_file(&out_trace);
         assert!(matches!(status, FullStepStatus::Failed));
         assert_eq!(classification, "strict_policy_rejected");
         assert!(detail.contains("strict_ok=false"));
         assert!(detail.contains("status=Pass"));
+    }
+
+    #[test]
+    fn shrink_step_status_rejects_missing_run_id() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.run_id.clear();
+        let out_trace = std::env::temp_dir().join(format!("shrink-{}.fozzy", uuid::Uuid::new_v4()));
+        std::fs::write(&out_trace, b"trace").expect("write trace");
+        let (status, detail, classification) = shrink_step_status(
+            Some(ExitStatus::Pass),
+            &summary,
+            true,
+            false,
+            &out_trace,
+        );
+        let _ = std::fs::remove_file(&out_trace);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert_eq!(classification, "run_identity_missing");
+        assert!(detail.contains("run_id_present=false"));
+    }
+
+    #[test]
+    fn shrink_step_status_rejects_missing_out_trace_artifact() {
+        let summary = sample_run_summary(ExitStatus::Pass);
+        let missing = std::env::temp_dir().join(format!("missing-{}.fozzy", uuid::Uuid::new_v4()));
+        let (status, detail, classification) =
+            shrink_step_status(Some(ExitStatus::Pass), &summary, true, false, &missing);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert_eq!(classification, "out_trace_missing");
+        assert!(detail.contains("missing"));
     }
 
     #[test]
