@@ -333,17 +333,17 @@ fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<Pa
         return Ok(None);
     }
     for (dir, _) in run_dirs {
-        let summary = match crate::load_checked_run_summary_from_artifacts_dir(
-            &dir,
-            &dir.display().to_string(),
-        ) {
-            Ok(summary) => summary,
+        let selector = dir.display().to_string();
+        let bundle = match crate::load_validated_artifact_bundle_from_dir(&dir, &selector) {
+            Ok(bundle) => bundle,
             Err(_) => continue,
         };
-        let has_memory_trace = crate::resolve_trace_path_from_artifacts_dir(&dir)?
-            .as_deref()
+        let summary = bundle.as_ref().map(|bundle| &bundle.summary);
+        let has_memory_trace = bundle
+            .as_ref()
+            .and_then(|bundle| bundle.trace_path.as_deref())
             .is_some_and(trace_has_memory_data);
-        let has_memory = summary.as_ref().and_then(|s| s.memory.as_ref()).is_some()
+        let has_memory = summary.and_then(|s| s.memory.as_ref()).is_some()
             || dir.join("memory.leaks.json").exists()
             || dir.join("memory.graph.json").exists()
             || has_memory_trace;
@@ -353,10 +353,7 @@ fn resolve_memory_alias_dir(config: &Config, run: &str) -> FozzyResult<Option<Pa
         if key == "latest" {
             return Ok(Some(dir));
         }
-        let status = summary
-            .as_ref()
-            .map(|s| s.status)
-            .unwrap_or(ExitStatus::Fail);
+        let status = summary.map(|s| s.status).unwrap_or(ExitStatus::Fail);
         if (key == "last-pass" && status == ExitStatus::Pass)
             || (key == "last-fail" && status != ExitStatus::Pass)
         {
@@ -390,27 +387,11 @@ fn load_summary_from_report(artifacts_dir: &Path) -> FozzyResult<MemorySummary> 
 }
 
 fn trusted_explicit_memory_graph_path(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    let Some(bundle) = crate::trusted_artifact_bundle_for_trace(trace_path)? else {
-        return Ok(None);
-    };
-    let graph_path = bundle.artifacts_dir.join("memory.graph.json");
-    if graph_path.exists() {
-        Ok(Some(graph_path))
-    } else {
-        Ok(None)
-    }
+    crate::trusted_sidecar_path_for_trace(trace_path, "memory.graph.json")
 }
 
 fn trusted_explicit_memory_leaks_path(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    let Some(bundle) = crate::trusted_artifact_bundle_for_trace(trace_path)? else {
-        return Ok(None);
-    };
-    let leaks_path = bundle.artifacts_dir.join("memory.leaks.json");
-    if leaks_path.exists() {
-        Ok(Some(leaks_path))
-    } else {
-        Ok(None)
-    }
+    crate::trusted_sidecar_path_for_trace(trace_path, "memory.leaks.json")
 }
 
 fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {

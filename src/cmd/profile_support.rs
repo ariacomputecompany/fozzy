@@ -744,14 +744,7 @@ pub(super) fn resolve_profile_artifacts(
 }
 
 fn trusted_explicit_profile_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
-    let trace = TraceFile::read_json(trace_path)?;
-    if let Some(artifacts_dir) = trace
-        .summary
-        .identity
-        .artifacts_dir
-        .as_deref()
-        .map(PathBuf::from)
-        .filter(|dir| dir.exists() && dir.is_dir())
+    if let Some(artifacts_dir) = crate::declared_artifacts_dir_for_trace(trace_path)?
         && profile_artifacts_exist(&artifacts_dir)
         && !profile_artifacts_stale(&artifacts_dir, trace_path)?
     {
