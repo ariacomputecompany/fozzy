@@ -243,6 +243,40 @@ fn file_artifact_status(path: &Path) -> (FullStepStatus, String) {
     }
 }
 
+fn zip_artifact_status(path: &Path) -> (FullStepStatus, String) {
+    let (file_status, file_detail) = file_artifact_status(path);
+    if !matches!(file_status, FullStepStatus::Passed) {
+        return (file_status, file_detail);
+    }
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            return (
+                FullStepStatus::Failed,
+                format!("{file_detail} zip_open_error={err}"),
+            );
+        }
+    };
+    let archive = match zip::ZipArchive::new(file) {
+        Ok(archive) => archive,
+        Err(err) => {
+            return (
+                FullStepStatus::Failed,
+                format!("{file_detail} zip_parse_error={err}"),
+            );
+        }
+    };
+    let entries = archive.len();
+    (
+        if entries > 0 {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!("{file_detail} zip_entries={entries}"),
+    )
+}
+
 fn report_show_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let format = value
         .get("format")
@@ -1539,7 +1573,7 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(_) => {
-                let (status, detail) = file_artifact_status(&artifacts_export);
+                let (status, detail) = zip_artifact_status(&artifacts_export);
                 push("artifacts_export", status, detail);
             }
             Err(err) => push("artifacts_export", FullStepStatus::Failed, err.to_string()),
@@ -1556,7 +1590,7 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(_) => {
-                let (status, detail) = file_artifact_status(&artifacts_pack);
+                let (status, detail) = zip_artifact_status(&artifacts_pack);
                 push("artifacts_pack", status, detail);
             }
             Err(err) => push("artifacts_pack", FullStepStatus::Failed, err.to_string()),
@@ -1960,7 +1994,7 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(_) => {
-                let (status, detail) = file_artifact_status(&corpus_zip);
+                let (status, detail) = zip_artifact_status(&corpus_zip);
                 push("corpus_export", status, detail);
             }
             Err(err) => push("corpus_export", FullStepStatus::Failed, err.to_string()),
@@ -2499,6 +2533,30 @@ mod tests {
         let (status, detail) = env_step_status(&env);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("proc=unknown"));
+    }
+
+    #[test]
+    fn zip_artifact_status_rejects_invalid_zip_payload() {
+        let path = std::env::temp_dir().join(format!("fozzy-invalid-zip-{}.zip", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"not a zip").expect("write invalid zip");
+        let (status, detail) = zip_artifact_status(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("zip_parse_error="));
+    }
+
+    #[test]
+    fn zip_artifact_status_rejects_empty_zip_archive() {
+        let path = std::env::temp_dir().join(format!("fozzy-empty-zip-{}.zip", uuid::Uuid::new_v4()));
+        {
+            let file = std::fs::File::create(&path).expect("create empty zip");
+            let zip = zip::ZipWriter::new(file);
+            zip.finish().expect("finish empty zip");
+        }
+        let (status, detail) = zip_artifact_status(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("zip_entries=0"));
     }
 
     #[test]
