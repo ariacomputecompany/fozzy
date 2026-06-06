@@ -1401,9 +1401,19 @@ fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus,
         .suites
         .iter()
         .filter(|suite| {
+            let invalid_coverage_evidence = suite.coverage_evidence.iter().any(|evidence| {
+                evidence.suite.trim().is_empty()
+                    || evidence.reason.trim().is_empty()
+                    || evidence.matched_scenarios.is_empty()
+                    || evidence
+                        .matched_scenarios
+                        .iter()
+                        .any(|scenario| scenario.trim().is_empty())
+            });
             suite.hotspot_id.trim().is_empty()
                 || suite.component.trim().is_empty()
                 || suite.path.trim().is_empty()
+                || invalid_coverage_evidence
                 || !seen_hotspots.insert(suite.hotspot_id.trim().to_string())
         })
         .count();
@@ -4425,6 +4435,55 @@ mod tests {
                     suite: "run_record_replay_ci".to_string(),
                     matched_scenarios: vec!["tests/example.fozzy.json".to_string()],
                     reason: "matched hotspot token".to_string(),
+                }],
+                missing_required_suites: Vec::new(),
+                why_required: vec!["policy hotspot".to_string()],
+                reasons: vec!["runtime risk".to_string()],
+                recommended_suites: vec!["run_record_replay_ci".to_string()],
+            }],
+        };
+        let (status, detail) = topology_coverage_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_suites=1"));
+    }
+
+    #[test]
+    fn topology_coverage_status_rejects_invalid_coverage_evidence_rows() {
+        let report = fozzy::MapSuitesReport {
+            schema_version: "fozzy.map_suites.v5".to_string(),
+            root: "/repo".to_string(),
+            scenario_root: "/repo/tests".to_string(),
+            scanned_files: 10,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
+            base_min_risk: 60,
+            effective_min_risk: 55,
+            scenario_count: 1,
+            skipped_source_files: Vec::new(),
+            unreadable_scenarios: Vec::new(),
+            warnings: Vec::new(),
+            required_hotspot_count: 1,
+            covered_hotspot_count: 1,
+            uncovered_hotspot_count: 0,
+            total_suites: 1,
+            returned_suites: 1,
+            offset: 0,
+            limit: 25,
+            truncated: false,
+            suites: vec![fozzy::SuiteRecommendation {
+                hotspot_id: "hs-1".to_string(),
+                component: "runtime".to_string(),
+                path: "src/runtime.rs".to_string(),
+                risk_score: 90,
+                required_by_policy: true,
+                covered: true,
+                coverage_hints: vec!["run_record_replay_ci".to_string()],
+                required_suites: vec!["run_record_replay_ci".to_string()],
+                covered_suites: vec!["run_record_replay_ci".to_string()],
+                coverage_evidence: vec![fozzy::SuiteCoverageEvidence {
+                    suite: "".to_string(),
+                    matched_scenarios: vec!["   ".to_string()],
+                    reason: "".to_string(),
                 }],
                 missing_required_suites: Vec::new(),
                 why_required: vec!["policy hotspot".to_string()],
