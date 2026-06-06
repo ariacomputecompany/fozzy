@@ -187,21 +187,55 @@ fn memory_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
 }
 
 fn memory_diff_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let left_leaked = value
+        .get("leftLeakedBytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let right_leaked = value
+        .get("rightLeakedBytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let left_peak = value
+        .get("leftPeakBytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let right_peak = value
+        .get("rightPeakBytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let left_allocs = value
+        .get("leftLeakedAllocs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let right_allocs = value
+        .get("rightLeakedAllocs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let leaked = value
         .get("deltaLeakedBytes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let allocs = value
+        .get("deltaLeakedAllocs")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
     let peak = value
         .get("deltaPeakBytes")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
+    let consistent = leaked == right_leaked as i64 - left_leaked as i64
+        && allocs == right_allocs as i64 - left_allocs as i64
+        && peak == right_peak as i64 - left_peak as i64;
     (
-        if leaked != 0 || peak != 0 {
+        if leaked != 0 || allocs != 0 || peak != 0 || !consistent {
             FullStepStatus::Failed
         } else {
             FullStepStatus::Passed
         },
-        format!("delta_leaked_bytes={} delta_peak_bytes={}", leaked, peak),
+        format!(
+            "delta_leaked_bytes={} delta_leaked_allocs={} delta_peak_bytes={} consistent={}",
+            leaked, allocs, peak, consistent
+        ),
     )
 }
 
@@ -209,20 +243,49 @@ fn memory_graph_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let nodes = value
         .pointer("/graph/nodes")
         .and_then(|v| v.as_array())
-        .map(|v| v.len())
-        .unwrap_or(0);
+        .cloned()
+        .unwrap_or_default();
     let edges = value
         .pointer("/graph/edges")
         .and_then(|v| v.as_array())
-        .map(|v| v.len())
-        .unwrap_or(0);
+        .cloned()
+        .unwrap_or_default();
+    let node_count = nodes.len();
+    let edge_count = edges.len();
+    let node_ids = nodes
+        .iter()
+        .filter_map(|node| node.get("id").and_then(|v| v.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut invalid_edges = 0usize;
+    for edge in &edges {
+        let from = edge.get("from").and_then(|v| v.as_str());
+        let to = edge.get("to").and_then(|v| v.as_str());
+        if from.is_none_or(|id| !node_ids.contains(id)) || to.is_none_or(|id| !node_ids.contains(id))
+        {
+            invalid_edges += 1;
+        }
+    }
+    let consistent = invalid_edges == 0 && node_ids.len() == node_count;
     (
-        if nodes == 0 && edges == 0 {
+        if node_count == 0 && edge_count == 0 {
             FullStepStatus::Skipped
-        } else {
+        } else if consistent {
             FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
         },
-        format!("nodes={} edges={}", nodes, edges),
+        if node_count == 0 && edge_count == 0 {
+            format!("nodes={} edges={}", node_count, edge_count)
+        } else {
+            format!(
+                "nodes={} edges={} unique_nodes={} invalid_edges={} consistent={}",
+                node_count,
+                edge_count,
+                node_ids.len(),
+                invalid_edges,
+                consistent
+            )
+        },
     )
 }
 
@@ -2678,6 +2741,20 @@ mod tests {
     }
 
     #[test]
+    fn memory_graph_status_rejects_invalid_edge_references() {
+        let value = serde_json::json!({
+            "graph": {
+                "nodes": [{"id": "alloc:1", "kind": "alloc", "label": "a"}],
+                "edges": [{"from": "alloc:1", "to": "alloc:2", "kind": "owns"}]
+            }
+        });
+        let (status, detail) = memory_graph_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_edges=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
     fn artifacts_list_status_rejects_empty_entries() {
         let output = fozzy::ArtifactOutput::List { entries: Vec::new() };
         let path = PathBuf::from("/tmp/example.trace.fozzy");
@@ -2941,11 +3018,36 @@ mod tests {
     #[test]
     fn memory_diff_status_rejects_contract_drift() {
         let value = serde_json::json!({
+            "leftLeakedBytes": 0,
+            "rightLeakedBytes": 64,
+            "leftLeakedAllocs": 0,
+            "rightLeakedAllocs": 1,
+            "leftPeakBytes": 0,
+            "rightPeakBytes": 0,
             "deltaLeakedBytes": 64,
+            "deltaLeakedAllocs": 1,
             "deltaPeakBytes": 0
         });
         let (status, detail) = memory_diff_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("delta_leaked_bytes=64"));
+    }
+
+    #[test]
+    fn memory_diff_status_rejects_inconsistent_delta_math() {
+        let value = serde_json::json!({
+            "leftLeakedBytes": 0,
+            "rightLeakedBytes": 64,
+            "leftLeakedAllocs": 0,
+            "rightLeakedAllocs": 1,
+            "leftPeakBytes": 0,
+            "rightPeakBytes": 10,
+            "deltaLeakedBytes": 0,
+            "deltaLeakedAllocs": 0,
+            "deltaPeakBytes": 0
+        });
+        let (status, detail) = memory_diff_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("consistent=false"));
     }
 }
