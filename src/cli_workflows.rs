@@ -549,17 +549,25 @@ fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
             _ => check.name.clone(),
         })
         .collect::<Vec<_>>();
+    let derived_ok = failing.is_empty();
     let detail = if failing.is_empty() {
-        format!("checks={} failed=<none>", report.checks.len())
+        format!(
+            "checks={} failed=<none> reported_ok={} derived_ok={}",
+            report.checks.len(),
+            report.ok,
+            derived_ok
+        )
     } else {
         format!(
-            "checks={} failed={}",
+            "checks={} failed={} reported_ok={} derived_ok={}",
             report.checks.len(),
-            failing.join("; ")
+            failing.join("; "),
+            report.ok,
+            derived_ok
         )
     };
     (
-        if report.ok {
+        if report.ok == derived_ok && derived_ok {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
@@ -579,6 +587,7 @@ fn doctor_report_status(
         .as_ref()
         .map(|signals| signals.len())
         .unwrap_or(0);
+    let derived_ok = report.issues.is_empty();
     let policy_ok = !strict || (report.issues.is_empty() && signal_count == 0);
     let failing = report
         .issues
@@ -598,22 +607,28 @@ fn doctor_report_status(
         .collect::<Vec<_>>();
     let detail = if failing.is_empty() {
         format!(
-            "issues=0 signals=0 runs={} scenario={} failed=<none>",
+            "issues=0 signals=0 runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
             runs,
-            scenario.display()
+            scenario.display(),
+            report.ok,
+            derived_ok,
+            policy_ok
         )
     } else {
         format!(
-            "issues={} signals={} runs={} scenario={} failed={}",
+            "issues={} signals={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
             report.issues.len(),
             signal_count,
             runs,
             scenario.display(),
-            failing.join("; ")
+            failing.join("; "),
+            report.ok,
+            derived_ok,
+            policy_ok
         )
     };
     (
-        if report.ok && policy_ok {
+        if report.ok == derived_ok && derived_ok && policy_ok {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
@@ -2515,6 +2530,23 @@ mod tests {
     }
 
     #[test]
+    fn ci_report_status_rejects_inconsistent_ok_summary() {
+        let report = fozzy::CiReport {
+            schema_version: "fozzy.ci_report.v1".to_string(),
+            ok: true,
+            checks: vec![fozzy::CiCheck {
+                name: "trace_verify".to_string(),
+                ok: false,
+                detail: Some("checksum_valid=false".to_string()),
+            }],
+        };
+        let (status, detail) = ci_report_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("reported_ok=true"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
     fn doctor_report_status_surfaces_issue_and_hint() {
         let report = fozzy::DoctorReport {
             ok: false,
@@ -2533,6 +2565,25 @@ mod tests {
         assert!(detail.contains("issues=1"));
         assert!(detail.contains("proc_unmatched_preflight: strict proc backend preflight found an undeclared subprocess"));
         assert!(detail.contains("Add a `proc_when` step"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_inconsistent_ok_summary() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: vec![fozzy::DoctorIssue {
+                code: "determinism_audit_mismatch".to_string(),
+                message: "mismatch".to_string(),
+                hint: None,
+            }],
+            nondeterminism_signals: None,
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("reported_ok=true"));
+        assert!(detail.contains("derived_ok=false"));
     }
 
     #[test]
