@@ -1196,6 +1196,7 @@ fn env_step_status(env: &fozzy::EnvInfo) -> (FullStepStatus, String) {
 }
 
 fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
+    let check_count = report.checks.len();
     let mut seen = std::collections::BTreeSet::new();
     let invalid = report
         .checks
@@ -1219,11 +1220,11 @@ fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
             _ => check.name.clone(),
         })
         .collect::<Vec<_>>();
-    let derived_ok = failing.is_empty() && invalid == 0 && duplicate == 0;
+    let derived_ok = check_count > 0 && failing.is_empty() && invalid == 0 && duplicate == 0;
     let detail = if failing.is_empty() {
         format!(
             "checks={} failed=<none> invalid={} duplicate={} reported_ok={} derived_ok={}",
-            report.checks.len(),
+            check_count,
             invalid,
             duplicate,
             report.ok,
@@ -1232,7 +1233,7 @@ fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
     } else {
         format!(
             "checks={} failed={} invalid={} duplicate={} reported_ok={} derived_ok={}",
-            report.checks.len(),
+            check_count,
             failing.join("; "),
             invalid,
             duplicate,
@@ -3976,6 +3977,19 @@ mod tests {
         let (status, detail) = ci_report_status(&report);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("duplicate=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn ci_report_status_rejects_empty_check_set() {
+        let report = fozzy::CiReport {
+            schema_version: "fozzy.ci_report.v1".to_string(),
+            ok: true,
+            checks: vec![],
+        };
+        let (status, detail) = ci_report_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("checks=0"));
         assert!(detail.contains("derived_ok=false"));
     }
 
