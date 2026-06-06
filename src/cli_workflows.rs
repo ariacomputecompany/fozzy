@@ -545,10 +545,16 @@ fn memory_graph_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let edge_count = edges.len();
     let mut node_ids = std::collections::BTreeSet::new();
     let mut duplicate_nodes = 0usize;
+    let mut invalid_nodes = 0usize;
     for node in &nodes {
-        if let Some(id) = node.get("id").and_then(|v| v.as_str()) {
-            if !node_ids.insert(id.to_string()) {
-                duplicate_nodes += 1;
+        match node.get("id").and_then(|v| v.as_str()).map(str::trim) {
+            Some(id) if !id.is_empty() => {
+                if !node_ids.insert(id.to_string()) {
+                    duplicate_nodes += 1;
+                }
+            }
+            _ => {
+                invalid_nodes += 1;
             }
         }
     }
@@ -556,9 +562,9 @@ fn memory_graph_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let mut duplicate_edges = 0usize;
     let mut invalid_edges = 0usize;
     for edge in &edges {
-        let from = edge.get("from").and_then(|v| v.as_str());
-        let to = edge.get("to").and_then(|v| v.as_str());
-        let kind = edge.get("kind").and_then(|v| v.as_str());
+        let from = edge.get("from").and_then(|v| v.as_str()).map(str::trim);
+        let to = edge.get("to").and_then(|v| v.as_str()).map(str::trim);
+        let kind = edge.get("kind").and_then(|v| v.as_str()).map(str::trim);
         if let (Some(from), Some(to), Some(kind)) = (from, to, kind)
             && !from.is_empty()
             && !to.is_empty()
@@ -567,14 +573,18 @@ fn memory_graph_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         {
             duplicate_edges += 1;
         }
-        if from.is_none_or(|id| !node_ids.contains(id))
-            || to.is_none_or(|id| !node_ids.contains(id))
+        if from.is_none_or(|id| id.is_empty() || !node_ids.contains(id))
+            || to.is_none_or(|id| id.is_empty() || !node_ids.contains(id))
+            || kind.is_none_or(|kind| kind.is_empty())
         {
             invalid_edges += 1;
         }
     }
-    let consistent =
-        invalid_edges == 0 && duplicate_nodes == 0 && duplicate_edges == 0 && node_ids.len() == node_count;
+    let consistent = invalid_nodes == 0
+        && invalid_edges == 0
+        && duplicate_nodes == 0
+        && duplicate_edges == 0
+        && node_ids.len() == node_count;
     (
         if node_count == 0 && edge_count == 0 {
             FullStepStatus::Skipped
@@ -587,10 +597,11 @@ fn memory_graph_status(value: &serde_json::Value) -> (FullStepStatus, String) {
             format!("nodes={} edges={}", node_count, edge_count)
         } else {
             format!(
-                "nodes={} edges={} unique_nodes={} duplicate_nodes={} duplicate_edges={} invalid_edges={} consistent={}",
+                "nodes={} edges={} unique_nodes={} invalid_nodes={} duplicate_nodes={} duplicate_edges={} invalid_edges={} consistent={}",
                 node_count,
                 edge_count,
                 node_ids.len(),
+                invalid_nodes,
                 duplicate_nodes,
                 duplicate_edges,
                 invalid_edges,
@@ -3565,6 +3576,40 @@ mod tests {
             "graph": {
                 "nodes": [{"id": "alloc:1", "kind": "alloc", "label": "a"}],
                 "edges": [{"from": "alloc:1", "to": "alloc:2", "kind": "owns"}]
+            }
+        });
+        let (status, detail) = memory_graph_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_edges=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn memory_graph_status_rejects_invalid_node_ids() {
+        let value = serde_json::json!({
+            "graph": {
+                "nodes": [
+                    {"id": "", "kind": "alloc", "label": "blank"},
+                    {"kind": "alloc", "label": "missing"}
+                ],
+                "edges": []
+            }
+        });
+        let (status, detail) = memory_graph_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_nodes=2"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn memory_graph_status_rejects_blank_edge_kind() {
+        let value = serde_json::json!({
+            "graph": {
+                "nodes": [
+                    {"id": "alloc:1", "kind": "alloc", "label": "a"},
+                    {"id": "alloc:2", "kind": "alloc", "label": "b"}
+                ],
+                "edges": [{"from": "alloc:1", "to": "alloc:2", "kind": ""}]
             }
         });
         let (status, detail) = memory_graph_status(&value);
