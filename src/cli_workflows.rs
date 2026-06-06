@@ -994,7 +994,6 @@ pub(super) fn run_full_command(
             .retain(|p| p.to_string_lossy().contains(filter));
     }
     let parse_error_count = discovered.parse_errors.len();
-    let discovered_count = discovered.steps.len() + discovered.distributed.len();
     let parsed_summary = format!(
         "discovered step_scenarios={} distributed_scenarios={} parse_errors={}",
         discovered.steps.len(),
@@ -1003,7 +1002,7 @@ pub(super) fn run_full_command(
     );
     push(
         "discover_scenarios",
-        if parse_error_count > 0 || discovered_count == 0 {
+        if parse_error_count > 0 || discovered.steps.is_empty() {
             FullStepStatus::Failed
         } else {
             FullStepStatus::Passed
@@ -1015,9 +1014,9 @@ pub(super) fn run_full_command(
             "Fix malformed scenarios before trusting `fozzy full` coverage: {}",
             discovered.parse_errors.join(" | ")
         ));
-    } else if discovered_count == 0 {
+    } else if discovered.steps.is_empty() {
         guidance.push(
-            "Add at least one step or distributed scenario under the selected scenario root before trusting `fozzy full` coverage."
+            "Add at least one executable step scenario under the selected scenario root before trusting `fozzy full` coverage; distributed-only roots cannot exercise the deterministic run/test/trace surface."
                 .to_string(),
         );
     }
