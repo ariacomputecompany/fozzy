@@ -1414,6 +1414,7 @@ fn doctor_report_status(
     strict: bool,
     scenario: &Path,
     runs: u32,
+    expected_seed: u64,
 ) -> (FullStepStatus, String) {
     let expected_scenario = scenario.display().to_string();
     let mut seen_issues = std::collections::BTreeSet::new();
@@ -1481,6 +1482,7 @@ fn doctor_report_status(
     let audit_valid = report.determinism_audit.as_ref().is_some_and(|audit| {
         audit.scenario == expected_scenario
             && audit.runs == runs
+            && audit.seed == expected_seed
             && audit.signatures.len() == audit.runs as usize
             && audit
                 .signatures
@@ -1528,7 +1530,7 @@ fn doctor_report_status(
         .collect::<Vec<_>>();
     let detail = if failing.is_empty() {
         format!(
-            "issues=0 signals=0 invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} audit_issue_consistent={} runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues=0 signals=0 invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} audit_issue_consistent={} runs={} seed={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
             invalid_issues,
             duplicate_issues,
             invalid_signals,
@@ -1537,6 +1539,7 @@ fn doctor_report_status(
             audit_valid,
             audit_issue_consistent,
             runs,
+            expected_seed,
             expected_scenario,
             report.ok,
             derived_ok,
@@ -1544,7 +1547,7 @@ fn doctor_report_status(
         )
     } else {
         format!(
-            "issues={} signals={} invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} audit_issue_consistent={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues={} signals={} invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} audit_issue_consistent={} runs={} seed={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
             report.issues.len(),
             signal_count,
             invalid_issues,
@@ -1555,6 +1558,7 @@ fn doctor_report_status(
             audit_valid,
             audit_issue_consistent,
             runs,
+            expected_seed,
             expected_scenario,
             failing.join("; "),
             report.ok,
@@ -1954,12 +1958,17 @@ pub(super) fn run_gate_command(
             runs: doctor_runs.max(2),
             seed,
         },
-    ) {
-        Ok(report) => {
-            let (status, detail) =
-                doctor_report_status(&report, strict, primary.as_path(), doctor_runs.max(2));
-            push("doctor_deep", status, detail);
-        }
+        ) {
+            Ok(report) => {
+                let (status, detail) = doctor_report_status(
+                    &report,
+                    strict,
+                    primary.as_path(),
+                    doctor_runs.max(2),
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                );
+                push("doctor_deep", status, detail);
+            }
         Err(err) => push("doctor_deep", FullStepStatus::Failed, err.to_string()),
     }
 
@@ -2449,8 +2458,13 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(doctor) => {
-                let (status, detail) =
-                    doctor_report_status(&doctor, strict, primary.as_path(), doctor_runs.max(2));
+                let (status, detail) = doctor_report_status(
+                    &doctor,
+                    strict,
+                    primary.as_path(),
+                    doctor_runs.max(2),
+                    seed.unwrap_or(0xC0DEC0DE_u64),
+                );
                 push("doctor_deep", status, detail);
             }
             Err(err) => push("doctor_deep", FullStepStatus::Failed, err.to_string()),
@@ -4756,7 +4770,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("issues=1"));
         assert!(detail.contains("proc_unmatched_preflight: strict proc backend preflight found an undeclared subprocess"));
@@ -4783,7 +4797,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("reported_ok=true"));
         assert!(detail.contains("derived_ok=false"));
@@ -4805,7 +4819,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 0);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 0, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("runs=0"));
         assert!(detail.contains("derived_ok=false"));
@@ -4831,7 +4845,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_issues=1"));
         assert!(detail.contains("derived_ok=false"));
@@ -4857,7 +4871,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_issues=1"));
         assert!(detail.contains("derived_ok=false"));
@@ -4890,7 +4904,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("duplicate_issues=1"));
         assert!(detail.contains("derived_ok=false"));
@@ -4915,7 +4929,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_signals=1"));
         assert!(detail.contains("derived_ok=false"));
@@ -4940,7 +4954,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_signals=1"));
         assert!(detail.contains("derived_ok=false"));
@@ -4971,7 +4985,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("duplicate_signals=1"));
         assert!(detail.contains("derived_ok=false"));
@@ -4986,7 +5000,7 @@ mod tests {
             determinism_audit: None,
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("audit_present=false"));
         assert!(detail.contains("derived_ok=false"));
@@ -5008,10 +5022,33 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("audit_present=true"));
         assert!(detail.contains("audit_valid=false"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_mismatched_determinism_audit_seed() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: Vec::new(),
+            nondeterminism_signals: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 99,
+                consistent: true,
+                signatures: vec!["abc".to_string(), "abc".to_string()],
+                first_mismatch_run: None,
+            }),
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("audit_valid=false"));
+        assert!(detail.contains("seed=7"));
         assert!(detail.contains("derived_ok=false"));
     }
 
@@ -5031,7 +5068,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("audit_issue_consistent=false"));
         assert!(detail.contains("derived_ok=false"));
@@ -5057,7 +5094,7 @@ mod tests {
             }),
         };
         let scenario = Path::new("tests/repro.fozzy.json");
-        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2, 7);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("audit_issue_consistent=false"));
         assert!(detail.contains("derived_ok=false"));
