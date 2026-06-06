@@ -128,6 +128,7 @@ pub fn run_scenario(
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(RunResult { summary })
 }
@@ -289,6 +290,7 @@ pub fn replay_trace(
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
     Ok(RunResult { summary })
 }
 

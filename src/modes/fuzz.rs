@@ -341,6 +341,7 @@ pub fn fuzz(
                 profile_trace.summary = summary.clone();
                 write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
             }
+            crate::write_run_manifest(&summary, &artifacts_dir)?;
 
             if opt.minimize || opt.shrink {
                 let minimized = minimize_input(
@@ -443,6 +444,7 @@ pub fn fuzz(
     if !emit_heavy && should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture) {
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
     let coverage_stats = FuzzCoverageStats {
         target: target_string(target),
         executed,
@@ -587,6 +589,7 @@ pub fn replay_fuzz_trace(
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
     Ok(crate::RunResult { summary })
 }
 

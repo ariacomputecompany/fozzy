@@ -134,6 +134,7 @@ pub fn run_tests(config: &Config, globs: &[String], opt: &RunOptions) -> FozzyRe
         )?;
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(RunResult { summary })
 }

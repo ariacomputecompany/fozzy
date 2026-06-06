@@ -261,6 +261,7 @@ pub fn explore(
         profile_trace.summary = summary.clone();
         write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
     }
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
 }
@@ -352,6 +353,7 @@ pub fn replay_explore_trace(
     }
     profile_trace.summary = summary.clone();
     write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
 }
