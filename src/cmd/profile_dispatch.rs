@@ -498,9 +498,18 @@ pub(super) fn dispatch_profile_command(
             };
             let shrink_artifacts_dir =
                 shrink_profile_artifacts_dir(Path::new(&shrunk.out_trace_path));
+            let shrink_report_path = shrink_artifacts_dir.join("report.json");
+            shrunk_trace.summary.identity.report_path =
+                Some(shrink_report_path.to_string_lossy().to_string());
             shrunk_trace.summary.identity.artifacts_dir =
                 Some(shrink_artifacts_dir.to_string_lossy().to_string());
             shrunk_trace.write_json(Path::new(&shrunk.out_trace_path))?;
+            std::fs::create_dir_all(&shrink_artifacts_dir)?;
+            std::fs::write(
+                &shrink_report_path,
+                serde_json::to_vec(&shrunk_trace.summary)?,
+            )?;
+            crate::write_run_manifest(&shrunk_trace.summary, &shrink_artifacts_dir)?;
             write_profile_artifacts_from_trace_with_source(
                 &shrunk_trace,
                 Some(Path::new(&shrunk.out_trace_path)),

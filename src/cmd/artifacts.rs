@@ -178,7 +178,8 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
         let mut out = Vec::new();
         let mut files = vec![run_path.clone()];
         push_if_exists(&mut out, ArtifactKind::Trace, run_path.clone())?;
-        let allow_sidecars_without_metadata = trace_declared_artifacts_dir(&run_path)?.is_some();
+        let allow_sidecars_without_metadata =
+            trusted_trace_declared_artifacts_dir(&run_path)?.is_some();
         let artifacts_dir = resolve_artifacts_dir(config, run)?;
         if artifacts_dir != run_path {
             for (kind, path) in [
@@ -387,7 +388,7 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
         validate_direct_trace_bundle(
             &files,
             run,
-            trace_declared_artifacts_dir(&trace_path)?.is_some(),
+            trusted_trace_declared_artifacts_dir(&trace_path)?.is_some(),
         )?;
     }
 
@@ -449,7 +450,7 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
         validate_direct_trace_bundle(
             &source_files,
             run,
-            trace_declared_artifacts_dir(&trace_path)?.is_some(),
+            trusted_trace_declared_artifacts_dir(&trace_path)?.is_some(),
         )?;
     } else {
         validate_required_bundle_files(&source_files, run)?;
@@ -564,7 +565,7 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
         validate_direct_trace_bundle(
             &files,
             run,
-            trace_declared_artifacts_dir(&trace_path)?.is_some(),
+            trusted_trace_declared_artifacts_dir(&trace_path)?.is_some(),
         )?;
     }
 
@@ -778,7 +779,7 @@ pub(crate) fn resolve_artifacts_dir(config: &Config, run: &str) -> FozzyResult<P
 
         if path.is_file()
             && crate::is_trace_path(&path)
-            && let Some(artifacts_dir) = trace_declared_artifacts_dir(&path)?
+            && let Some(artifacts_dir) = trusted_trace_declared_artifacts_dir(&path)?
         {
             return Ok(artifacts_dir);
         }
@@ -804,6 +805,36 @@ fn trace_declared_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf
         .artifacts_dir
         .map(PathBuf::from)
         .filter(|path| path.exists() && path.is_dir()))
+}
+
+fn trusted_trace_declared_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
+    let Some(artifacts_dir) = trace_declared_artifacts_dir(trace_path)? else {
+        return Ok(None);
+    };
+    let Some(summary) = load_checked_report_summary_from_artifacts_dir(
+        &artifacts_dir,
+        &trace_path.display().to_string(),
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(resolved_trace) = resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
+        return Ok(None);
+    };
+    let trace = TraceFile::read_json(trace_path)?;
+    let expected_trace =
+        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
+    let actual_trace =
+        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
+    if actual_trace != expected_trace {
+        return Ok(None);
+    }
+    if summary.identity.run_id != trace.summary.identity.run_id
+        || summary.identity.seed != trace.summary.identity.seed
+    {
+        return Ok(None);
+    }
+    Ok(Some(artifacts_dir))
 }
 
 pub(crate) fn resolve_trace_path_from_artifacts_dir(
@@ -1978,37 +2009,16 @@ mod tests {
         let trace = root.join("record.trace.min.fozzy");
         let detached_artifacts = root.join("record.trace.min.profile-artifacts");
         std::fs::create_dir_all(&detached_artifacts).expect("artifacts dir");
+        let report_path = detached_artifacts.join("report.json");
         std::fs::write(
             &trace,
-            format!(
-                r#"{{
-  "format":"fozzy-trace",
-  "version":4,
-  "engine":{{"version":"0.1.0"}},
-  "mode":"replay",
-  "scenario_path":null,
-  "scenario":{{"version":1,"name":"x","steps":[]}},
-  "decisions":[],
-  "events":[],
-  "summary":{{
-    "status":"pass",
-    "mode":"replay",
-    "identity":{{
-      "runId":"r1",
-      "seed":7,
-      "tracePath":"{}",
-      "artifactsDir":"{}"
-    }},
-    "startedAt":"2026-01-01T00:00:00Z",
-    "finishedAt":"2026-01-01T00:00:00Z",
-    "durationMs":1
-  }}
-}}"#,
-                trace.display(),
-                detached_artifacts.display()
-            ),
+            valid_trace_json("r1", &trace, &report_path, &detached_artifacts),
         )
         .expect("write trace");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &detached_artifacts, Some(&trace));
+        std::fs::write(&report_path, report).expect("write report");
+        std::fs::write(detached_artifacts.join("manifest.json"), manifest).expect("manifest");
         std::fs::write(
             detached_artifacts.join("profile.metrics.json"),
             br#"{"schemaVersion":"fozzy.profile_metrics.v1"}"#,
@@ -2044,6 +2054,79 @@ mod tests {
                     .join("profile.metrics.json")
                     .to_string_lossy()
         }));
+    }
+
+    #[test]
+    fn direct_trace_ignores_untrusted_declared_artifacts_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-trace-untrusted-declared-artifacts-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("root dir");
+        let trace = root.join("record.trace.fozzy");
+        let forged_artifacts = root.join("forged-artifacts");
+        std::fs::create_dir_all(&forged_artifacts).expect("forged dir");
+        std::fs::write(
+            &trace,
+            format!(
+                r#"{{
+  "format":"fozzy-trace",
+  "version":4,
+  "engine":{{"version":"0.1.0"}},
+  "mode":"run",
+  "scenario_path":null,
+  "scenario":{{"version":1,"name":"x","steps":[]}},
+  "decisions":[],
+  "events":[],
+  "summary":{{
+    "status":"pass",
+    "mode":"run",
+    "identity":{{
+      "runId":"r1",
+      "seed":7,
+      "tracePath":"{}",
+      "artifactsDir":"{}"
+    }},
+    "startedAt":"2026-01-01T00:00:00Z",
+    "finishedAt":"2026-01-01T00:00:00Z",
+    "durationMs":1
+  }}
+}}"#,
+                trace.display(),
+                forged_artifacts.display()
+            ),
+        )
+        .expect("write trace");
+        std::fs::write(
+            forged_artifacts.join("profile.metrics.json"),
+            br#"{"schemaVersion":"forged"}"#,
+        )
+        .expect("write forged metrics");
+
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let resolved = resolve_artifacts_dir(&cfg, &trace.to_string_lossy()).expect("resolve");
+        assert_eq!(resolved, root);
+
+        let entries = artifacts_list(&cfg, &trace.to_string_lossy()).expect("artifacts list");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, trace.to_string_lossy());
     }
 
     #[test]
@@ -2227,7 +2310,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_trace_export_and_pack_reject_partial_sibling_metadata() {
+    fn direct_trace_export_and_pack_reject_incomplete_declared_detached_metadata() {
         let root = std::env::temp_dir().join(format!(
             "fozzy-direct-trace-partial-{}",
             uuid::Uuid::new_v4()
@@ -2276,19 +2359,19 @@ mod tests {
         assert!(
             err_pack
                 .to_string()
-                .contains("report.json and manifest.json must appear together")
+                .contains("missing required files: manifest.json")
         );
         let err_export = export_artifacts(&cfg, &trace_path.to_string_lossy(), &out_export)
             .expect_err("export must fail");
         assert!(
             err_export
                 .to_string()
-                .contains("report.json and manifest.json must appear together")
+                .contains("missing required files: manifest.json")
         );
     }
 
     #[test]
-    fn direct_trace_list_rejects_partial_sibling_metadata() {
+    fn direct_trace_list_rejects_incomplete_declared_detached_metadata() {
         let root = std::env::temp_dir().join(format!(
             "fozzy-direct-trace-list-partial-{}",
             uuid::Uuid::new_v4()
@@ -2333,7 +2416,7 @@ mod tests {
         let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
         assert!(
             err.to_string()
-                .contains("report.json and manifest.json must appear together")
+                .contains("missing required files: manifest.json")
         );
     }
 
