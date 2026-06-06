@@ -42,6 +42,21 @@ fn known_profile_domain(domain: &str) -> bool {
     matches!(domain, "cpu" | "heap" | "latency" | "io" | "sched")
 }
 
+fn known_ci_check_name(name: &str) -> bool {
+    matches!(
+        name,
+        "trace_verify"
+            | "replay_outcome_class"
+            | "replay_warning_parity"
+            | "strict_warning_policy"
+            | "replay_memory_parity"
+            | "memory_policy"
+            | "artifacts_zip_integrity"
+            | "flake_budget"
+            | "perf_p99_budget"
+    )
+}
+
 fn known_profile_time_domain(time_domain: &str) -> bool {
     matches!(time_domain, "host_monotonic_time" | "virtual_time")
 }
@@ -1333,7 +1348,10 @@ fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
     let invalid = report
         .checks
         .iter()
-        .filter(|check| check.name.trim().is_empty())
+        .filter(|check| {
+            let name = check.name.trim();
+            name.is_empty() || !known_ci_check_name(name)
+        })
         .count();
     let duplicate = report
         .checks
@@ -4558,6 +4576,23 @@ mod tests {
             ok: true,
             checks: vec![fozzy::CiCheck {
                 name: "   ".to_string(),
+                ok: true,
+                detail: Some("ok".to_string()),
+            }],
+        };
+        let (status, detail) = ci_report_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn ci_report_status_rejects_unknown_check_names() {
+        let report = fozzy::CiReport {
+            schema_version: "fozzy.ci_report.v1".to_string(),
+            ok: true,
+            checks: vec![fozzy::CiCheck {
+                name: "mystery_check".to_string(),
                 ok: true,
                 detail: Some("ok".to_string()),
             }],
