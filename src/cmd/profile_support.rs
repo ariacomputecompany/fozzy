@@ -9,7 +9,11 @@ pub(super) fn load_profile_bundle(
     if let Some(trace_path) = trace_path {
         if profile_artifacts_stale(&artifacts_dir, &trace_path)? {
             let trace = TraceFile::read_json(&trace_path)?;
-            write_profile_artifacts_from_trace(&trace, &artifacts_dir)?;
+            write_profile_artifacts_from_trace_with_source(
+                &trace,
+                Some(&trace_path),
+                &artifacts_dir,
+            )?;
             refresh_manifest_for_profile_artifacts(&artifacts_dir)?;
         }
     } else if !profile_artifacts_exist(&artifacts_dir) {
@@ -825,6 +829,25 @@ fn profile_artifacts_stale(artifacts_dir: &Path, trace_path: &Path) -> FozzyResu
     if !profile_artifacts_exist(artifacts_dir) {
         return Ok(true);
     }
+    let source_path = artifacts_dir.join("profile.source.json");
+    if !source_path.exists() {
+        return Ok(true);
+    }
+    let source: serde_json::Value = serde_json::from_slice(&std::fs::read(&source_path)?)?;
+    let recorded_path = source
+        .get("tracePath")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from);
+    let recorded_digest = source.get("traceDigest").and_then(|v| v.as_str());
+    let expected_path =
+        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
+    let expected_digest = blake3::hash(&std::fs::read(trace_path)?).to_hex().to_string();
+    if recorded_path.as_deref() != Some(expected_path.as_path()) {
+        return Ok(true);
+    }
+    if recorded_digest != Some(expected_digest.as_str()) {
+        return Ok(true);
+    }
     let trace_mtime = std::fs::metadata(trace_path)?.modified()?;
     for name in [
         "profile.timeline.json",
@@ -833,6 +856,7 @@ fn profile_artifacts_stale(artifacts_dir: &Path, trace_path: &Path) -> FozzyResu
         "profile.latency.json",
         "profile.metrics.json",
         "symbols.json",
+        "profile.source.json",
     ] {
         let p = artifacts_dir.join(name);
         let md = std::fs::metadata(&p)?;

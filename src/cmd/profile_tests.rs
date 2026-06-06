@@ -790,6 +790,66 @@ fn profile_commands_reject_stale_report_without_manifest() {
 }
 
 #[test]
+fn direct_trace_profile_cache_regenerates_on_source_digest_mismatch() {
+    let ws = temp_workspace("direct-trace-cache-provenance");
+    let base_dir = ws.join(".fozzy");
+    let trace_path = ws.join("direct.trace.fozzy");
+    std::fs::write(
+        &trace_path,
+        serde_json::to_vec_pretty(&sample_trace()).expect("trace bytes"),
+    )
+    .expect("write trace");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let cmd = ProfileCommand::Top {
+        run: trace_path.to_string_lossy().to_string(),
+        cpu: false,
+        heap: true,
+        latency: false,
+        io: false,
+        sched: false,
+        limit: 5,
+    };
+    let first = profile_command(&cfg, &cmd, true).expect("initial profile top");
+    assert_eq!(first.get("run").and_then(|v| v.as_str()), Some(trace_path.to_string_lossy().as_ref()));
+
+    let canonical = std::fs::canonicalize(&trace_path).expect("canonical trace");
+    let key = blake3::hash(canonical.to_string_lossy().as_bytes())
+        .to_hex()
+        .to_string();
+    let cache_dir = base_dir.join("profile-cache").join(key);
+    let source_path = cache_dir.join("profile.source.json");
+    let metrics_path = cache_dir.join("profile.metrics.json");
+
+    let mut source: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&source_path).expect("read source"))
+            .expect("source json");
+    source["traceDigest"] = serde_json::json!("bad-digest");
+    std::fs::write(
+        &source_path,
+        serde_json::to_vec_pretty(&source).expect("source bytes"),
+    )
+    .expect("rewrite source");
+    std::fs::write(&metrics_path, br#"{}"#).expect("corrupt metrics");
+
+    let second = profile_command(&cfg, &cmd, true).expect("regenerated profile top");
+    assert_eq!(
+        second.get("run").and_then(|v| v.as_str()),
+        Some(trace_path.to_string_lossy().as_ref())
+    );
+    let regenerated_metrics: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&metrics_path).expect("read metrics"))
+            .expect("metrics json");
+    assert!(
+        regenerated_metrics.get("runId").is_some(),
+        "metrics should be rewritten from the real trace after source mismatch"
+    );
+}
+
+#[test]
 fn explain_diff_keeps_primary_run_as_run_field() {
     let trace = sample_trace();
     let timeline = build_profile_timeline(&trace);

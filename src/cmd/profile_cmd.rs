@@ -228,6 +228,31 @@ pub fn write_profile_artifacts_from_trace(
     trace: &TraceFile,
     artifacts_dir: &Path,
 ) -> FozzyResult<()> {
+    write_profile_artifacts_from_trace_with_source(trace, None, artifacts_dir)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProfileArtifactSource {
+    #[serde(rename = "schemaVersion")]
+    schema_version: String,
+    #[serde(rename = "tracePath")]
+    trace_path: String,
+    #[serde(rename = "traceDigest")]
+    trace_digest: String,
+    #[serde(rename = "runId")]
+    run_id: String,
+    seed: u64,
+}
+
+fn trace_digest(path: &Path) -> FozzyResult<String> {
+    Ok(blake3::hash(&std::fs::read(path)?).to_hex().to_string())
+}
+
+pub fn write_profile_artifacts_from_trace_with_source(
+    trace: &TraceFile,
+    source_trace_path: Option<&Path>,
+    artifacts_dir: &Path,
+) -> FozzyResult<()> {
     std::fs::create_dir_all(artifacts_dir)?;
     let timeline = build_profile_timeline(trace);
     let cpu = build_cpu_profile(trace, &timeline);
@@ -256,6 +281,19 @@ pub fn write_profile_artifacts_from_trace(
     write_json(&artifacts_dir.join("profile.latency.json"), &latency)?;
     write_json(&artifacts_dir.join("profile.metrics.json"), &metrics)?;
     write_json(&artifacts_dir.join("symbols.json"), &symbols)?;
+    if let Some(path) = source_trace_path {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        write_json(
+            &artifacts_dir.join("profile.source.json"),
+            &ProfileArtifactSource {
+                schema_version: "fozzy.profile_source.v1".to_string(),
+                trace_path: canonical.to_string_lossy().to_string(),
+                trace_digest: trace_digest(path)?,
+                run_id: trace.summary.identity.run_id.clone(),
+                seed: trace.summary.identity.seed,
+            },
+        )?;
+    }
     Ok(())
 }
 
