@@ -475,14 +475,29 @@ fn corpus_minimize_status(value: &serde_json::Value) -> (FullStepStatus, String)
         .get("duplicatesRemoved")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let ok = before > 0 && after > 0 && after <= before;
+    let bytes_before = value.get("bytesBefore").and_then(|v| v.as_u64()).unwrap_or(0);
+    let bytes_after = value.get("bytesAfter").and_then(|v| v.as_u64()).unwrap_or(0);
+    let bytes_removed = value.get("bytesRemoved").and_then(|v| v.as_u64()).unwrap_or(0);
+    let file_math_ok = before > 0
+        && after > 0
+        && after <= before
+        && removed == before.saturating_sub(after);
+    let bytes_present = value.get("bytesBefore").is_some()
+        || value.get("bytesAfter").is_some()
+        || value.get("bytesRemoved").is_some();
+    let byte_math_ok = !bytes_present
+        || (bytes_before >= bytes_after
+            && bytes_removed == bytes_before.saturating_sub(bytes_after));
+    let ok = file_math_ok && byte_math_ok;
     (
         if ok {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
-        format!("files_before={before} files_after={after} duplicates_removed={removed}"),
+        format!(
+            "files_before={before} files_after={after} duplicates_removed={removed} bytes_before={bytes_before} bytes_after={bytes_after} bytes_removed={bytes_removed}"
+        ),
     )
 }
 
@@ -2534,11 +2549,31 @@ mod tests {
         let value = serde_json::json!({
             "filesBefore": 0,
             "filesAfter": 0,
-            "duplicatesRemoved": 0
+            "duplicatesRemoved": 0,
+            "bytesBefore": 0,
+            "bytesAfter": 0,
+            "bytesRemoved": 0
         });
         let (status, detail) = corpus_minimize_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("files_before=0"));
+    }
+
+    #[test]
+    fn corpus_minimize_status_rejects_inconsistent_summary_math() {
+        let value = serde_json::json!({
+            "filesBefore": 3,
+            "filesAfter": 2,
+            "duplicatesRemoved": 0,
+            "bytesBefore": 30,
+            "bytesAfter": 20,
+            "bytesRemoved": 1
+        });
+        let (status, detail) = corpus_minimize_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("files_before=3"));
+        assert!(detail.contains("duplicates_removed=0"));
+        assert!(detail.contains("bytes_removed=1"));
     }
 
     #[test]
