@@ -1,5 +1,43 @@
 use super::*;
 
+fn summarize_profile_top(value: &serde_json::Value) -> String {
+    let warnings = value
+        .get("warnings")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            let rows = items
+                .iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect::<Vec<_>>();
+            if rows.is_empty() {
+                "<none>".to_string()
+            } else {
+                rows.join("; ")
+            }
+        })
+        .unwrap_or_else(|| "<none>".to_string());
+    let empty_domains = value
+        .get("emptyDomains")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            let rows = items
+                .iter()
+                .filter_map(|item| {
+                    let domain = item.get("domain").and_then(|v| v.as_str())?;
+                    let reason = item.get("reason").and_then(|v| v.as_str())?;
+                    Some(format!("{domain}:{reason}"))
+                })
+                .collect::<Vec<_>>();
+            if rows.is_empty() {
+                "<none>".to_string()
+            } else {
+                rows.join("; ")
+            }
+        })
+        .unwrap_or_else(|| "<none>".to_string());
+    format!("warnings={warnings} empty_domains={empty_domains}")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_gate_command(
     config: &Config,
@@ -340,17 +378,7 @@ pub(super) fn run_gate_command(
             Ok(value) => push(
                 "profile_top",
                 FullStepStatus::Passed,
-                format!(
-                    "warnings={} empty_domains={}",
-                    value.get("warnings")
-                        .and_then(|v| v.as_array())
-                        .map(|v| v.len())
-                        .unwrap_or(0),
-                    value.get("emptyDomains")
-                        .and_then(|v| v.as_array())
-                        .map(|v| v.len())
-                        .unwrap_or(0)
-                ),
+                summarize_profile_top(&value),
             ),
             Err(err) => push("profile_top", FullStepStatus::Failed, err.to_string()),
         }
@@ -1256,17 +1284,7 @@ pub(super) fn run_full_command(
             Ok(value) => push(
                 "profile_top",
                 FullStepStatus::Passed,
-                format!(
-                    "warnings={} empty_domains={}",
-                    value.get("warnings")
-                        .and_then(|v| v.as_array())
-                        .map(|v| v.len())
-                        .unwrap_or(0),
-                    value.get("emptyDomains")
-                        .and_then(|v| v.as_array())
-                        .map(|v| v.len())
-                        .unwrap_or(0)
-                ),
+                summarize_profile_top(&value),
             ),
             Err(err) => push("profile_top", FullStepStatus::Failed, err.to_string()),
         }

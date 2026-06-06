@@ -3046,7 +3046,10 @@ fn gate_targeted_profile_runs_scoped_strict_bundle() {
     );
     let profile_top = full_step_detail(&doc, "profile_top").expect("profile_top detail");
     assert!(
-        profile_top.contains("warnings=") && profile_top.contains("empty_domains="),
+        profile_top.contains("warnings=<none>")
+            && profile_top.contains("empty_domains=")
+            && profile_top.contains("heap:no heap samples in trace")
+            && profile_top.contains("io:no io events in trace"),
         "profile_top should report concrete profile evidence, got: {profile_top}"
     );
     let trace_verify = full_step_detail(&doc, "trace_verify").expect("trace_verify detail");
