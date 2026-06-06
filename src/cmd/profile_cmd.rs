@@ -40,9 +40,8 @@ pub use profile_types::*;
 pub use profile_build::heap_budget_findings_from_trace;
 
 use crate::{
-    Config, Finding, FindingKind, FozzyError, FozzyResult, RunManifest, RunSummary, ShrinkMinimize,
-    ShrinkOptions, TraceFile, TracePath, resolve_artifacts_dir, shrink_trace,
-    shrink_trace_with_predicate,
+    Config, Finding, FindingKind, FozzyError, FozzyResult, RunSummary, ShrinkMinimize,
+    ShrinkOptions, TraceFile, TracePath, resolve_artifacts_dir, shrink_trace, shrink_trace_with_predicate,
 };
 
 const RUN_OR_TRACE_HELP: &str =

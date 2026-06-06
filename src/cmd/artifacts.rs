@@ -791,35 +791,75 @@ pub(crate) fn resolve_trace_path_from_artifacts_dir(
     artifacts_dir: &Path,
 ) -> FozzyResult<Option<PathBuf>> {
     let local_trace = artifacts_dir.join("trace.fozzy");
-    if local_trace.exists() {
-        return Ok(Some(local_trace));
-    }
-
+    let local_trace = local_trace.exists().then_some(local_trace);
     let report_path = artifacts_dir.join("report.json");
-    if report_path.exists()
+    let report_trace = if report_path.exists()
         && let Ok(summary) =
             serde_json::from_slice::<RunSummary>(&std::fs::read(&report_path)?)
         && let Some(path) = summary.identity.trace_path
     {
         let trace_path = PathBuf::from(path);
         if trace_path.exists() {
-            return Ok(Some(trace_path));
+            Some(trace_path)
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
     let manifest_path = artifacts_dir.join("manifest.json");
-    if manifest_path.exists()
+    let manifest_trace = if manifest_path.exists()
         && let Ok(manifest) =
             serde_json::from_slice::<RunManifest>(&std::fs::read(&manifest_path)?)
         && let Some(path) = manifest.trace_path
     {
         let trace_path = PathBuf::from(path);
         if trace_path.exists() {
-            return Ok(Some(trace_path));
+            Some(trace_path)
+        } else {
+            None
         }
+    } else {
+        None
+    };
+
+    if let (Some(report_trace), Some(manifest_trace)) = (&report_trace, &manifest_trace)
+        && trace_identity_key(report_trace)? != trace_identity_key(manifest_trace)?
+    {
+        return Err(FozzyError::InvalidArgument(format!(
+            "conflicting declared trace identities in {}: report.json={}, manifest.json={}",
+            artifacts_dir.display(),
+            report_trace.display(),
+            manifest_trace.display()
+        )));
+    }
+
+    let declared_trace = report_trace.or(manifest_trace);
+    if let (Some(local_trace), Some(declared_trace)) = (&local_trace, &declared_trace)
+        && trace_identity_key(local_trace)? != trace_identity_key(declared_trace)?
+    {
+        return Err(FozzyError::InvalidArgument(format!(
+            "conflicting local and declared trace identities in {}: local={}, declared={}",
+            artifacts_dir.display(),
+            local_trace.display(),
+            declared_trace.display()
+        )));
+    }
+
+    if let Some(declared_trace) = declared_trace {
+        return Ok(Some(declared_trace));
+    }
+
+    if let Some(local_trace) = local_trace {
+        return Ok(Some(local_trace));
     }
 
     Ok(None)
+}
+
+fn trace_identity_key(path: &Path) -> FozzyResult<PathBuf> {
+    std::fs::canonicalize(path).map_err(Into::into)
 }
 
 fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
@@ -1972,6 +2012,97 @@ mod tests {
             entry.path == external_trace.to_string_lossy()
                 && matches!(entry.kind, ArtifactKind::Trace)
         }));
+    }
+
+    #[test]
+    fn resolve_trace_path_rejects_conflicting_local_and_declared_trace_identities() {
+        let root = std::env::temp_dir()
+            .join(format!("fozzy-artifacts-conflict-local-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let local_trace = run_dir.join("trace.fozzy");
+        let external_trace = root.join("external.trace.fozzy");
+        let report_path = run_dir.join("report.json");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &run_dir, Some(&external_trace));
+        std::fs::write(&report_path, report).expect("report");
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+        std::fs::write(
+            &local_trace,
+            valid_trace_json("r1", &local_trace, &report_path, &run_dir),
+        )
+        .expect("local trace");
+        std::fs::write(
+            &external_trace,
+            valid_trace_json("r1", &external_trace, &report_path, &run_dir),
+        )
+        .expect("external trace");
+
+        let err =
+            resolve_trace_path_from_artifacts_dir(&run_dir).expect_err("must reject conflict");
+        assert!(err.to_string().contains("conflicting local and declared trace identities"));
+    }
+
+    #[test]
+    fn resolve_trace_path_rejects_conflicting_report_and_manifest_trace_identities() {
+        let root = std::env::temp_dir()
+            .join(format!("fozzy-artifacts-conflict-declared-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let report_trace = root.join("report.trace.fozzy");
+        let manifest_trace = root.join("manifest.trace.fozzy");
+        let report_path = run_dir.join("report.json");
+        std::fs::write(
+            &report_path,
+            valid_report_json("r1", &report_path, &run_dir)
+                .replace(
+                    &format!(r#""artifactsDir":"{}""#, run_dir.display()),
+                    &format!(
+                        r#""artifactsDir":"{}","tracePath":"{}""#,
+                        run_dir.display(),
+                        report_trace.display()
+                    ),
+                ),
+        )
+        .expect("report");
+        std::fs::write(
+            run_dir.join("manifest.json"),
+            format!(
+                r#"{{
+  "schemaVersion":"fozzy.run_manifest.v1",
+  "runId":"r1",
+  "mode":"run",
+  "status":"pass",
+  "seed":1,
+  "startedAt":"2026-01-01T00:00:00Z",
+  "finishedAt":"2026-01-01T00:00:00Z",
+  "durationMs":0,
+  "durationNs":0,
+  "reportPath":"{}",
+  "artifactsDir":"{}",
+  "tracePath":"{}",
+  "findingsCount":0
+}}"#,
+                report_path.display(),
+                run_dir.display(),
+                manifest_trace.display()
+            ),
+        )
+        .expect("manifest");
+        std::fs::write(
+            &report_trace,
+            valid_trace_json("r1", &report_trace, &report_path, &run_dir),
+        )
+        .expect("report trace");
+        std::fs::write(
+            &manifest_trace,
+            valid_trace_json("r1", &manifest_trace, &report_path, &run_dir),
+        )
+        .expect("manifest trace");
+
+        let err =
+            resolve_trace_path_from_artifacts_dir(&run_dir).expect_err("must reject conflict");
+        assert!(err.to_string().contains("conflicting declared trace identities"));
     }
 
     #[test]

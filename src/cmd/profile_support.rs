@@ -633,35 +633,8 @@ pub(super) fn resolve_profile_artifacts(
     }
 
     let artifacts_dir = resolve_artifacts_dir(config, selector)?;
-    let trace_path = artifacts_dir.join("trace.fozzy");
-    if trace_path.exists() {
+    if let Some(trace_path) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
         return Ok((artifacts_dir, Some(trace_path)));
-    }
-
-    let report_path = artifacts_dir.join("report.json");
-    if report_path.exists() {
-        let bytes = std::fs::read(&report_path)?;
-        if let Ok(summary) = serde_json::from_slice::<RunSummary>(&bytes) {
-            if let Some(path) = summary.identity.trace_path {
-                let from_report = PathBuf::from(path);
-                if from_report.exists() {
-                    return Ok((artifacts_dir, Some(from_report)));
-                }
-            }
-        }
-    }
-
-    let manifest_path = artifacts_dir.join("manifest.json");
-    if manifest_path.exists() {
-        let bytes = std::fs::read(&manifest_path)?;
-        if let Ok(manifest) = serde_json::from_slice::<RunManifest>(&bytes) {
-            if let Some(path) = manifest.trace_path {
-                let from_manifest = PathBuf::from(path);
-                if from_manifest.exists() {
-                    return Ok((artifacts_dir, Some(from_manifest)));
-                }
-            }
-        }
     }
 
     Ok((artifacts_dir, None))
