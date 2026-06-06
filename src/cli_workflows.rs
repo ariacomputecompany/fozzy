@@ -514,13 +514,17 @@ fn report_query_paths_status(value: &serde_json::Value) -> (FullStepStatus, Stri
 
 fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatus, String) {
     let strict_ok = enforce_strict_summary(strict, summary).is_ok();
+    let run_id_present = !summary.identity.run_id.trim().is_empty();
     (
-        if summary.status == ExitStatus::Pass && strict_ok {
+        if summary.status == ExitStatus::Pass && strict_ok && run_id_present {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
-        format!("status={:?} strict_ok={}", summary.status, strict_ok),
+        format!(
+            "status={:?} strict_ok={} run_id_present={}",
+            summary.status, strict_ok, run_id_present
+        ),
     )
 }
 
@@ -2839,6 +2843,15 @@ mod tests {
         let (status, detail) = run_summary_pass_status(&summary, true);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("status=Fail"));
+    }
+
+    #[test]
+    fn run_summary_pass_status_rejects_missing_run_id() {
+        let mut summary = sample_run_summary(ExitStatus::Pass);
+        summary.identity.run_id = "   ".to_string();
+        let (status, detail) = run_summary_pass_status(&summary, true);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("run_id_present=false"));
     }
 
     #[test]
