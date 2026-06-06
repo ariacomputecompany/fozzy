@@ -360,8 +360,7 @@ fn validate_run_artifacts_for_listing(artifacts_dir: &Path, run: &str) -> FozzyR
     if let Some(trace) = trace {
         files.push(trace);
     }
-    validate_required_bundle_files(&files, run)?;
-    validate_manifest_integrity(&files, run)
+    validate_run_bundle_integrity(&files, run)
 }
 
 fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
@@ -381,8 +380,7 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
         )));
     }
     if strict_bundle {
-        validate_required_bundle_files(&files, run)?;
-        validate_manifest_integrity(&files, run)?;
+        validate_run_bundle_integrity(&files, run)?;
     } else {
         let trace_path = crate::normalize_trace_path(&PathBuf::from(run));
         validate_direct_trace_bundle(
@@ -453,8 +451,7 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
             trusted_trace_declared_artifacts_dir(&trace_path)?.is_some(),
         )?;
     } else {
-        validate_required_bundle_files(&source_files, run)?;
-        validate_manifest_integrity(&source_files, run)?;
+        validate_run_bundle_integrity(&source_files, run)?;
     }
 
     let replay = crate::replay_trace(
@@ -558,8 +555,7 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
         )));
     }
     if strict_bundle {
-        validate_required_bundle_files(&files, run)?;
-        validate_manifest_integrity(&files, run)?;
+        validate_run_bundle_integrity(&files, run)?;
     } else {
         let trace_path = crate::normalize_trace_path(&PathBuf::from(run));
         validate_direct_trace_bundle(
@@ -1325,8 +1321,6 @@ fn validate_required_bundle_files(files: &[PathBuf], run: &str) -> FozzyResult<(
         .iter()
         .filter_map(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
         .collect();
-    // Run-id exports must work for normal runs where trace/events are optional.
-    // The stable minimum contract is report + manifest.
     let required = ["report.json", "manifest.json"];
     let missing: Vec<&str> = required
         .into_iter()
@@ -1339,6 +1333,25 @@ fn validate_required_bundle_files(files: &[PathBuf], run: &str) -> FozzyResult<(
         )));
     }
     Ok(())
+}
+
+fn validate_run_bundle_integrity(files: &[PathBuf], run: &str) -> FozzyResult<()> {
+    let present: BTreeSet<String> = files
+        .iter()
+        .filter_map(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+        .collect();
+    let has_report = present.contains("report.json");
+    let has_manifest = present.contains("manifest.json");
+    let has_trace = files.iter().any(|path| crate::is_trace_path(path));
+
+    if has_report && has_manifest {
+        return validate_manifest_integrity(files, run);
+    }
+    if !has_report && has_manifest && has_trace {
+        return validate_manifest_trace_integrity(files, run);
+    }
+
+    validate_required_bundle_files(files, run)
 }
 
 fn validate_direct_trace_bundle(
@@ -3083,6 +3096,48 @@ mod tests {
     }
 
     #[test]
+    fn artifacts_list_accepts_manifest_only_run_wrapper() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-manifest-only-list-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let base_dir = root.join(".fozzy");
+        let run_dir = base_dir.join("runs").join("manifest-only");
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        let external_trace = root.join("manifest-only.trace.fozzy");
+        std::fs::write(
+            &external_trace,
+            valid_trace_json(
+                "manifest-only",
+                &external_trace,
+                &run_dir.join("report.json"),
+                &run_dir,
+            ),
+        )
+        .expect("trace");
+        let (_, manifest) = valid_report_and_manifest_json(
+            "manifest-only",
+            &run_dir.join("report.json"),
+            &run_dir,
+            Some(&external_trace),
+        );
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+
+        let cfg = crate::Config {
+            base_dir,
+            ..crate::Config::default()
+        };
+        let entries = artifacts_list(&cfg, "manifest-only").expect("list");
+        assert!(entries.iter().any(|entry| {
+            entry.path == external_trace.to_string_lossy() && matches!(entry.kind, ArtifactKind::Trace)
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.path == run_dir.join("manifest.json").to_string_lossy()
+                && matches!(entry.kind, ArtifactKind::Manifest)
+        }));
+    }
+
+    #[test]
     fn latest_alias_skips_newer_stale_report_only_run() {
         let root = std::env::temp_dir().join(format!(
             "fozzy-artifacts-latest-stale-{}",
@@ -3141,6 +3196,42 @@ mod tests {
         };
         let resolved = resolve_artifacts_dir(&cfg, "latest").expect("resolve latest");
         assert_eq!(resolved, healthy_dir);
+    }
+
+    #[test]
+    fn export_and_bundle_allow_manifest_only_run_wrapper() {
+        let root = std::env::temp_dir().join(format!(
+            "fozzy-artifacts-manifest-only-export-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let base_dir = root.join(".fozzy");
+        let run_dir = base_dir.join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        let external_trace = root.join("manifest-only-export.trace.fozzy");
+        std::fs::write(
+            &external_trace,
+            valid_trace_json("r1", &external_trace, &run_dir.join("report.json"), &run_dir),
+        )
+        .expect("trace");
+        let (_, manifest) =
+            valid_report_and_manifest_json("r1", &run_dir.join("report.json"), &run_dir, Some(&external_trace));
+        std::fs::write(run_dir.join("manifest.json"), manifest).expect("manifest");
+
+        let cfg = crate::Config {
+            base_dir,
+            ..crate::Config::default()
+        };
+        let out_pack = root.join("pack.zip");
+        let out_export = root.join("export.zip");
+        let out_bundle = root.join("bundle.zip");
+
+        export_reproducer_pack(&cfg, "r1", &out_pack).expect("pack");
+        export_artifacts(&cfg, "r1", &out_export).expect("export");
+        export_gate_bundle(&cfg, "r1", &out_bundle).expect("bundle");
+
+        assert!(out_pack.exists(), "pack zip should exist");
+        assert!(out_export.exists(), "export zip should exist");
+        assert!(out_bundle.exists(), "bundle zip should exist");
     }
 
     #[test]
