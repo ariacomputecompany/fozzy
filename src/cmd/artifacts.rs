@@ -807,9 +807,8 @@ fn load_summary(config: &Config, run: &str) -> FozzyResult<Option<RunSummary>> {
         return Ok(Some(TraceFile::read_json(&input)?.summary));
     }
 
-    let artifacts_dir = resolve_artifacts_dir(config, run)?;
-    if let Some(summary) = load_checked_run_summary_from_artifacts_dir(&artifacts_dir, run)? {
-        return Ok(Some(summary));
+    if let Some(bundle) = crate::load_validated_artifact_bundle(config, run)? {
+        return Ok(Some(bundle.summary));
     }
 
     let trace = load_trace(config, run)?;

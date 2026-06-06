@@ -10,8 +10,8 @@ pub(super) fn load_profile_bundle(
         let trace = TraceFile::read_json(trace_path)?;
         Some((trace.summary.identity.run_id, trace.summary.identity.seed))
     } else {
-        crate::load_checked_run_summary_from_artifacts_dir(&artifacts_dir, selector)?
-            .map(|summary| (summary.identity.run_id, summary.identity.seed))
+        crate::load_validated_artifact_bundle_from_dir(&artifacts_dir, selector)?
+            .map(|bundle| (bundle.summary.identity.run_id, bundle.summary.identity.seed))
     };
     if let Some(trace_path) = trace_path {
         if profile_artifacts_stale(&artifacts_dir, &trace_path)? {

@@ -1,12 +1,20 @@
 use std::path::{Path, PathBuf};
 
-use crate::{FozzyResult, RunSummary, TraceFile};
+use crate::{Config, FozzyResult, RunSummary, TraceFile};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedArtifactBundle {
     pub artifacts_dir: PathBuf,
     pub summary: RunSummary,
     pub trace_path: Option<PathBuf>,
+}
+
+pub(crate) fn load_validated_artifact_bundle(
+    config: &Config,
+    selector: &str,
+) -> FozzyResult<Option<ValidatedArtifactBundle>> {
+    let artifacts_dir = crate::resolve_artifacts_dir(config, selector)?;
+    load_validated_artifact_bundle_from_dir(&artifacts_dir, selector)
 }
 
 pub(crate) fn load_validated_artifact_bundle_from_dir(
