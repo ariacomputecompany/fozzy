@@ -376,19 +376,43 @@ fn flaky_report_status(value: &serde_json::Value) -> (FullStepStatus, String) {
 
 fn memory_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
     let total = value.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-    let shown = value
+    let leaks = value
         .get("leaks")
         .and_then(|v| v.as_array())
-        .map(|v| v.len())
-        .unwrap_or(0);
-    let consistent = shown <= total as usize;
+        .cloned()
+        .unwrap_or_default();
+    let shown = leaks.len();
+    let mut seen_alloc_ids = std::collections::BTreeSet::new();
+    let duplicate_alloc_ids = leaks
+        .iter()
+        .filter(|leak| {
+            leak.get("allocId")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|id| !seen_alloc_ids.insert(id))
+        })
+        .count();
+    let invalid_rows = leaks
+        .iter()
+        .filter(|leak| {
+            leak.get("allocId").and_then(|v| v.as_u64()).is_none_or(|id| id == 0)
+                || leak.get("bytes").and_then(|v| v.as_u64()).is_none_or(|bytes| bytes == 0)
+                || leak
+                    .get("callsiteHash")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|hash| hash.trim().is_empty())
+        })
+        .count();
+    let consistent = shown <= total as usize && duplicate_alloc_ids == 0 && invalid_rows == 0;
     (
         if total > 0 || !consistent {
             FullStepStatus::Failed
         } else {
             FullStepStatus::Passed
         },
-        format!("total_leaks={} shown={} consistent={}", total, shown, consistent),
+        format!(
+            "total_leaks={} shown={} duplicate_alloc_ids={} invalid_rows={} consistent={}",
+            total, shown, duplicate_alloc_ids, invalid_rows, consistent
+        ),
     )
 }
 
@@ -4095,6 +4119,35 @@ mod tests {
         let (status, detail) = memory_top_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("shown=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn memory_top_status_rejects_duplicate_alloc_ids() {
+        let value = serde_json::json!({
+            "total": 2,
+            "leaks": [
+                {"allocId": 7, "bytes": 64, "callsiteHash": "abc"},
+                {"allocId": 7, "bytes": 32, "callsiteHash": "def"}
+            ]
+        });
+        let (status, detail) = memory_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_alloc_ids=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn memory_top_status_rejects_invalid_leak_rows() {
+        let value = serde_json::json!({
+            "total": 1,
+            "leaks": [
+                {"allocId": 0, "bytes": 0, "callsiteHash": ""}
+            ]
+        });
+        let (status, detail) = memory_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_rows=1"));
         assert!(detail.contains("consistent=false"));
     }
 
