@@ -878,6 +878,11 @@ fn env_step_status(env: &fozzy::EnvInfo) -> (FullStepStatus, String) {
 }
 
 fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
+    let invalid = report
+        .checks
+        .iter()
+        .filter(|check| check.name.trim().is_empty())
+        .count();
     let failing = report
         .checks
         .iter()
@@ -887,19 +892,21 @@ fn ci_report_status(report: &fozzy::CiReport) -> (FullStepStatus, String) {
             _ => check.name.clone(),
         })
         .collect::<Vec<_>>();
-    let derived_ok = failing.is_empty();
+    let derived_ok = failing.is_empty() && invalid == 0;
     let detail = if failing.is_empty() {
         format!(
-            "checks={} failed=<none> reported_ok={} derived_ok={}",
+            "checks={} failed=<none> invalid={} reported_ok={} derived_ok={}",
             report.checks.len(),
+            invalid,
             report.ok,
             derived_ok
         )
     } else {
         format!(
-            "checks={} failed={} reported_ok={} derived_ok={}",
+            "checks={} failed={} invalid={} reported_ok={} derived_ok={}",
             report.checks.len(),
             failing.join("; "),
+            invalid,
             report.ok,
             derived_ok
         )
@@ -920,13 +927,28 @@ fn doctor_report_status(
     scenario: &Path,
     runs: u32,
 ) -> (FullStepStatus, String) {
+    let invalid_issues = report
+        .issues
+        .iter()
+        .filter(|issue| issue.code.trim().is_empty() || issue.message.trim().is_empty())
+        .count();
     let signal_count = report
         .nondeterminism_signals
         .as_ref()
         .map(|signals| signals.len())
         .unwrap_or(0);
-    let derived_ok = report.issues.is_empty();
-    let policy_ok = !strict || (report.issues.is_empty() && signal_count == 0);
+    let invalid_signals = report
+        .nondeterminism_signals
+        .as_ref()
+        .map(|signals| {
+            signals
+                .iter()
+                .filter(|signal| signal.source.trim().is_empty() || signal.detail.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    let derived_ok = report.issues.is_empty() && invalid_issues == 0 && invalid_signals == 0;
+    let policy_ok = !strict || (report.issues.is_empty() && signal_count == 0 && invalid_signals == 0);
     let failing = report
         .issues
         .iter()
@@ -945,7 +967,9 @@ fn doctor_report_status(
         .collect::<Vec<_>>();
     let detail = if failing.is_empty() {
         format!(
-            "issues=0 signals=0 runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues=0 signals=0 invalid_issues={} invalid_signals={} runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
+            invalid_issues,
+            invalid_signals,
             runs,
             scenario.display(),
             report.ok,
@@ -954,9 +978,11 @@ fn doctor_report_status(
         )
     } else {
         format!(
-            "issues={} signals={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues={} signals={} invalid_issues={} invalid_signals={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
             report.issues.len(),
             signal_count,
+            invalid_issues,
+            invalid_signals,
             runs,
             scenario.display(),
             failing.join("; "),
@@ -3200,6 +3226,23 @@ mod tests {
     }
 
     #[test]
+    fn ci_report_status_rejects_invalid_check_names() {
+        let report = fozzy::CiReport {
+            schema_version: "fozzy.ci_report.v1".to_string(),
+            ok: true,
+            checks: vec![fozzy::CiCheck {
+                name: "   ".to_string(),
+                ok: true,
+                detail: Some("ok".to_string()),
+            }],
+        };
+        let (status, detail) = ci_report_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
     fn doctor_report_status_surfaces_issue_and_hint() {
         let report = fozzy::DoctorReport {
             ok: false,
@@ -3236,6 +3279,43 @@ mod tests {
         let (status, detail) = doctor_report_status(&report, true, scenario, 2);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("reported_ok=true"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_invalid_issue_rows() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: vec![fozzy::DoctorIssue {
+                code: "".to_string(),
+                message: " ".to_string(),
+                hint: None,
+            }],
+            nondeterminism_signals: None,
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_issues=1"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_invalid_signal_rows() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: Vec::new(),
+            nondeterminism_signals: Some(vec![fozzy::NondeterminismSignal {
+                source: "".to_string(),
+                detail: "".to_string(),
+            }]),
+            determinism_audit: None,
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_signals=1"));
         assert!(detail.contains("derived_ok=false"));
     }
 
