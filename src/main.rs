@@ -407,7 +407,7 @@ enum Command {
         #[arg(long, default_value = "all")]
         minimize: ShrinkMinimize,
 
-        /// Accepted for CLI parity with run/test/fuzz/explore (summary output still follows global --json/pretty).
+        /// Only `pretty` is supported here; use global `--json` for machine-readable output.
         #[arg(long, default_value = "pretty")]
         reporter: Reporter,
     },

@@ -356,8 +356,13 @@ pub(super) fn run_command(
             budget,
             aggressive,
             minimize,
-            reporter: _reporter,
+            reporter,
         } => {
+            if !matches!(reporter, Reporter::Pretty) {
+                return Err(anyhow::anyhow!(
+                    "invalid argument: `fozzy shrink` does not emit command-level reporter artifacts; use global `--json` for machine-readable output, then inspect the shrunk trace with `fozzy report ...` or `fozzy artifacts ...`"
+                ));
+            }
             let result = fozzy::shrink_trace(
                 config,
                 TracePath::new(trace.clone()),

@@ -3718,6 +3718,51 @@ fn replay_explore_emits_requested_html_report_artifact() {
 }
 
 #[test]
+fn shrink_rejects_unsupported_reporter_flag() {
+    let ws = temp_workspace("shrink-reporter-reject");
+    let scenario = ws.join("memory.pass.fozzy.json");
+    std::fs::write(&scenario, fixture("memory.pass.fozzy.json")).expect("write scenario");
+    let trace = ws.join("trace.fozzy");
+    let shrunk = ws.join("trace.min.fozzy");
+
+    let run = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--record".into(),
+            trace.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(run.status.code(), Some(0), "run should succeed");
+
+    let shrink = run_cli_in(
+        &ws,
+        &[
+            "shrink".into(),
+            trace.display().to_string(),
+            "--out".into(),
+            shrunk.display().to_string(),
+            "--reporter".into(),
+            "html".into(),
+            "--json".into(),
+        ],
+    );
+    assert_ne!(
+        shrink.status.code(),
+        Some(0),
+        "shrink with unsupported reporter must fail"
+    );
+    let stdout = String::from_utf8_lossy(&shrink.stdout);
+    assert!(
+        stdout.contains("does not emit command-level reporter artifacts"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
 fn trace_followup_commands_accept_bare_and_dot_relative_paths() {
     let ws = temp_workspace("trace-relative-followup");
     let scenario = ws.join("example.fozzy.json");
