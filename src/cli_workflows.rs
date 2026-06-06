@@ -1402,6 +1402,7 @@ fn topology_coverage_status(report: &fozzy::MapSuitesReport) -> (FullStepStatus,
         && report.warnings.is_empty()
         && hotspot_math_ok
         && pagination_math_ok
+        && report.returned_suites > 0
         && invalid_suites == 0;
     (
         if ok {
@@ -4165,6 +4166,36 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("uncovered=0"));
         assert!(detail.contains("warnings=map scan skipped 1 source file(s); hotspot coverage is incomplete"));
+    }
+
+    #[test]
+    fn topology_coverage_status_rejects_empty_returned_suites() {
+        let report = fozzy::MapSuitesReport {
+            schema_version: "fozzy.map_suites.v5".to_string(),
+            root: "/repo".to_string(),
+            scenario_root: "/repo/tests".to_string(),
+            scanned_files: 10,
+            profile: TopologyProfile::Pedantic,
+            shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
+            base_min_risk: 60,
+            effective_min_risk: 55,
+            scenario_count: 1,
+            skipped_source_files: Vec::new(),
+            unreadable_scenarios: Vec::new(),
+            warnings: Vec::new(),
+            required_hotspot_count: 1,
+            covered_hotspot_count: 1,
+            uncovered_hotspot_count: 0,
+            total_suites: 0,
+            returned_suites: 0,
+            offset: 0,
+            limit: 25,
+            truncated: false,
+            suites: Vec::new(),
+        };
+        let (status, detail) = topology_coverage_status(&report);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("returned_suites=0"));
     }
 
     #[test]
