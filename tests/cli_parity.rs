@@ -2874,6 +2874,66 @@ fn run_recorded_trace_shares_report_identity() {
 }
 
 #[test]
+fn artifacts_run_id_uses_external_recorded_trace_identity() {
+    let ws = temp_workspace("artifacts-external-trace");
+    let scenario = ws.join("example.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+    let requested = ws.join("external.trace.fozzy");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "run should succeed");
+    let out = parse_json_stdout(&output);
+    let run_id = out
+        .get("identity")
+        .and_then(|v| v.get("runId"))
+        .and_then(|v| v.as_str())
+        .expect("run id")
+        .to_string();
+
+    let ls = run_cli_in(
+        &ws,
+        &[
+            "artifacts".into(),
+            "ls".into(),
+            run_id.clone(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        ls.status.code(),
+        Some(0),
+        "artifacts ls stderr={}",
+        String::from_utf8_lossy(&ls.stderr)
+    );
+    let ls_doc = parse_json_stdout(&ls);
+    let trace_entry = ls_doc
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .and_then(|entries| {
+            entries.iter().find(|entry| {
+                entry.get("kind").and_then(|v| v.as_str()) == Some("trace")
+            })
+        })
+        .and_then(|entry| entry.get("path"))
+        .and_then(|v| v.as_str())
+        .expect("trace entry path");
+    assert_eq!(
+        std::fs::canonicalize(trace_entry).expect("canonicalize listed trace"),
+        std::fs::canonicalize(&requested).expect("canonicalize requested trace")
+    );
+}
+
+#[test]
 fn fuzz_recorded_trace_shares_report_identity() {
     let ws = temp_workspace("fuzz-trace-report-identity");
     let requested = ws.join("fuzz.trace.fozzy");

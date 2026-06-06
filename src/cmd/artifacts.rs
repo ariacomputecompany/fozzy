@@ -289,11 +289,9 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
     }
     let mut out = Vec::new();
 
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Trace,
-        artifacts_dir.join("trace.fozzy"),
-    )?;
+    if let Some(trace_path) = resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
+        push_if_exists(&mut out, ArtifactKind::Trace, trace_path)?;
+    }
     push_if_exists(
         &mut out,
         ArtifactKind::Timeline,
@@ -583,13 +581,13 @@ fn resolve_trace_path(config: &Config, run: &str) -> FozzyResult<PathBuf> {
     {
         return Ok(input);
     }
-    let trace = resolve_artifacts_dir(config, run)?.join("trace.fozzy");
-    if !trace.exists() {
+    let artifacts_dir = resolve_artifacts_dir(config, run)?;
+    let Some(trace) = resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
         return Err(FozzyError::InvalidArgument(format!(
             "no recorded trace found for {run:?}; expected {}",
-            trace.display()
+            artifacts_dir.join("trace.fozzy").display()
         )));
-    }
+    };
     Ok(trace)
 }
 
@@ -737,7 +735,11 @@ fn load_trace(config: &Config, run: &str) -> FozzyResult<Option<TraceFile>> {
     {
         input
     } else {
-        resolve_artifacts_dir(config, run)?.join("trace.fozzy")
+        let artifacts_dir = resolve_artifacts_dir(config, run)?;
+        let Some(trace_path) = resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
+            return Ok(None);
+        };
+        trace_path
     };
 
     if !trace_path.exists() {
@@ -783,6 +785,39 @@ fn trace_declared_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf
         .artifacts_dir
         .map(PathBuf::from)
         .filter(|path| path.exists() && path.is_dir()))
+}
+
+fn resolve_trace_path_from_artifacts_dir(artifacts_dir: &Path) -> FozzyResult<Option<PathBuf>> {
+    let local_trace = artifacts_dir.join("trace.fozzy");
+    if local_trace.exists() {
+        return Ok(Some(local_trace));
+    }
+
+    let report_path = artifacts_dir.join("report.json");
+    if report_path.exists()
+        && let Ok(summary) =
+            serde_json::from_slice::<RunSummary>(&std::fs::read(&report_path)?)
+        && let Some(path) = summary.identity.trace_path
+    {
+        let trace_path = PathBuf::from(path);
+        if trace_path.exists() {
+            return Ok(Some(trace_path));
+        }
+    }
+
+    let manifest_path = artifacts_dir.join("manifest.json");
+    if manifest_path.exists()
+        && let Ok(manifest) =
+            serde_json::from_slice::<RunManifest>(&std::fs::read(&manifest_path)?)
+        && let Some(path) = manifest.trace_path
+    {
+        let trace_path = PathBuf::from(path);
+        if trace_path.exists() {
+            return Ok(Some(trace_path));
+        }
+    }
+
+    Ok(None)
 }
 
 fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
@@ -1638,6 +1673,83 @@ mod tests {
         let entries = artifacts_list(&cfg, &trace.to_string_lossy()).expect("artifacts list");
         assert!(entries.iter().any(|entry| {
             entry.path == detached_artifacts.join("profile.metrics.json").to_string_lossy()
+        }));
+    }
+
+    #[test]
+    fn run_id_uses_report_declared_external_trace_path() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-artifacts-external-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join(".fozzy").join("runs").join("r1");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        let external_trace = root.join("external.trace.fozzy");
+        std::fs::write(
+            &external_trace,
+            format!(
+                r#"{{
+  "format":"fozzy-trace",
+  "version":4,
+  "engine":{{"version":"0.1.0"}},
+  "mode":"run",
+  "scenario_path":null,
+  "scenario":{{"version":1,"name":"x","steps":[]}},
+  "decisions":[],
+  "events":[],
+  "summary":{{
+    "status":"pass",
+    "mode":"run",
+    "identity":{{"runId":"r1","seed":1,"tracePath":"{}"}},
+    "startedAt":"2026-01-01T00:00:00Z",
+    "finishedAt":"2026-01-01T00:00:00Z",
+    "durationMs":0
+  }}
+}}"#,
+                external_trace.display()
+            ),
+        )
+        .expect("trace");
+        std::fs::write(
+            run_dir.join("report.json"),
+            format!(
+                r#"{{
+  "status":"pass",
+  "mode":"run",
+  "identity":{{"runId":"r1","seed":1,"tracePath":"{}","artifactsDir":"{}"}},
+  "startedAt":"2026-01-01T00:00:00Z",
+  "finishedAt":"2026-01-01T00:00:00Z",
+  "durationMs":0
+}}"#,
+                external_trace.display(),
+                run_dir.display()
+            ),
+        )
+        .expect("report");
+        std::fs::write(run_dir.join("manifest.json"), valid_manifest_json("r1"))
+            .expect("manifest");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+
+        let trace_path = resolve_trace_path(&cfg, "r1").expect("resolve trace path");
+        assert_eq!(trace_path, external_trace);
+        let entries = artifacts_list(&cfg, "r1").expect("artifacts list");
+        assert!(entries.iter().any(|entry| {
+            entry.path == external_trace.to_string_lossy()
+                && matches!(entry.kind, ArtifactKind::Trace)
         }));
     }
 
