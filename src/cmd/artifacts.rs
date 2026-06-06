@@ -400,6 +400,8 @@ fn export_reproducer_pack(config: &Config, run: &str, out: &Path) -> FozzyResult
     if strict_bundle {
         validate_required_bundle_files(&files, run)?;
         validate_manifest_integrity(&files, run)?;
+    } else {
+        validate_direct_trace_bundle(&files, run)?;
     }
 
     let meta_dir = std::env::temp_dir().join(format!("fozzy-pack-{}", uuid::Uuid::new_v4()));
@@ -523,6 +525,9 @@ fn export_gate_bundle(config: &Config, run: &str, out: &Path) -> FozzyResult<()>
     }
     files.sort();
     files.dedup();
+    if is_direct_trace_input(run) {
+        validate_direct_trace_bundle(&files, run)?;
+    }
 
     let res = if out
         .extension()
@@ -556,6 +561,8 @@ fn export_artifacts(config: &Config, run: &str, out: &Path) -> FozzyResult<()> {
     if strict_bundle {
         validate_required_bundle_files(&files, run)?;
         validate_manifest_integrity(&files, run)?;
+    } else {
+        validate_direct_trace_bundle(&files, run)?;
     }
 
     if out
@@ -1196,6 +1203,24 @@ fn validate_required_bundle_files(files: &[PathBuf], run: &str) -> FozzyResult<(
             "incomplete artifacts for {run:?}; missing required files: {}",
             missing.join(", ")
         )));
+    }
+    Ok(())
+}
+
+fn validate_direct_trace_bundle(files: &[PathBuf], run: &str) -> FozzyResult<()> {
+    let present: BTreeSet<String> = files
+        .iter()
+        .filter_map(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+        .collect();
+    let has_report = present.contains("report.json");
+    let has_manifest = present.contains("manifest.json");
+    if has_report != has_manifest {
+        return Err(crate::FozzyError::InvalidArgument(format!(
+            "incomplete direct trace artifacts for {run:?}; report.json and manifest.json must appear together"
+        )));
+    }
+    if has_report && has_manifest {
+        validate_manifest_integrity(files, run)?;
     }
     Ok(())
 }
@@ -2139,6 +2164,102 @@ mod tests {
         export_artifacts(&cfg, "r1", &out_export).expect("export should succeed");
         assert!(out_pack.exists(), "pack zip should exist");
         assert!(out_export.exists(), "export zip should exist");
+    }
+
+    #[test]
+    fn direct_trace_export_and_pack_reject_partial_sibling_metadata() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-direct-trace-partial-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let artifacts_dir = root.join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).expect("artifacts dir");
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &artifacts_dir.join("report.json"), &artifacts_dir),
+        )
+        .expect("trace");
+        std::fs::write(
+            artifacts_dir.join("report.json"),
+            valid_report_json("r1", &artifacts_dir.join("report.json"), &artifacts_dir),
+        )
+        .expect("report");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+        let out_pack = root.join("pack.zip");
+        let out_export = root.join("export.zip");
+
+        let err_pack = export_reproducer_pack(&cfg, &trace_path.to_string_lossy(), &out_pack)
+            .expect_err("pack must fail");
+        assert!(err_pack
+            .to_string()
+            .contains("report.json and manifest.json must appear together"));
+        let err_export = export_artifacts(&cfg, &trace_path.to_string_lossy(), &out_export)
+            .expect_err("export must fail");
+        assert!(err_export
+            .to_string()
+            .contains("report.json and manifest.json must appear together"));
+    }
+
+    #[test]
+    fn direct_trace_export_and_pack_allow_valid_sibling_metadata() {
+        let root =
+            std::env::temp_dir().join(format!("fozzy-direct-trace-valid-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let trace_path = root.join("direct.trace.fozzy");
+        let artifacts_dir = root.join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).expect("artifacts dir");
+        let report_path = artifacts_dir.join("report.json");
+        let (report, manifest) =
+            valid_report_and_manifest_json("r1", &report_path, &artifacts_dir, Some(&trace_path));
+        std::fs::write(
+            &trace_path,
+            valid_trace_json("r1", &trace_path, &report_path, &artifacts_dir),
+        )
+        .expect("trace");
+        std::fs::write(&report_path, report).expect("report");
+        std::fs::write(artifacts_dir.join("manifest.json"), manifest).expect("manifest");
+        let cfg = crate::Config {
+            base_dir: root.join(".fozzy"),
+            reporter: crate::Reporter::Pretty,
+            proc_backend: crate::ProcBackend::Scripted,
+            fs_backend: crate::FsBackend::Virtual,
+            http_backend: crate::HttpBackend::Scripted,
+            mem_track: false,
+            mem_limit_mb: None,
+            mem_fail_after: None,
+            fail_on_leak: false,
+            leak_budget: None,
+            mem_artifacts: false,
+            profile_heap_alloc_budget: None,
+            profile_heap_in_use_budget: None,
+            mem_fragmentation_seed: None,
+            mem_pressure_wave: None,
+        };
+        let out_pack = root.join("pack.zip");
+        let out_export = root.join("export.zip");
+
+        export_reproducer_pack(&cfg, &trace_path.to_string_lossy(), &out_pack)
+            .expect("pack should succeed");
+        export_artifacts(&cfg, &trace_path.to_string_lossy(), &out_export)
+            .expect("export should succeed");
+        assert!(out_pack.exists());
+        assert!(out_export.exists());
     }
 
     #[test]
