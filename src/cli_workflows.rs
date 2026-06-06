@@ -174,6 +174,11 @@ fn profile_diff_status(
     value: &serde_json::Value,
     require_stable: bool,
 ) -> (FullStepStatus, String) {
+    let domains = value
+        .get("domains")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let regressions = value
         .get("regressions")
         .and_then(|v| v.as_array())
@@ -218,6 +223,37 @@ fn profile_diff_status(
             .then(|| row.get("metric").and_then(|v| v.as_str()))
             .flatten()
     });
+    let invalid_domains = domains
+        .iter()
+        .filter(|domain| {
+            domain
+                .as_str()
+                .is_none_or(|s| s.trim().is_empty() || !known_profile_domain(s.trim()))
+        })
+        .count();
+    let mut seen_domains = std::collections::BTreeSet::new();
+    let duplicate_domains = domains
+        .iter()
+        .filter(|domain| {
+            domain
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some_and(|s| !seen_domains.insert(s.to_string()))
+        })
+        .count();
+    let declared_domains = domains
+        .iter()
+        .filter_map(|domain| domain.as_str().map(str::trim))
+        .filter(|domain| !domain.is_empty() && known_profile_domain(domain))
+        .map(ToString::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+    let derived_domains = regressions
+        .iter()
+        .filter_map(|row| row.get("domain").and_then(|v| v.as_str()).map(str::trim))
+        .filter(|domain| !domain.is_empty() && known_profile_domain(domain))
+        .map(ToString::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
     let invalid_rows = regressions
         .iter()
         .filter(|row| {
@@ -282,6 +318,9 @@ fn profile_diff_status(
         && significant == derived_significant
         && verdict == expected_verdict
         && top_regression_metric == derived_top_regression_metric
+        && invalid_domains == 0
+        && duplicate_domains == 0
+        && declared_domains == derived_domains
         && invalid_rows == 0
         && duplicate_rows == 0;
     let known_non_regression = matches!(verdict, "stable" | "improvement");
@@ -298,11 +337,14 @@ fn profile_diff_status(
     (
         status,
         format!(
-            "verdict={} regressions={} significant_regressions={} improvements={} invalid_rows={} duplicate_rows={} consistent={}",
+            "verdict={} regressions={} significant_regressions={} improvements={} invalid_domains={} duplicate_domains={} domains_consistent={} invalid_rows={} duplicate_rows={} consistent={}",
             verdict,
             regression_count,
             significant,
             improvement_count,
+            invalid_domains,
+            duplicate_domains,
+            declared_domains == derived_domains,
             invalid_rows,
             duplicate_rows,
             consistent
@@ -3265,6 +3307,7 @@ mod tests {
     #[test]
     fn profile_diff_status_requires_stable_when_requested() {
         let value = serde_json::json!({
+            "domains": ["heap"],
             "summary": {
                 "verdict": "improvement",
                 "regressionCount": 0,
@@ -3506,6 +3549,86 @@ mod tests {
         let (status, detail) = profile_diff_status(&value, false);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("invalid_rows=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_unknown_domains_array_entries() {
+        let value = serde_json::json!({
+            "domains": ["cpu", "mystery"],
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "domain": "cpu",
+                "metric": "cpu_time_ms",
+                "timeDomain": "host_monotonic_time",
+                "classification": "stable",
+                "isRegression": false,
+                "isSignificant": false
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_domains=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_duplicate_domains_array_entries() {
+        let value = serde_json::json!({
+            "domains": ["cpu", "cpu"],
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "domain": "cpu",
+                "metric": "cpu_time_ms",
+                "timeDomain": "host_monotonic_time",
+                "classification": "stable",
+                "isRegression": false,
+                "isSignificant": false
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("duplicate_domains=1"));
+        assert!(detail.contains("consistent=false"));
+    }
+
+    #[test]
+    fn profile_diff_status_rejects_domain_array_row_mismatch() {
+        let value = serde_json::json!({
+            "domains": ["cpu"],
+            "summary": {
+                "verdict": "stable",
+                "regressionCount": 0,
+                "improvementCount": 0,
+                "significantRegressionCount": 0,
+                "topRegressionMetric": null
+            },
+            "regressions": [{
+                "domain": "heap",
+                "metric": "alloc_bytes",
+                "timeDomain": "virtual_time",
+                "classification": "stable",
+                "isRegression": false,
+                "isSignificant": false
+            }]
+        });
+        let (status, detail) = profile_diff_status(&value, false);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("invalid_domains=0"));
+        assert!(detail.contains("duplicate_domains=0"));
+        assert!(detail.contains("domains_consistent=false"));
         assert!(detail.contains("consistent=false"));
     }
 
