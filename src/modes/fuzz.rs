@@ -12,13 +12,13 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::finalize::write_summary_report;
 use crate::{
     Config, ExitStatus, Finding, FindingKind, MemoryOptions, MemoryState, ProfileCaptureLevel,
     RecordCollisionPolicy, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
     TraceEvent, TraceFile, should_emit_profile_artifacts, wall_time_iso_utc,
-    write_memory_artifacts, write_profile_artifacts_from_trace,
+    write_memory_artifacts, write_profile_artifacts_from_trace_with_source,
 };
-use crate::finalize::write_summary_report;
 
 use crate::{FozzyError, FozzyResult};
 use crate::{HeapBudgetPolicy, heap_budget_findings_from_trace};
@@ -314,7 +314,8 @@ pub fn fuzz(
                 &artifacts_dir,
                 crash_count,
             );
-            let trace_out = crate::resolve_record_target(&requested_trace_out, opt.record_collision)?;
+            let trace_out =
+                crate::resolve_record_target(&requested_trace_out, opt.record_collision)?;
             summary.identity.trace_path = Some(trace_out.to_string_lossy().to_string());
             let trace = TraceFile::new_fuzz(
                 target_string(target),
@@ -339,7 +340,11 @@ pub fn fuzz(
             if should_emit_profile_artifacts(opt.profile_capture, exec.status, true) {
                 let mut profile_trace = budget_trace;
                 profile_trace.summary = summary.clone();
-                write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+                write_profile_artifacts_from_trace_with_source(
+                    &profile_trace,
+                    Some(trace_out.as_path()),
+                    &artifacts_dir,
+                )?;
             }
             crate::write_run_manifest(&summary, &artifacts_dir)?;
 
@@ -430,21 +435,6 @@ pub fn fuzz(
     {
         write_memory_artifacts(mem, &artifacts_dir)?;
     }
-    profile_trace.summary = {
-        let mut s = summary.clone();
-        s.status = profile_status;
-        s
-    };
-    let explicit_capture = opt.record_trace_to.is_some() || crash_trace_path.is_some();
-    let emit_heavy = should_emit_heavy_artifacts(status, explicit_capture)
-        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
-    if emit_heavy {
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    }
-    if !emit_heavy && should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture) {
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
-    }
-    crate::write_run_manifest(&summary, &artifacts_dir)?;
     let coverage_stats = FuzzCoverageStats {
         target: target_string(target),
         executed,
@@ -475,7 +465,31 @@ pub fn fuzz(
         trace.memory = exec_memory.or_else(|| effective_memory.as_ref().map(|m| m.to_trace()));
         crate::write_trace_to_target(&trace, &written)?;
     }
+    profile_trace.summary = {
+        let mut s = summary.clone();
+        s.status = profile_status;
+        s
+    };
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
+    let explicit_capture = opt.record_trace_to.is_some() || crash_trace_path.is_some();
+    let emit_heavy = should_emit_heavy_artifacts(status, explicit_capture)
+        || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
+    let source_trace_path = summary.identity.trace_path.as_deref().map(std::path::Path::new);
+    if emit_heavy {
+        write_profile_artifacts_from_trace_with_source(
+            &profile_trace,
+            source_trace_path,
+            &artifacts_dir,
+        )?;
+    }
+    if !emit_heavy && should_emit_profile_artifacts(opt.profile_capture, status, explicit_capture) {
+        write_profile_artifacts_from_trace_with_source(
+            &profile_trace,
+            source_trace_path,
+            &artifacts_dir,
+        )?;
+    }
+    crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
 }
@@ -587,7 +601,7 @@ pub fn replay_fuzz_trace(
         )?;
         crate::write_timeline(&exec.events, &artifacts_dir.join("timeline.json"))?;
         profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+        write_profile_artifacts_from_trace_with_source(&profile_trace, None, &artifacts_dir)?;
     }
     crate::write_run_manifest(&summary, &artifacts_dir)?;
     Ok(crate::RunResult { summary })

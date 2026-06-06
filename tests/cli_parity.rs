@@ -2899,6 +2899,50 @@ fn run_recorded_trace_shares_report_identity() {
 }
 
 #[test]
+fn run_recorded_trace_emits_profile_source_provenance() {
+    let ws = temp_workspace("run-profile-source-provenance");
+    let scenario = ws.join("example.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+    let requested = ws.join("trace.fozzy");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--profile-capture".into(),
+            "full".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "run should succeed");
+    let out = parse_json_stdout(&output);
+    let artifacts_dir = resolve_identity_artifacts_dir(&ws, &out);
+    let source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(artifacts_dir.join("profile.source.json")).expect("read source"),
+    )
+    .expect("source json");
+    assert_eq!(
+        source.get("tracePath").and_then(|v| v.as_str()),
+        Some(
+            std::fs::canonicalize(&requested)
+                .expect("canonicalize trace")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+    assert_eq!(
+        source.get("runId").and_then(|v| v.as_str()),
+        out.get("identity")
+            .and_then(|v| v.get("runId"))
+            .and_then(|v| v.as_str())
+    );
+}
+
+#[test]
 fn artifacts_run_id_uses_external_recorded_trace_identity() {
     let ws = temp_workspace("artifacts-external-trace");
     let requested = ws.join("external.trace.fozzy");
@@ -3048,6 +3092,57 @@ fn fuzz_recorded_trace_shares_report_identity() {
 }
 
 #[test]
+fn fuzz_recorded_trace_emits_profile_source_provenance() {
+    let ws = temp_workspace("fuzz-profile-source-provenance");
+    let requested = ws.join("fuzz.trace.fozzy");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "fuzz".into(),
+            format!(
+                "scenario:{}",
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/memory.pass.fozzy.json")
+                    .display()
+            ),
+            "--det".into(),
+            "--runs".into(),
+            "1".into(),
+            "--seed".into(),
+            "7".into(),
+            "--profile-capture".into(),
+            "full".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "fuzz should succeed");
+    let out = parse_json_stdout(&output);
+    let artifacts_dir = resolve_identity_artifacts_dir(&ws, &out);
+    let source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(artifacts_dir.join("profile.source.json")).expect("read source"),
+    )
+    .expect("source json");
+    assert_eq!(
+        source.get("tracePath").and_then(|v| v.as_str()),
+        Some(
+            std::fs::canonicalize(&requested)
+                .expect("canonicalize trace")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+    assert_eq!(
+        source.get("runId").and_then(|v| v.as_str()),
+        out.get("identity")
+            .and_then(|v| v.get("runId"))
+            .and_then(|v| v.as_str())
+    );
+}
+
+#[test]
 fn explore_recorded_trace_shares_report_identity() {
     let ws = temp_workspace("explore-trace-report-identity");
     let requested = ws.join("explore.trace.fozzy");
@@ -3112,6 +3207,54 @@ fn explore_recorded_trace_shares_report_identity() {
             .and_then(|v| v.get("tracePath"))
             .and_then(|v| v.as_str()),
         Some(trace_path.as_str())
+    );
+}
+
+#[test]
+fn explore_recorded_trace_emits_profile_source_provenance() {
+    let ws = temp_workspace("explore-profile-source-provenance");
+    let requested = ws.join("explore.trace.fozzy");
+
+    let output = run_cli_in(
+        &ws,
+        &[
+            "explore".into(),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/kv.explore.fozzy.json")
+                .display()
+                .to_string(),
+            "--steps".into(),
+            "10".into(),
+            "--seed".into(),
+            "7".into(),
+            "--profile-capture".into(),
+            "full".into(),
+            "--record".into(),
+            requested.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "explore should succeed");
+    let out = parse_json_stdout(&output);
+    let artifacts_dir = resolve_identity_artifacts_dir(&ws, &out);
+    let source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(artifacts_dir.join("profile.source.json")).expect("read source"),
+    )
+    .expect("source json");
+    assert_eq!(
+        source.get("tracePath").and_then(|v| v.as_str()),
+        Some(
+            std::fs::canonicalize(&requested)
+                .expect("canonicalize trace")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+    assert_eq!(
+        source.get("runId").and_then(|v| v.as_str()),
+        out.get("identity")
+            .and_then(|v| v.get("runId"))
+            .and_then(|v| v.as_str())
     );
 }
 

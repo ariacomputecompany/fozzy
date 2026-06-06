@@ -10,14 +10,14 @@ use crate::engine::{
     run_scenario_replay_inner,
 };
 use crate::finalize::{
-    build_run_summary, build_shrink_preview_trace, trace_timing_for_run,
-    write_reporter_artifacts, write_single_scenario_trace, write_summary_report,
+    build_run_summary, build_shrink_preview_trace, trace_timing_for_run, write_reporter_artifacts,
+    write_single_scenario_trace, write_summary_report,
 };
 use crate::{
     Config, ExitStatus, Finding, FindingKind, FozzyError, FozzyResult, HeapBudgetPolicy,
     MemoryRunReport, RunMode, ScenarioPath, ScenarioV1Steps, TraceFile, TracePath,
     heap_budget_findings_from_trace, wall_time_iso_utc, write_memory_artifacts,
-    write_memory_delta_artifact, write_profile_artifacts_from_trace,
+    write_memory_delta_artifact, write_profile_artifacts_from_trace_with_source,
 };
 
 pub fn run_scenario(
@@ -121,11 +121,17 @@ pub fn run_scenario(
     }
 
     let mut summary = report_summary;
-    summary.identity.trace_path = trace_path.map(|p| p.to_string_lossy().to_string());
+    summary.identity.trace_path = trace_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
     write_summary_report(&summary, &report_path, &artifacts_dir)?;
     if emit_profile {
         profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+        write_profile_artifacts_from_trace_with_source(
+            &profile_trace,
+            trace_path.as_deref(),
+            &artifacts_dir,
+        )?;
     }
     write_reporter_artifacts(&summary, &artifacts_dir, opt.reporter)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
@@ -288,7 +294,7 @@ pub fn replay_trace(
     }
     if emit_profile {
         profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+        write_profile_artifacts_from_trace_with_source(&profile_trace, None, &artifacts_dir)?;
     }
     crate::write_run_manifest(&summary, &artifacts_dir)?;
     Ok(RunResult { summary })

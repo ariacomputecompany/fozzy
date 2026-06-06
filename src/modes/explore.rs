@@ -9,14 +9,14 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::finalize::write_summary_report;
 use crate::{
     Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind,
     MemoryRunReport, ProfileCaptureLevel, RecordCollisionPolicy, Reporter, RunIdentity, RunMode,
     RunSummary, ScenarioFile, ScenarioPath, ScenarioV1Distributed, TraceEvent, TraceFile,
     should_emit_profile_artifacts, wall_time_iso_utc, write_memory_artifacts,
-    write_profile_artifacts_from_trace,
+    write_profile_artifacts_from_trace_with_source,
 };
-use crate::finalize::write_summary_report;
 
 use crate::{FozzyError, FozzyResult};
 use crate::{HeapBudgetPolicy, heap_budget_findings_from_trace};
@@ -259,7 +259,11 @@ pub fn explore(
     }
     if should_emit_profile_artifacts(opt.profile_capture, status, should_record) {
         profile_trace.summary = summary.clone();
-        write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+        write_profile_artifacts_from_trace_with_source(
+            &profile_trace,
+            summary.identity.trace_path.as_deref().map(std::path::Path::new),
+            &artifacts_dir,
+        )?;
     }
     crate::write_run_manifest(&summary, &artifacts_dir)?;
 
@@ -352,7 +356,7 @@ pub fn replay_explore_trace(
         }
     }
     profile_trace.summary = summary.clone();
-    write_profile_artifacts_from_trace(&profile_trace, &artifacts_dir)?;
+    write_profile_artifacts_from_trace_with_source(&profile_trace, None, &artifacts_dir)?;
     crate::write_run_manifest(&summary, &artifacts_dir)?;
 
     Ok(crate::RunResult { summary })
