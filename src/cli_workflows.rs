@@ -302,16 +302,17 @@ fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatu
     )
 }
 
-fn corpus_add_status(value: &serde_json::Value, fallback_dir: &Path) -> (FullStepStatus, String) {
-    let added = value
-        .get("added")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| fallback_dir.to_path_buf());
+fn corpus_add_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let Some(added) = value.get("added").and_then(|v| v.as_str()) else {
+        return (
+            FullStepStatus::Failed,
+            "missing added path in corpus add response".to_string(),
+        );
+    };
+    let added = PathBuf::from(added);
     let detail = added.display().to_string();
-    let ok = added.exists();
     (
-        if ok {
+        if added.exists() {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
@@ -1795,7 +1796,7 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(value) => {
-                let (status, detail) = corpus_add_status(&value, &corpus_dir);
+                let (status, detail) = corpus_add_status(&value);
                 push("corpus_add", status, detail);
             }
             Err(err) => push("corpus_add", FullStepStatus::Failed, err.to_string()),
@@ -1846,13 +1847,16 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(value) => {
-                let import_dir = value
-                    .get("dir")
-                    .and_then(|v| v.as_str())
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| corpus_import_dir.clone());
-                let (status, detail) = directory_artifact_status(&import_dir);
-                push("corpus_import", status, detail);
+                if let Some(import_dir) = value.get("dir").and_then(|v| v.as_str()) {
+                    let (status, detail) = directory_artifact_status(Path::new(import_dir));
+                    push("corpus_import", status, detail);
+                } else {
+                    push(
+                        "corpus_import",
+                        FullStepStatus::Failed,
+                        "missing dir path in corpus import response".to_string(),
+                    );
+                }
             }
             Err(err) => push("corpus_import", FullStepStatus::Failed, err.to_string()),
         }
@@ -2280,6 +2284,14 @@ mod tests {
         let (status, detail) = corpus_minimize_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("files_before=0"));
+    }
+
+    #[test]
+    fn corpus_add_status_rejects_missing_added_path() {
+        let value = serde_json::json!({});
+        let (status, detail) = corpus_add_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("missing added path"));
     }
 
     #[test]
