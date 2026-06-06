@@ -238,6 +238,58 @@ fn directory_artifact_status(path: &Path) -> (FullStepStatus, String) {
     }
 }
 
+fn report_show_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let format = value
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pretty");
+    let bytes = value
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(|s| s.len())
+        .unwrap_or(0);
+    (
+        if bytes > 0 {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!("format={format} content_bytes={bytes}"),
+    )
+}
+
+fn report_query_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let status_value = value
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| value.to_string());
+    let ok = matches!(status_value.as_str(), "pass" | "fail" | "error" | "skip");
+    (
+        if ok {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!(".status={status_value}"),
+    )
+}
+
+fn report_query_paths_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let count = value
+        .get("paths")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    (
+        if count > 0 {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!("paths={count}"),
+    )
+}
+
 fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatus, String) {
     let strict_ok = enforce_strict_summary(strict, summary).is_ok();
     (
@@ -247,6 +299,54 @@ fn run_summary_pass_status(summary: &RunSummary, strict: bool) -> (FullStepStatu
             FullStepStatus::Failed
         },
         format!("status={:?} strict_ok={}", summary.status, strict_ok),
+    )
+}
+
+fn corpus_add_status(value: &serde_json::Value, fallback_dir: &Path) -> (FullStepStatus, String) {
+    let added = value
+        .get("added")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fallback_dir.to_path_buf());
+    let detail = added.display().to_string();
+    let ok = added.exists();
+    (
+        if ok {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        detail,
+    )
+}
+
+fn corpus_list_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let count = value.as_array().map(|v| v.len()).unwrap_or_default();
+    (
+        if count > 0 {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!("files={count}"),
+    )
+}
+
+fn corpus_minimize_status(value: &serde_json::Value) -> (FullStepStatus, String) {
+    let before = value.get("filesBefore").and_then(|v| v.as_u64()).unwrap_or(0);
+    let after = value.get("filesAfter").and_then(|v| v.as_u64()).unwrap_or(0);
+    let removed = value
+        .get("duplicatesRemoved")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let ok = before > 0 && after > 0 && after <= before;
+    (
+        if ok {
+            FullStepStatus::Passed
+        } else {
+            FullStepStatus::Failed
+        },
+        format!("files_before={before} files_after={after} duplicates_removed={removed}"),
     )
 }
 
@@ -1276,20 +1376,8 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(value) => {
-                let format = value
-                    .get("format")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("pretty");
-                let bytes = value
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.len())
-                    .unwrap_or(0);
-                push(
-                    "report_show",
-                    FullStepStatus::Passed,
-                    format!("format={format} content_bytes={bytes}"),
-                )
+                let (status, detail) = report_show_status(&value);
+                push("report_show", status, detail)
             }
             Err(err) => push("report_show", FullStepStatus::Failed, err.to_string()),
         }
@@ -1303,15 +1391,8 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(value) => {
-                let status_value = value
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| value.to_string());
-                push(
-                    "report_query",
-                    FullStepStatus::Passed,
-                    format!(".status={status_value}"),
-                )
+                let (status, detail) = report_query_status(&value);
+                push("report_query", status, detail)
             }
             Err(err) => push("report_query", FullStepStatus::Failed, err.to_string()),
         }
@@ -1324,17 +1405,10 @@ pub(super) fn run_full_command(
                 list_paths: true,
             },
         ) {
-            Ok(value) => push(
-                "report_query_paths",
-                FullStepStatus::Passed,
-                format!(
-                    "paths={}",
-                    value.get("paths")
-                        .and_then(|v| v.as_array())
-                        .map(|v| v.len())
-                        .unwrap_or(0)
-                ),
-            ),
+            Ok(value) => {
+                let (status, detail) = report_query_paths_status(&value);
+                push("report_query_paths", status, detail)
+            }
             Err(err) => push(
                 "report_query_paths",
                 FullStepStatus::Failed,
@@ -1642,14 +1716,10 @@ pub(super) fn run_full_command(
                 file: seed_file.clone(),
             },
         ) {
-            Ok(value) => push(
-                "corpus_add",
-                FullStepStatus::Passed,
-                value.get("added")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| corpus_dir.to_string_lossy().to_string()),
-            ),
+            Ok(value) => {
+                let (status, detail) = corpus_add_status(&value, &corpus_dir);
+                push("corpus_add", status, detail);
+            }
             Err(err) => push("corpus_add", FullStepStatus::Failed, err.to_string()),
         }
         match fozzy::corpus_command(
@@ -1658,14 +1728,10 @@ pub(super) fn run_full_command(
                 dir: corpus_dir.clone(),
             },
         ) {
-            Ok(value) => push(
-                "corpus_list",
-                FullStepStatus::Passed,
-                format!(
-                    "files={}",
-                    value.as_array().map(|v| v.len()).unwrap_or_default()
-                ),
-            ),
+            Ok(value) => {
+                let (status, detail) = corpus_list_status(&value);
+                push("corpus_list", status, detail);
+            }
             Err(err) => push("corpus_list", FullStepStatus::Failed, err.to_string()),
         }
         match fozzy::corpus_command(
@@ -1676,19 +1742,8 @@ pub(super) fn run_full_command(
             },
         ) {
             Ok(value) => {
-                let before = value.get("filesBefore").and_then(|v| v.as_u64()).unwrap_or(0);
-                let after = value.get("filesAfter").and_then(|v| v.as_u64()).unwrap_or(0);
-                let removed = value
-                    .get("duplicatesRemoved")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                push(
-                    "corpus_minimize",
-                    FullStepStatus::Passed,
-                    format!(
-                        "files_before={before} files_after={after} duplicates_removed={removed}"
-                    ),
-                )
+                let (status, detail) = corpus_minimize_status(&value);
+                push("corpus_minimize", status, detail)
             }
             Err(err) => push("corpus_minimize", FullStepStatus::Failed, err.to_string()),
         }
@@ -2144,6 +2199,26 @@ mod tests {
         let (status, detail) = directory_artifact_status(&path);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("missing"));
+    }
+
+    #[test]
+    fn report_show_status_rejects_empty_content() {
+        let value = serde_json::json!({"format": "pretty", "content": ""});
+        let (status, detail) = report_show_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("content_bytes=0"));
+    }
+
+    #[test]
+    fn corpus_minimize_status_rejects_empty_result() {
+        let value = serde_json::json!({
+            "filesBefore": 0,
+            "filesAfter": 0,
+            "duplicatesRemoved": 0
+        });
+        let (status, detail) = corpus_minimize_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("files_before=0"));
     }
 
     #[test]
