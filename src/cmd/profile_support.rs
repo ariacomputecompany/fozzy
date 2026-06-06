@@ -627,15 +627,7 @@ pub(super) fn resolve_profile_artifacts(
     let input = PathBuf::from(crate::normalize_run_or_trace_selector(selector));
     let direct_trace_input = input.exists() && input.is_file() && crate::is_trace_path(&input);
     if direct_trace_input {
-        let trace = TraceFile::read_json(&input)?;
-        if let Some(artifacts_dir) = trace
-            .summary
-            .identity
-            .artifacts_dir
-            .as_deref()
-            .map(PathBuf::from)
-            .filter(|dir| dir.exists() && dir.is_dir())
-        {
+        if let Some(artifacts_dir) = trusted_declared_profile_artifacts_dir(&input)? {
             return Ok((artifacts_dir, Some(input)));
         }
         let canonical = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
@@ -673,6 +665,49 @@ pub(super) fn resolve_profile_artifacts(
     }
 
     Ok((artifacts_dir, None))
+}
+
+fn trusted_declared_profile_artifacts_dir(trace_path: &Path) -> FozzyResult<Option<PathBuf>> {
+    let trace = TraceFile::read_json(trace_path)?;
+    let Some(artifacts_dir) = trace
+        .summary
+        .identity
+        .artifacts_dir
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|dir| dir.exists() && dir.is_dir())
+    else {
+        return Ok(None);
+    };
+
+    if profile_artifacts_exist(&artifacts_dir)
+        && !profile_artifacts_stale(&artifacts_dir, trace_path)?
+    {
+        return Ok(Some(artifacts_dir));
+    }
+
+    let Some(summary) =
+        crate::load_checked_report_summary_from_artifacts_dir(&artifacts_dir, &trace_path.display().to_string())?
+    else {
+        return Ok(None);
+    };
+    let Some(resolved_trace) = crate::resolve_trace_path_from_artifacts_dir(&artifacts_dir)? else {
+        return Ok(None);
+    };
+    let expected_trace =
+        std::fs::canonicalize(trace_path).unwrap_or_else(|_| trace_path.to_path_buf());
+    let actual_trace =
+        std::fs::canonicalize(&resolved_trace).unwrap_or_else(|_| resolved_trace.clone());
+    if actual_trace != expected_trace {
+        return Ok(None);
+    }
+    if summary.identity.run_id != trace.summary.identity.run_id
+        || summary.identity.seed != trace.summary.identity.seed
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(artifacts_dir))
 }
 
 fn refresh_manifest_for_profile_artifacts(artifacts_dir: &Path) -> FozzyResult<()> {

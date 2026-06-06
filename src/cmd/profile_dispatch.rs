@@ -501,7 +501,11 @@ pub(super) fn dispatch_profile_command(
             shrunk_trace.summary.identity.artifacts_dir =
                 Some(shrink_artifacts_dir.to_string_lossy().to_string());
             shrunk_trace.write_json(Path::new(&shrunk.out_trace_path))?;
-            write_profile_artifacts_from_trace(&shrunk_trace, &shrink_artifacts_dir)?;
+            write_profile_artifacts_from_trace_with_source(
+                &shrunk_trace,
+                Some(Path::new(&shrunk.out_trace_path)),
+                &shrink_artifacts_dir,
+            )?;
             let direction_name = match direction {
                 ProfileDirection::Increase => "increase",
                 ProfileDirection::Decrease => "decrease",

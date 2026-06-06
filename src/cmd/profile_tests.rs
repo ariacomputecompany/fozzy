@@ -607,6 +607,8 @@ fn resolve_profile_artifacts_prefers_declared_artifacts_dir_for_direct_trace() {
         serde_json::to_vec_pretty(&trace).expect("trace bytes"),
     )
     .expect("write trace");
+    write_profile_artifacts_from_trace_with_source(&trace, Some(&trace_path), &detached)
+        .expect("profile artifacts");
 
     let cfg = Config {
         base_dir: base_dir.clone(),
@@ -621,6 +623,72 @@ fn resolve_profile_artifacts_prefers_declared_artifacts_dir_for_direct_trace() {
         !base_dir.join("profile-cache").exists(),
         "declared artifacts dir should win over cache fallback"
     );
+}
+
+#[test]
+fn resolve_profile_artifacts_falls_back_to_cache_for_untrusted_declared_dir() {
+    let ws = temp_workspace("resolve-untrusted-declared-artifacts-dir");
+    let base_dir = ws.join(".fozzy");
+    let detached = ws.join("trace.profile-artifacts");
+    std::fs::create_dir_all(&detached).expect("detached dir");
+
+    let mut trace = sample_trace();
+    let trace_path = ws.join("direct.trace.fozzy");
+    trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(detached.to_string_lossy().to_string());
+    std::fs::write(
+        &trace_path,
+        serde_json::to_vec_pretty(&trace).expect("trace bytes"),
+    )
+    .expect("write trace");
+    std::fs::write(detached.join("profile.metrics.json"), br#"{"domains":[]}"#)
+        .expect("stale profile stub");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let (artifacts_dir, resolved_trace) =
+        profile_support::resolve_profile_artifacts(&cfg, &trace_path.to_string_lossy())
+            .expect("resolve profile");
+    assert_eq!(resolved_trace, Some(trace_path.clone()));
+    assert_ne!(artifacts_dir, detached);
+    assert!(artifacts_dir.starts_with(base_dir.join("profile-cache")));
+}
+
+#[test]
+fn resolve_profile_artifacts_accepts_declared_run_dir_for_same_trace() {
+    let ws = temp_workspace("resolve-declared-run-dir");
+    let base_dir = ws.join(".fozzy");
+    let run_dir = base_dir.join("runs").join("r1");
+    std::fs::create_dir_all(&run_dir).expect("run dir");
+
+    let mut trace = sample_trace();
+    let trace_path = ws.join("external.trace.fozzy");
+    trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    trace.summary.identity.report_path = Some(run_dir.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(run_dir.to_string_lossy().to_string());
+    std::fs::write(
+        &trace_path,
+        serde_json::to_vec_pretty(&trace).expect("trace bytes"),
+    )
+    .expect("write trace");
+    std::fs::write(
+        run_dir.join("report.json"),
+        serde_json::to_vec_pretty(&trace.summary).expect("summary bytes"),
+    )
+    .expect("write report");
+    crate::write_run_manifest(&trace.summary, &run_dir).expect("write manifest");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let (artifacts_dir, resolved_trace) =
+        profile_support::resolve_profile_artifacts(&cfg, &trace_path.to_string_lossy())
+            .expect("resolve profile");
+    assert_eq!(artifacts_dir, run_dir);
+    assert_eq!(resolved_trace, Some(trace_path.clone()));
 }
 
 #[test]
@@ -1039,6 +1107,19 @@ fn profile_shrink_writes_dedicated_artifacts_without_mutating_source_run_dir() {
     );
     assert!(artifacts_dir.join("profile.metrics.json").exists());
     assert!(artifacts_dir.join("profile.heap.json").exists());
+    let source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(artifacts_dir.join("profile.source.json")).expect("read shrink source"),
+    )
+    .expect("parse shrink source");
+    let recorded_trace = source
+        .get("tracePath")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .expect("trace path");
+    assert_eq!(
+        std::fs::canonicalize(&recorded_trace).expect("canonical recorded trace"),
+        std::fs::canonicalize(&out_trace).expect("canonical out trace")
+    );
     assert_eq!(
         std::fs::read(&original_metrics_path).expect("read original metrics"),
         original_metrics_bytes
