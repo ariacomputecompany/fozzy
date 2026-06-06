@@ -855,14 +855,20 @@ fn env_step_status(env: &fozzy::EnvInfo) -> (FullStepStatus, String) {
         .get("http")
         .map(|c| c.backend.as_str())
         .unwrap_or("unknown");
-    let ok = proc_backend != "unknown" && fs_backend != "unknown" && http_backend != "unknown";
+    let known_proc = matches!(proc_backend, "scripted" | "host");
+    let known_fs = matches!(fs_backend, "virtual_overlay" | "host");
+    let known_http = matches!(http_backend, "scripted" | "host");
+    let ok = known_proc && known_fs && known_http;
     (
         if ok {
             FullStepStatus::Passed
         } else {
             FullStepStatus::Failed
         },
-        format!("proc={proc_backend} fs={fs_backend} http={http_backend}"),
+        format!(
+            "proc={} known_proc={} fs={} known_fs={} http={} known_http={}",
+            proc_backend, known_proc, fs_backend, known_fs, http_backend, known_http
+        ),
     )
 }
 
@@ -3060,6 +3066,45 @@ mod tests {
         let (status, detail) = env_step_status(&env);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("proc=unknown"));
+        assert!(detail.contains("known_proc=false"));
+    }
+
+    #[test]
+    fn env_step_status_rejects_invalid_backend_names() {
+        let mut capabilities = std::collections::BTreeMap::new();
+        capabilities.insert(
+            "proc".to_string(),
+            fozzy::CapabilityInfo {
+                backend: "sandboxed".to_string(),
+                deterministic: true,
+            },
+        );
+        capabilities.insert(
+            "fs".to_string(),
+            fozzy::CapabilityInfo {
+                backend: "overlay".to_string(),
+                deterministic: true,
+            },
+        );
+        capabilities.insert(
+            "http".to_string(),
+            fozzy::CapabilityInfo {
+                backend: "mock".to_string(),
+                deterministic: true,
+            },
+        );
+        let env = fozzy::EnvInfo {
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            fozzy: fozzy::version_info(),
+            capabilities,
+        };
+        let (status, detail) = env_step_status(&env);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("proc=sandboxed"));
+        assert!(detail.contains("known_proc=false"));
+        assert!(detail.contains("known_fs=false"));
+        assert!(detail.contains("known_http=false"));
     }
 
     #[test]
