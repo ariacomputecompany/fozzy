@@ -1436,6 +1436,10 @@ fn doctor_report_status(
                 && !seen_issues.insert(format!("{code}\u{0}{message}"))
         })
         .count();
+    let mismatch_issue_present = report
+        .issues
+        .iter()
+        .any(|issue| issue.code.trim() == "determinism_audit_mismatch");
     let signal_count = report
         .nondeterminism_signals
         .as_ref()
@@ -1489,9 +1493,17 @@ fn doctor_report_status(
                     .is_some_and(|run| run >= 2 && run <= audit.runs)
             }
     });
+    let audit_issue_consistent = report.determinism_audit.as_ref().is_some_and(|audit| {
+        if audit.consistent {
+            !mismatch_issue_present
+        } else {
+            mismatch_issue_present
+        }
+    });
     let derived_ok = runs > 0
         && audit_present
         && audit_valid
+        && audit_issue_consistent
         && report.issues.is_empty()
         && invalid_issues == 0
         && duplicate_issues == 0
@@ -1516,13 +1528,14 @@ fn doctor_report_status(
         .collect::<Vec<_>>();
     let detail = if failing.is_empty() {
         format!(
-            "issues=0 signals=0 invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues=0 signals=0 invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} audit_issue_consistent={} runs={} scenario={} failed=<none> reported_ok={} derived_ok={} strict_policy_ok={}",
             invalid_issues,
             duplicate_issues,
             invalid_signals,
             duplicate_signals,
             audit_present,
             audit_valid,
+            audit_issue_consistent,
             runs,
             expected_scenario,
             report.ok,
@@ -1531,7 +1544,7 @@ fn doctor_report_status(
         )
     } else {
         format!(
-            "issues={} signals={} invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
+            "issues={} signals={} invalid_issues={} duplicate_issues={} invalid_signals={} duplicate_signals={} audit_present={} audit_valid={} audit_issue_consistent={} runs={} scenario={} failed={} reported_ok={} derived_ok={} strict_policy_ok={}",
             report.issues.len(),
             signal_count,
             invalid_issues,
@@ -1540,6 +1553,7 @@ fn doctor_report_status(
             duplicate_signals,
             audit_present,
             audit_valid,
+            audit_issue_consistent,
             runs,
             expected_scenario,
             failing.join("; "),
@@ -4956,6 +4970,54 @@ mod tests {
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("audit_present=true"));
         assert!(detail.contains("audit_valid=false"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_missing_mismatch_issue_for_inconsistent_audit() {
+        let report = fozzy::DoctorReport {
+            ok: true,
+            issues: Vec::new(),
+            nondeterminism_signals: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: false,
+                signatures: vec!["abc".to_string(), "def".to_string()],
+                first_mismatch_run: Some(2),
+            }),
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("audit_issue_consistent=false"));
+        assert!(detail.contains("derived_ok=false"));
+    }
+
+    #[test]
+    fn doctor_report_status_rejects_spurious_mismatch_issue_for_consistent_audit() {
+        let report = fozzy::DoctorReport {
+            ok: false,
+            issues: vec![fozzy::DoctorIssue {
+                code: "determinism_audit_mismatch".to_string(),
+                message: "mismatch".to_string(),
+                hint: None,
+            }],
+            nondeterminism_signals: None,
+            determinism_audit: Some(fozzy::DeterminismAudit {
+                scenario: "tests/repro.fozzy.json".to_string(),
+                runs: 2,
+                seed: 7,
+                consistent: true,
+                signatures: vec!["abc".to_string(), "abc".to_string()],
+                first_mismatch_run: None,
+            }),
+        };
+        let scenario = Path::new("tests/repro.fozzy.json");
+        let (status, detail) = doctor_report_status(&report, true, scenario, 2);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("audit_issue_consistent=false"));
         assert!(detail.contains("derived_ok=false"));
     }
 
