@@ -2,6 +2,8 @@
 
 #[path = "cmd/artifact_bundle.rs"]
 mod artifact_bundle;
+#[path = "cmd/artifact_catalog.rs"]
+mod artifact_catalog;
 #[path = "cmd/artifacts.rs"]
 mod artifacts;
 #[path = "cmd/ci.rs"]
@@ -68,6 +70,7 @@ mod tracefile;
 mod usage;
 
 pub(crate) use artifact_bundle::*;
+pub(crate) use artifact_catalog::*;
 pub use artifacts::*;
 pub use ci::*;
 pub use clock::*;

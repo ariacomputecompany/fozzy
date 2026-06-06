@@ -182,52 +182,7 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
         let trusted_artifacts_dir = trusted_explicit_trace_artifacts_dir(&run_path)?;
         let allow_sidecars_without_metadata = trusted_artifacts_dir.is_some();
         if let Some(artifacts_dir) = trusted_artifacts_dir {
-            for (kind, path) in [
-                (ArtifactKind::Timeline, artifacts_dir.join("timeline.json")),
-                (
-                    ArtifactKind::Profile,
-                    artifacts_dir.join("profile.timeline.json"),
-                ),
-                (
-                    ArtifactKind::Profile,
-                    artifacts_dir.join("profile.cpu.json"),
-                ),
-                (
-                    ArtifactKind::Profile,
-                    artifacts_dir.join("profile.heap.json"),
-                ),
-                (
-                    ArtifactKind::Profile,
-                    artifacts_dir.join("profile.latency.json"),
-                ),
-                (
-                    ArtifactKind::Profile,
-                    artifacts_dir.join("profile.metrics.json"),
-                ),
-                (ArtifactKind::Profile, artifacts_dir.join("symbols.json")),
-                (
-                    ArtifactKind::Memory,
-                    artifacts_dir.join("memory.timeline.json"),
-                ),
-                (
-                    ArtifactKind::Memory,
-                    artifacts_dir.join("memory.leaks.json"),
-                ),
-                (
-                    ArtifactKind::Memory,
-                    artifacts_dir.join("memory.graph.json"),
-                ),
-                (
-                    ArtifactKind::Memory,
-                    artifacts_dir.join("memory.delta.json"),
-                ),
-                (ArtifactKind::Report, artifacts_dir.join("report.json")),
-                (ArtifactKind::Events, artifacts_dir.join("events.json")),
-                (ArtifactKind::Coverage, artifacts_dir.join("coverage.json")),
-                (ArtifactKind::Manifest, artifacts_dir.join("manifest.json")),
-                (ArtifactKind::Report, artifacts_dir.join("report.html")),
-                (ArtifactKind::Report, artifacts_dir.join("junit.xml")),
-            ] {
+            for (kind, path) in crate::artifact_file_entries(&artifacts_dir) {
                 if path.exists() && path.is_file() {
                     files.push(path.clone());
                 }
@@ -267,91 +222,9 @@ fn artifacts_list(config: &Config, run: &str) -> FozzyResult<Vec<ArtifactEntry>>
     if let Some(trace_path) = resolve_trace_path_from_artifacts_dir(&artifacts_dir)? {
         push_if_exists(&mut out, ArtifactKind::Trace, trace_path)?;
     }
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Timeline,
-        artifacts_dir.join("timeline.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Profile,
-        artifacts_dir.join("profile.timeline.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Profile,
-        artifacts_dir.join("profile.cpu.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Profile,
-        artifacts_dir.join("profile.heap.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Profile,
-        artifacts_dir.join("profile.latency.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Profile,
-        artifacts_dir.join("profile.metrics.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Profile,
-        artifacts_dir.join("symbols.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Memory,
-        artifacts_dir.join("memory.timeline.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Memory,
-        artifacts_dir.join("memory.leaks.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Memory,
-        artifacts_dir.join("memory.graph.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Memory,
-        artifacts_dir.join("memory.delta.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Report,
-        artifacts_dir.join("report.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Events,
-        artifacts_dir.join("events.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Coverage,
-        artifacts_dir.join("coverage.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Manifest,
-        artifacts_dir.join("manifest.json"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Report,
-        artifacts_dir.join("report.html"),
-    )?;
-    push_if_exists(
-        &mut out,
-        ArtifactKind::Report,
-        artifacts_dir.join("junit.xml"),
-    )?;
+    for (kind, path) in crate::artifact_file_entries(&artifacts_dir) {
+        push_if_exists(&mut out, kind, path)?;
+    }
 
     Ok(out)
 }
@@ -370,25 +243,7 @@ fn validate_run_artifacts_for_listing(artifacts_dir: &Path, run: &str) -> FozzyR
     }
 
     let mut files = Vec::new();
-    for path in [
-        report,
-        manifest,
-        artifacts_dir.join("timeline.json"),
-        artifacts_dir.join("profile.timeline.json"),
-        artifacts_dir.join("profile.cpu.json"),
-        artifacts_dir.join("profile.heap.json"),
-        artifacts_dir.join("profile.latency.json"),
-        artifacts_dir.join("profile.metrics.json"),
-        artifacts_dir.join("symbols.json"),
-        artifacts_dir.join("memory.timeline.json"),
-        artifacts_dir.join("memory.leaks.json"),
-        artifacts_dir.join("memory.graph.json"),
-        artifacts_dir.join("memory.delta.json"),
-        artifacts_dir.join("events.json"),
-        artifacts_dir.join("coverage.json"),
-        artifacts_dir.join("report.html"),
-        artifacts_dir.join("junit.xml"),
-    ] {
+    for path in crate::artifact_file_paths(artifacts_dir) {
         if path.exists() {
             files.push(path);
         }
@@ -899,26 +754,9 @@ fn has_untrusted_sibling_artifacts(trace_path: &Path) -> FozzyResult<bool> {
                 return None;
             }
             let name = path.file_name()?.to_string_lossy().to_string();
-            let is_artifact = matches!(
-                name.as_str(),
-                "timeline.json"
-                    | "profile.timeline.json"
-                    | "profile.cpu.json"
-                    | "profile.heap.json"
-                    | "profile.latency.json"
-                    | "profile.metrics.json"
-                    | "symbols.json"
-                    | "memory.timeline.json"
-                    | "memory.leaks.json"
-                    | "memory.graph.json"
-                    | "memory.delta.json"
-                    | "report.json"
-                    | "events.json"
-                    | "coverage.json"
-                    | "manifest.json"
-                    | "report.html"
-                    | "junit.xml"
-            );
+            let is_artifact = crate::artifact_file_specs()
+                .iter()
+                .any(|(candidate, _)| *candidate == name);
             is_artifact.then_some(path)
         })
         .next()
