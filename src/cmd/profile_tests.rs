@@ -722,6 +722,100 @@ fn resolve_profile_artifacts_accepts_manifest_only_declared_run_dir_for_same_tra
 }
 
 #[test]
+fn resolve_profile_artifacts_accepts_exact_coherent_sibling_run_dir() {
+    let ws = temp_workspace("resolve-exact-sibling-run-dir");
+    let base_dir = ws.join(".fozzy");
+    std::fs::create_dir_all(&ws).expect("workspace dir");
+
+    let mut trace = sample_trace();
+    let trace_path = ws.join("direct.trace.fozzy");
+    trace.summary.identity.run_id = "r1".to_string();
+    trace.summary.identity.seed = 1;
+    trace.summary.identity.trace_path = Some(trace_path.to_string_lossy().to_string());
+    trace.summary.identity.report_path = Some(ws.join("report.json").to_string_lossy().to_string());
+    trace.summary.identity.artifacts_dir = Some(ws.to_string_lossy().to_string());
+    std::fs::write(
+        &trace_path,
+        serde_json::to_vec_pretty(&trace).expect("trace bytes"),
+    )
+    .expect("write trace");
+    std::fs::write(
+        ws.join("report.json"),
+        serde_json::to_vec_pretty(&trace.summary).expect("summary bytes"),
+    )
+    .expect("write report");
+    crate::write_run_manifest(&trace.summary, &ws).expect("write manifest");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let (artifacts_dir, resolved_trace) =
+        profile_support::resolve_profile_artifacts(&cfg, &trace_path.to_string_lossy())
+            .expect("resolve profile");
+    assert_eq!(artifacts_dir, ws);
+    assert_eq!(resolved_trace, Some(trace_path.clone()));
+    assert!(
+        !base_dir.join("profile-cache").exists(),
+        "exact coherent sibling wrapper should beat cache fallback"
+    );
+}
+
+#[test]
+fn resolve_profile_artifacts_ignores_coherent_foreign_sibling_run_dir() {
+    let ws = temp_workspace("resolve-foreign-sibling-run-dir");
+    let base_dir = ws.join(".fozzy");
+    std::fs::create_dir_all(&ws).expect("workspace dir");
+
+    let mut explicit_trace = sample_trace();
+    let explicit_trace_path = ws.join("direct.trace.fozzy");
+    explicit_trace.summary.identity.run_id = "explicit-run".to_string();
+    explicit_trace.summary.identity.seed = 1;
+    explicit_trace.summary.identity.trace_path =
+        Some(explicit_trace_path.to_string_lossy().to_string());
+    explicit_trace.summary.identity.report_path =
+        Some(ws.join("report.json").to_string_lossy().to_string());
+    explicit_trace.summary.identity.artifacts_dir = Some(ws.to_string_lossy().to_string());
+    std::fs::write(
+        &explicit_trace_path,
+        serde_json::to_vec_pretty(&explicit_trace).expect("explicit trace bytes"),
+    )
+    .expect("write explicit trace");
+
+    let mut foreign_trace = sample_trace();
+    let foreign_trace_path = ws.join("trace.fozzy");
+    foreign_trace.summary.identity.run_id = "foreign-run".to_string();
+    foreign_trace.summary.identity.seed = 1;
+    foreign_trace.summary.identity.trace_path =
+        Some(foreign_trace_path.to_string_lossy().to_string());
+    foreign_trace.summary.identity.report_path =
+        Some(ws.join("report.json").to_string_lossy().to_string());
+    foreign_trace.summary.identity.artifacts_dir = Some(ws.to_string_lossy().to_string());
+    std::fs::write(
+        &foreign_trace_path,
+        serde_json::to_vec_pretty(&foreign_trace).expect("foreign trace bytes"),
+    )
+    .expect("write foreign trace");
+    std::fs::write(
+        ws.join("report.json"),
+        serde_json::to_vec_pretty(&foreign_trace.summary).expect("foreign summary bytes"),
+    )
+    .expect("write report");
+    crate::write_run_manifest(&foreign_trace.summary, &ws).expect("write manifest");
+
+    let cfg = Config {
+        base_dir: base_dir.clone(),
+        ..Config::default()
+    };
+    let (artifacts_dir, resolved_trace) =
+        profile_support::resolve_profile_artifacts(&cfg, &explicit_trace_path.to_string_lossy())
+            .expect("resolve profile");
+    assert_eq!(resolved_trace, Some(explicit_trace_path.clone()));
+    assert_ne!(artifacts_dir, ws);
+    assert!(artifacts_dir.starts_with(base_dir.join("profile-cache")));
+}
+
+#[test]
 fn profile_commands_support_run_id_with_profile_artifacts_only() {
     let ws = temp_workspace("artifacts-only-run");
     let base_dir = ws.join(".fozzy");
