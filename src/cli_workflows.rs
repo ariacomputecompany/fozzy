@@ -175,13 +175,14 @@ fn memory_top_status(value: &serde_json::Value) -> (FullStepStatus, String) {
         .and_then(|v| v.as_array())
         .map(|v| v.len())
         .unwrap_or(0);
+    let consistent = shown <= total as usize;
     (
-        if total > 0 {
+        if total > 0 || !consistent {
             FullStepStatus::Failed
         } else {
             FullStepStatus::Passed
         },
-        format!("total_leaks={} shown={}", total, shown),
+        format!("total_leaks={} shown={} consistent={}", total, shown, consistent),
     )
 }
 
@@ -2923,6 +2924,18 @@ mod tests {
         let (status, detail) = memory_top_status(&value);
         assert!(matches!(status, FullStepStatus::Failed));
         assert!(detail.contains("total_leaks=1"));
+    }
+
+    #[test]
+    fn memory_top_status_rejects_inconsistent_payload() {
+        let value = serde_json::json!({
+            "total": 0,
+            "leaks": [{"allocId": 1}]
+        });
+        let (status, detail) = memory_top_status(&value);
+        assert!(matches!(status, FullStepStatus::Failed));
+        assert!(detail.contains("shown=1"));
+        assert!(detail.contains("consistent=false"));
     }
 
     #[test]
