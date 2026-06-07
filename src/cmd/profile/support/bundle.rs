@@ -19,7 +19,7 @@ pub(in crate::profile) fn load_profile_bundle(
     spec: ProfileLoadSpec,
 ) -> FozzyResult<ProfileBundle> {
     let source = resolve_profile_source(config, selector)?;
-    let (artifacts_dir, trace_path, expected_identity, can_refresh_from_trace) = match &source {
+    let (artifacts_dir, trace_path, expected_identity) = match &source {
         ResolvedProfileSource::DirectTrace {
             artifacts_dir,
             trace_path,
@@ -29,7 +29,6 @@ pub(in crate::profile) fn load_profile_bundle(
                 artifacts_dir.clone(),
                 Some(trace_path.clone()),
                 Some((trace.summary.identity.run_id, trace.summary.identity.seed)),
-                false,
             )
         }
         ResolvedProfileSource::Artifacts {
@@ -50,18 +49,17 @@ pub(in crate::profile) fn load_profile_bundle(
                     )
                 })
             };
-            (artifacts_dir.clone(), trace_path, expected_identity, true)
+            (artifacts_dir.clone(), trace_path, expected_identity)
         }
     };
     if let Some(ref trace_path) = trace_path {
         if profile_artifacts_stale(&artifacts_dir, &trace_path)? {
-            let trace = crate::read_cached_trace_file(&trace_path)?;
-            write_profile_artifacts_from_trace_with_source(
-                &trace,
-                Some(&trace_path),
-                &artifacts_dir,
-            )?;
-            refresh_manifest_for_profile_artifacts(&artifacts_dir)?;
+            let trace = crate::read_cached_trace_file(trace_path)?;
+            let bundle = build_profile_bundle_from_trace(&trace, &artifacts_dir, spec);
+            if let Some((expected_run_id, expected_seed)) = expected_identity {
+                validate_profile_bundle_identity(&bundle, &expected_run_id, expected_seed)?;
+            }
+            return Ok(bundle);
         }
     } else if !profile_artifacts_exist(&artifacts_dir) {
         return Err(FozzyError::InvalidArgument(format!(
@@ -69,18 +67,16 @@ pub(in crate::profile) fn load_profile_bundle(
         )));
     }
 
-    let mut bundle = match read_profile_bundle_from_dir(&artifacts_dir, spec) {
+    let bundle = match read_profile_bundle_from_dir(&artifacts_dir, spec) {
         Ok(bundle) => bundle,
         Err(err) => {
             if let Some(trace_path) = trace_path.clone() {
                 let trace = crate::read_cached_trace_file(&trace_path)?;
-                write_profile_artifacts_from_trace_with_source(
-                    &trace,
-                    Some(&trace_path),
-                    &artifacts_dir,
-                )?;
-                refresh_manifest_for_profile_artifacts(&artifacts_dir)?;
-                read_profile_bundle_from_dir(&artifacts_dir, spec)?
+                let bundle = build_profile_bundle_from_trace(&trace, &artifacts_dir, spec);
+                if let Some((expected_run_id, expected_seed)) = expected_identity.clone() {
+                    validate_profile_bundle_identity(&bundle, &expected_run_id, expected_seed)?;
+                }
+                bundle
             } else {
                 return Err(err);
             }
@@ -89,26 +85,45 @@ pub(in crate::profile) fn load_profile_bundle(
     if let Some((expected_run_id, expected_seed)) = expected_identity {
         if let Err(err) = validate_profile_bundle_identity(&bundle, &expected_run_id, expected_seed)
         {
-            if can_refresh_from_trace {
-                if let Some(trace_path) = trace_path.clone() {
-                    let trace = crate::read_cached_trace_file(&trace_path)?;
-                    write_profile_artifacts_from_trace_with_source(
-                        &trace,
-                        Some(&trace_path),
-                        &artifacts_dir,
-                    )?;
-                    refresh_manifest_for_profile_artifacts(&artifacts_dir)?;
-                    bundle = read_profile_bundle_from_dir(&artifacts_dir, spec)?;
-                    validate_profile_bundle_identity(&bundle, &expected_run_id, expected_seed)?;
-                } else {
-                    return Err(err);
-                }
-            } else {
-                return Err(err);
+            if let Some(trace_path) = trace_path.clone() {
+                let trace = crate::read_cached_trace_file(&trace_path)?;
+                let rebuilt = build_profile_bundle_from_trace(&trace, &artifacts_dir, spec);
+                validate_profile_bundle_identity(&rebuilt, &expected_run_id, expected_seed)?;
+                return Ok(rebuilt);
             }
+            return Err(err);
         }
     }
     Ok(bundle)
+}
+
+fn build_profile_bundle_from_trace(
+    trace: &TraceFile,
+    artifacts_dir: &Path,
+    spec: ProfileLoadSpec,
+) -> ProfileBundle {
+    let timeline = build_profile_timeline(trace);
+    let cpu_profile = build_cpu_profile(trace, &timeline);
+    let heap_profile = build_heap_profile(trace, &timeline);
+    let latency_profile = build_latency_profile(trace, &timeline);
+    let symbols = build_symbols_map(trace, &timeline, &cpu_profile);
+    let metrics = build_profile_metrics(
+        trace,
+        &timeline,
+        &cpu_profile,
+        &heap_profile,
+        &latency_profile,
+    );
+
+    ProfileBundle {
+        artifacts_dir: artifacts_dir.to_path_buf(),
+        timeline: spec.timeline.then_some(timeline),
+        cpu: spec.cpu.then_some(cpu_profile),
+        heap: spec.heap.then_some(heap_profile),
+        latency: spec.latency.then_some(latency_profile),
+        metrics,
+        symbols: spec.symbols.then_some(symbols),
+    }
 }
 
 pub(in crate::profile) fn read_profile_bundle_from_dir(

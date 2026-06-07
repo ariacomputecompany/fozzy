@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::{Config, FozzyError, FozzyResult, MemoryGraph, MemoryLeak, MemorySummary, TraceFile};
+use crate::{Config, FozzyError, FozzyResult, MemoryGraph, MemoryLeak, MemorySummary};
 
 #[derive(Debug, Subcommand)]
 pub enum MemoryCommand {
@@ -344,7 +344,7 @@ fn trusted_explicit_memory_leaks_path(trace_path: &Path) -> FozzyResult<Option<P
 }
 
 fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
-    let trace = TraceFile::read_json(path)?;
+    let trace = crate::read_cached_trace_file(path)?;
     let trace_memory = trace.memory;
     let summary = trace_memory
         .as_ref()

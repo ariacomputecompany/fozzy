@@ -1,4 +1,5 @@
 use super::*;
+use crate::TraceFile;
 
 #[test]
 fn memory_artifacts_reject_stale_report_without_manifest() {
@@ -57,9 +58,10 @@ fn memory_artifacts_reject_stale_report_without_manifest() {
         ..Config::default()
     };
     let err = load_memory_bundle(&cfg, "r1").expect_err("must reject stale report");
-    assert!(err
-        .to_string()
-        .contains("missing required files: manifest.json"));
+    assert!(
+        err.to_string()
+            .contains("missing required files: manifest.json")
+    );
 }
 #[test]
 fn direct_trace_uses_manifest_only_declared_artifacts_dir_for_memory_graph() {
@@ -201,11 +203,13 @@ fn direct_trace_uses_manifest_only_declared_artifacts_dir_for_memory_graph() {
 
     let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
     assert_eq!(bundle.graph.nodes.len(), 2);
-    assert!(bundle
-        .graph
-        .nodes
-        .iter()
-        .any(|node| node.id == "alloc:manifest-only"));
+    assert!(
+        bundle
+            .graph
+            .nodes
+            .iter()
+            .any(|node| node.id == "alloc:manifest-only")
+    );
 }
 #[test]
 fn memory_run_id_rejects_incoherent_manifest_only_wrapper() {

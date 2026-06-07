@@ -20,20 +20,33 @@ use query::{list_query_paths, query_value};
 
 #[derive(Debug, Subcommand)]
 pub enum ReportCommand {
+    /// Render one run or trace summary in the requested output format.
     Show {
+        /// Run selector, run id, or direct trace path.
+        #[arg(value_name = "RUN_OR_TRACE")]
         run: String,
+        /// Output format for the rendered report payload.
         #[arg(long, default_value = "pretty")]
         format: Reporter,
     },
+    /// Query one run or trace summary using Fozzy's path-expression subset.
     Query {
+        /// Run selector, run id, or direct trace path.
+        #[arg(value_name = "RUN_OR_TRACE")]
         run: String,
+        /// Path expression such as `.status` or `.findings[0].title`.
         #[arg(long = "path")]
         path_expr: Option<String>,
+        /// List queryable paths instead of evaluating an expression.
         #[arg(long, default_value_t = false)]
         list_paths: bool,
     },
+    /// Compare multiple runs/traces for flaky outcome patterns.
     Flaky {
+        /// Two or more run selectors or direct trace paths.
+        #[arg(value_name = "RUNS")]
         runs: Vec<String>,
+        /// Maximum allowed flake rate percentage.
         #[arg(long)]
         flake_budget: Option<FlakeBudget>,
     },

@@ -67,29 +67,6 @@ pub(in crate::profile) fn trusted_explicit_profile_artifacts_dir(
     Ok(crate::trusted_artifact_bundle_for_trace(trace_path)?.map(|bundle| bundle.artifacts_dir))
 }
 
-pub(in crate::profile) fn refresh_manifest_for_profile_artifacts(
-    artifacts_dir: &Path,
-) -> FozzyResult<()> {
-    let selector = artifacts_dir.display().to_string();
-    let Some(bundle) = crate::load_validated_artifact_bundle_from_dir(artifacts_dir, &selector)?
-    else {
-        return Ok(());
-    };
-    let trace_path = bundle.trace_path.as_deref().ok_or_else(|| {
-        crate::FozzyError::InvalidArgument(
-            "validated artifact bundle is missing trace path".to_string(),
-        )
-    })?;
-    let trace = crate::read_cached_trace_file(trace_path)?;
-    let profile = crate::write_profile_artifacts_from_trace_with_source(
-        &trace,
-        Some(trace_path),
-        artifacts_dir,
-    )?;
-    crate::write_run_manifest_with_profile(&bundle.summary, artifacts_dir, Some(&profile))?;
-    Ok(())
-}
-
 pub(in crate::profile) fn profile_artifacts_exist(artifacts_dir: &Path) -> bool {
     for name in [
         "profile.timeline.json",

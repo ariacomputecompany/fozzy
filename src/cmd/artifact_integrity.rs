@@ -107,7 +107,7 @@ pub(crate) fn validate_manifest_trace_integrity(files: &[PathBuf], run: &str) ->
                 "invalid manifest for {run:?}: missing declared trace artifact"
             ))
         })?;
-    let trace = TraceFile::read_json(&trace_path)?;
+    let trace = crate::read_cached_trace_file(&trace_path)?;
     validate_profile_artifact_identities(
         files,
         run,
@@ -245,7 +245,7 @@ pub(crate) fn validate_manifest_integrity(files: &[PathBuf], run: &str) -> Fozzy
     validate_memory_artifact_coherence(files, run, report.memory.as_ref())?;
     validate_reporter_artifacts(files, run, &report)?;
     if let Some(trace_path) = trace_path {
-        let trace = TraceFile::read_json(trace_path)?;
+        let trace = crate::read_cached_trace_file(trace_path)?;
         validate_profile_artifact_identities(
             files,
             run,

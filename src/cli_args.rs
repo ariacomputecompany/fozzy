@@ -131,6 +131,7 @@ pub(crate) enum Command {
         filter: Option<String>,
 
         /// Reporter artifact format (`pretty`, `junit`, or `html`). Use global `--json` for machine-readable stdout.
+        /// Reporter artifact format (`pretty`, `junit`, or `html`). Use global `--json` for machine-readable stdout.
         #[arg(long, default_value = "pretty")]
         reporter: ExecutionReporter,
 
@@ -188,6 +189,7 @@ pub(crate) enum Command {
         #[arg(long)]
         timeout: Option<FozzyDuration>,
 
+        /// Reporter artifact format (`pretty`, `junit`, or `html`). Use global `--json` for machine-readable stdout.
         #[arg(long, default_value = "pretty")]
         reporter: ExecutionReporter,
 
@@ -254,6 +256,7 @@ pub(crate) enum Command {
         #[arg(long)]
         record: Option<PathBuf>,
 
+        /// Reporter artifact format (`pretty`, `junit`, or `html`). Use global `--json` for machine-readable stdout.
         #[arg(long, default_value = "pretty")]
         reporter: ExecutionReporter,
 
@@ -354,14 +357,18 @@ pub(crate) enum Command {
 
     /// Replay a previously recorded run exactly
     Replay {
+        /// Recorded trace file to replay.
         trace: PathBuf,
 
+        /// Stream the replay step-by-step instead of only printing the final summary.
         #[arg(long)]
         step: bool,
 
+        /// Stop replay after this deterministic duration.
         #[arg(long)]
         until: Option<FozzyDuration>,
 
+        /// Include recorded events in the replay output stream.
         #[arg(long)]
         dump_events: bool,
 
@@ -381,6 +388,7 @@ pub(crate) enum Command {
         #[arg(long)]
         profile_export_out: Option<PathBuf>,
 
+        /// Reporter artifact format (`pretty`, `junit`, or `html`). Use global `--json` for machine-readable stdout.
         #[arg(long, default_value = "pretty")]
         reporter: ExecutionReporter,
     },

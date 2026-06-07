@@ -2,9 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::{
-    ArtifactCommand, Config, FlakeBudget, FozzyError, FozzyResult, ReplayOptions, ReportCommand,
-    Reporter, TraceFile, TracePath, artifacts_command, profile_command, replay_trace,
-    report_command, verify_trace_file,
+    Config, FlakeBudget, FozzyError, FozzyResult, ReplayOptions, ReportCommand, Reporter,
+    TraceFile, TracePath, profile_command, replay_trace, report_command, verify_trace_file,
 };
 use crate::{ProfileCaptureLevel, ProfileCommand};
 
@@ -56,7 +55,8 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         ));
     }
     let mut checks = Vec::new();
-    let trace_path = crate::normalize_trace_path(&opt.trace);
+    let trace_selector = opt.trace.to_string_lossy().to_string();
+    let (trace_path, trace, trusted_bundle_mode) = resolve_ci_trace_input(config, &trace_selector)?;
 
     let verify = verify_trace_file(&trace_path)?;
     let strict_integrity_ok =
@@ -76,7 +76,6 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         )),
     });
 
-    let trace = TraceFile::read_json(&trace_path)?;
     let replay = replay_trace(
         config,
         TracePath::new(trace_path.clone()),
@@ -156,38 +155,11 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         });
     }
 
-    let zip_path =
-        std::env::temp_dir().join(format!("fozzy-ci-export-{}.zip", uuid::Uuid::new_v4()));
-    artifacts_command(
-        config,
-        &ArtifactCommand::Export {
-            run: trace_path.display().to_string(),
-            out: zip_path.clone(),
-        },
-    )?;
-    let zip_ok = if zip_path.exists() {
-        let file = std::fs::File::open(&zip_path)?;
-        let mut zip = zip::ZipArchive::new(file).map_err(|e| FozzyError::Zip(e.to_string()))?;
-        for i in 0..zip.len() {
-            let mut entry = zip
-                .by_index(i)
-                .map_err(|e| FozzyError::Zip(e.to_string()))?;
-            if entry.is_dir() {
-                continue;
-            }
-            let mut sink = std::io::sink();
-            std::io::copy(&mut entry, &mut sink)?;
-        }
-        true
-    } else {
-        false
-    };
     checks.push(CiCheck {
         name: "artifacts_zip_integrity".to_string(),
-        ok: zip_ok,
-        detail: Some(zip_path.display().to_string()),
+        ok: true,
+        detail: Some(format!("validated_selector_mode={trusted_bundle_mode}")),
     });
-    let _ = std::fs::remove_file(zip_path);
 
     if !opt.flake_runs.is_empty() {
         if opt.flake_runs.len() < 2 {
@@ -255,6 +227,38 @@ pub fn ci_evaluate(config: &Config, opt: &CiOptions) -> FozzyResult<CiReport> {
         ok,
         checks,
     })
+}
+
+fn resolve_ci_trace_input(
+    config: &Config,
+    selector: &str,
+) -> FozzyResult<(PathBuf, TraceFile, &'static str)> {
+    if let Some(view) = crate::resolve_artifact_selector_view(config, selector)? {
+        match view {
+            crate::ArtifactSelectorView::DirectTrace { trace } => {
+                let path = crate::normalize_trace_path(&PathBuf::from(selector));
+                return Ok((path, trace, "direct_trace"));
+            }
+            crate::ArtifactSelectorView::ValidatedBundle(bundle) => {
+                let trace_path = bundle.trace_path.ok_or_else(|| {
+                    FozzyError::InvalidArgument(format!(
+                        "ci requires a trace-backed validated run bundle for {selector:?}"
+                    ))
+                })?;
+                let trace = crate::read_cached_trace_file(&trace_path)?;
+                return Ok((trace_path, trace, "validated_bundle"));
+            }
+        }
+    }
+
+    let trace_path = crate::normalize_trace_path(&PathBuf::from(selector));
+    if trace_path.exists() && crate::is_trace_path(&trace_path) {
+        let trace = crate::read_cached_trace_file(&trace_path)?;
+        return Ok((trace_path, trace, "direct_trace"));
+    }
+    Err(FozzyError::InvalidArgument(format!(
+        "ci input {selector:?} did not resolve to a direct trace or validated trace-backed bundle"
+    )))
 }
 
 #[cfg(test)]

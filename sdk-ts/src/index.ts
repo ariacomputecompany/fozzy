@@ -3,8 +3,9 @@ import { writeFile } from "node:fs/promises";
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 export type Duration = `${number}ms` | `${number}s` | `${number}m` | `${number}h`;
-export type Reporter = "pretty" | "json" | "junit" | "html";
-export type ProfileCaptureLevel = "baseline" | "sampled" | "full";
+export type ExecutionReporter = "pretty" | "junit" | "html";
+export type ReportFormat = "pretty" | "json" | "junit" | "html";
+export type ProfileCaptureLevel = "baseline" | "full";
 export type ExitStatus = "pass" | "fail" | "error" | "timeout" | "crash";
 export type RunMode = "test" | "run" | "fuzz" | "explore" | "replay";
 
@@ -81,7 +82,7 @@ export interface TestOptions extends MemoryOptions {
   jobs?: number;
   timeout?: Duration;
   filter?: string;
-  reporter?: Reporter;
+  reporter?: ExecutionReporter;
   record?: string;
   failFast?: boolean;
   profileCapture?: ProfileCaptureLevel;
@@ -91,7 +92,7 @@ export interface RunOptions extends MemoryOptions {
   det?: boolean;
   seed?: number;
   timeout?: Duration;
-  reporter?: Reporter;
+  reporter?: ExecutionReporter;
   record?: string;
   profileCapture?: ProfileCaptureLevel;
 }
@@ -107,7 +108,7 @@ export interface FuzzOptions {
   mutator?: string;
   shrink?: boolean;
   record?: string;
-  reporter?: Reporter;
+  reporter?: ExecutionReporter;
   crashOnly?: boolean;
   minimize?: boolean;
   profileCapture?: ProfileCaptureLevel;
@@ -132,7 +133,7 @@ export interface ExploreOptions extends MemoryOptions {
   record?: string;
   shrink?: boolean;
   minimize?: boolean;
-  reporter?: Reporter;
+  reporter?: ExecutionReporter;
   profileCapture?: ProfileCaptureLevel;
 }
 
@@ -144,7 +145,7 @@ export interface ReplayOptions {
   profileRegen?: boolean;
   profileExportFormat?: "speedscope" | "pprof" | "otlp";
   profileExportOut?: string;
-  reporter?: Reporter;
+  reporter?: ExecutionReporter;
 }
 
 export interface ShrinkOptions {
@@ -162,7 +163,7 @@ export interface DoctorOptions {
 }
 
 export interface ReportShowOptions {
-  format?: Reporter;
+  format?: ReportFormat;
 }
 
 export interface CiOptions {
@@ -520,8 +521,8 @@ export class Fozzy {
     return await this.execJson(args);
   }
 
-  async reportQuery(runOrTrace: string, jq: string): Promise<unknown> {
-    return await this.execJson(["report", "query", runOrTrace, "--jq", jq]);
+  async reportQuery(runOrTrace: string, pathExpr: string): Promise<unknown> {
+    return await this.execJson(["report", "query", runOrTrace, "--path", pathExpr]);
   }
 
   async reportFlaky(runs: string[]): Promise<unknown> {

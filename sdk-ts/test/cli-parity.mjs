@@ -70,6 +70,11 @@ async function main() {
         `report parity failed for selector ${selector}`,
       );
       assert.deepEqual(
+        await sdk.reportQuery(selector, ".status"),
+        cliJson(ws, config, ["report", "query", selector, "--path", ".status"]),
+        `report query parity failed for selector ${selector}`,
+      );
+      assert.deepEqual(
         await sdk.memoryTop(selector),
         cliJson(ws, config, ["memory", "top", selector]),
         `memory parity failed for selector ${selector}`,

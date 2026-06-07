@@ -106,11 +106,13 @@ fn direct_trace_uses_exact_coherent_sibling_memory_graph() {
 
     let bundle = load_from_trace(&trace_path, &trace_path.to_string_lossy()).expect("bundle");
     assert_eq!(bundle.graph.nodes.len(), 2);
-    assert!(bundle
-        .graph
-        .nodes
-        .iter()
-        .any(|node| node.id == "alloc:exact"));
+    assert!(
+        bundle
+            .graph
+            .nodes
+            .iter()
+            .any(|node| node.id == "alloc:exact")
+    );
     assert_eq!(bundle.leaks.len(), 1);
     assert_eq!(bundle.leaks[0].alloc_id, 41);
 }

@@ -98,12 +98,11 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 
 ```bash
 fozzy test [globs...] [--det] [--seed <n>] [--jobs <n>] [--timeout <dur>] \
-  [--filter <expr>] [--reporter <json|pretty|junit|html>] \
+  [--filter <expr>] [--reporter <pretty|junit|html>] \
   [--record <path>] [--record-collision error|overwrite|append] [--fail-fast] \
-  [--profile-capture baseline|sampled|full] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
-  [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
+  [--fail-on-leak] [--leak-budget <bytes>]
 ```
 
 `fozzy test` executes Fozzy scenario files. It does not directly launch arbitrary host test commands.
@@ -118,9 +117,9 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 
 ```bash
 fozzy run <scenario> [--det] [--seed <n>] [--timeout <dur>] \
-  [--reporter <json|pretty|junit|html>] \
+  [--reporter <pretty|junit|html>] \
   [--record <path>] [--record-collision append|overwrite|error] \
-  [--profile-capture baseline|sampled|full] \
+  [--profile-capture baseline|full] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
@@ -133,8 +132,8 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 fozzy fuzz <target> [--mode coverage|property] [--seed <n>] [--time <dur>] \
   [--runs <n>] [--max-input <bytes>] [--corpus <dir>] [--mutator <name>] \
   [--shrink] [--record <path>] [--record-collision error|overwrite|append] \
-  [--reporter <json|pretty|junit|html>] [--crash-only] [--minimize] \
-  [--profile-capture baseline|sampled|full] \
+  [--reporter <pretty|junit|html>] [--crash-only] [--minimize] \
+  [--profile-capture baseline|full] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
@@ -149,8 +148,8 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 fozzy explore <scenario> [--seed <n>] [--time <dur>] [--steps <n>] [--nodes <n>] \
   [--faults <preset|file>] [--schedule <strategy>] [--checker <name>] \
   [--record <path>] [--record-collision error|overwrite|append] [--shrink] \
-  [--reporter <json|pretty|junit|html>] [--minimize] \
-  [--profile-capture baseline|sampled|full] \
+  [--reporter <pretty|junit|html>] [--minimize] \
+  [--profile-capture baseline|full] \
   [--mem-track] [--mem-limit-mb <n>] [--mem-fail-after <n>] \
   [--mem-fragmentation-seed <n>] [--mem-pressure-wave <pattern>] \
   [--fail-on-leak] [--leak-budget <bytes>] [--mem-artifacts]
@@ -167,9 +166,9 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 
 ```bash
 fozzy replay <trace.fozzy> [--step] [--until <dur>] [--dump-events] \
-  [--profile-capture baseline|sampled|full] [--profile-regen] \
+  [--profile-capture baseline|full] [--profile-regen] \
   [--profile-export-format speedscope|pprof|otlp --profile-export-out <path>] \
-  [--reporter <json|pretty|junit|html>]
+  [--reporter <pretty|junit|html>]
 ```
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
@@ -184,7 +183,7 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 
 ```bash
 fozzy shrink <trace.fozzy> [--out <trace>] [--budget <dur>] [--aggressive] \
-  [--minimize input|schedule|faults|all] [--reporter <json|pretty|junit|html>]
+  [--minimize input|schedule|faults|all] [--reporter <pretty>]
 ```
 Strictest setting suggestion: strict mode is already on by default; pass `--unsafe` only when intentionally relaxing checks.
 
