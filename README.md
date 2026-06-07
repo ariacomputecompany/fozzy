@@ -1,7 +1,7 @@
 # Fozzy
 
-Fozzy is a deterministic testing engine for systems code.
-It provides a native runtime for test execution, fuzzing, distributed schedule exploration, replay, and shrinking.
+Fozzy is a deterministic testing, fuzzing, replay, and exploration runtime.
+It provides one native execution surface for scenario runs, suite runs, distributed fault exploration, trace replay, shrinking, artifact inspection, memory diagnostics, profile analysis, and local CI-style gate checks.
 
 ## Why use Fozzy
 
@@ -17,14 +17,30 @@ Fozzy is designed to catch and debug high-cost failures that traditional test ru
 
 Result: every failure can be recorded, replayed, minimized, and shared as a reproducible artifact.
 
-## Core Guarantees
+## Current Guarantees
 
-- Deterministic runtime in `--det` mode (seeded RNG, virtual time, decision logging).
-- Replay-safe trace model (`.fozzy`) with schema/version + checksum integrity support.
-- Strict mode (`--strict`) to promote warning-like conditions to hard failures.
-- Atomic artifact writes and collision-safe recording policies.
-- Machine-readable JSON outputs across run, replay, report, and CI gating flows.
-- Deterministic memory correctness mode (`--mem-track`) with leak budgets and replayable memory artifacts.
+- Deterministic execution in `--det` mode with seeded RNG, virtual time, and recorded decision logs.
+- Recorded traces use the `.fozzy` format with versioned structure and checksum validation.
+- `fozzy trace verify` reports checksum presence and checksum validity explicitly.
+- `fozzy replay` reconstructs recorded executions from trace decisions instead of rerunning live effects.
+- Strict mode is on by default and promotes warning-class integrity problems into hard failures unless `--unsafe` is used explicitly.
+- Artifact writes are atomic and trace recording supports explicit collision policies.
+- Host proc, fs, and http backends can be used in deterministic mode; live observations are captured into the trace so replay remains deterministic.
+- Memory tracking is opt-in and supports leak budgets, memory graphs, memory diffs, and replay-safe memory summaries.
+- Run selectors support explicit run ids and trace paths, plus documented aliases like `latest`, `last-pass`, and `last-fail`.
+- Machine-readable JSON is available across the operational verification surface, including `test`, `run`, `replay`, `trace verify`, `doctor`, `ci`, `env`, `version`, `schema`, and `validate`.
+
+## End-to-End Flow
+
+The core Fozzy workflow is:
+
+1. execute a scenario or suite
+2. optionally record a trace
+3. verify the trace
+4. replay the trace
+5. run CI-style integrity and parity checks against that trace
+
+That gives one concrete artifact chain for debugging and handoff instead of a best-effort rerun model.
 
 ## Runtime Backends
 
@@ -77,24 +93,27 @@ fozzy init --force
 fozzy run tests/example.fozzy.json --det --json
 ```
 
-Record/replay/shrink flow:
+Recorded trace lifecycle:
 
 ```bash
-fozzy run fixtures/fail.fozzy.json --det --json
-fozzy replay .fozzy/runs/<runId>/trace.fozzy --json
-fozzy shrink .fozzy/runs/<runId>/trace.fozzy --minimize all --json
+fozzy run tests/example.fozzy.json --det --record /tmp/run.fozzy --json
+fozzy trace verify /tmp/run.fozzy --strict --json
+fozzy replay /tmp/run.fozzy --json
+fozzy ci /tmp/run.fozzy --json
 ```
 
-Gate a trace before merge:
+Representative strict suite flow:
 
 ```bash
-fozzy ci .fozzy/runs/<runId>/trace.fozzy --json
+fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 12345 --json
+fozzy test --det --strict tests/example.fozzy.json tests/memory.pass.fozzy.json --json
 ```
 
-Strict integrity check:
+Host-backed deterministic run:
 
 ```bash
-fozzy --strict trace verify .fozzy/runs/<runId>/trace.fozzy --json
+fozzy run tests/host.pass.fozzy.json --det \
+  --proc-backend host --fs-backend host --http-backend host --json
 ```
 
 ## Install (dev)
