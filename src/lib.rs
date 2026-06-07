@@ -46,20 +46,20 @@ mod fuzz;
 mod host;
 #[path = "runtime/init_scaffold.rs"]
 mod init_scaffold;
-#[path = "cmd/map_cmd.rs"]
-mod map_cmd;
+#[path = "cmd/map.rs"]
+mod map;
+#[path = "cmd/memory.rs"]
+mod mem;
 #[path = "model/memory.rs"]
 mod memory;
-#[path = "cmd/memory_cmd.rs"]
-mod memory_cmd;
 #[path = "runtime/memorycap.rs"]
 mod memorycap;
-#[path = "cmd/profile_cmd.rs"]
-mod profile_cmd;
+#[path = "cmd/profile.rs"]
+mod profile;
+#[path = "cmd/report.rs"]
+mod report;
 #[path = "model/reporting.rs"]
 mod reporting;
-#[path = "cmd/reporting_cmd.rs"]
-mod reporting_cmd;
 #[path = "runtime/run_flow.rs"]
 mod run_flow;
 #[path = "model/scenario.rs"]
@@ -98,13 +98,13 @@ pub use explore::*;
 pub use fsutil::*;
 pub use fuzz::*;
 pub use init_scaffold::*;
-pub use map_cmd::*;
+pub use map::*;
+pub use mem::*;
 pub use memory::*;
-pub use memory_cmd::*;
 pub use memorycap::*;
-pub use profile_cmd::*;
+pub use profile::*;
+pub use report::*;
 pub use reporting::*;
-pub use reporting_cmd::*;
 pub use run_flow::*;
 pub use scenario::*;
 pub use scheduler::*;

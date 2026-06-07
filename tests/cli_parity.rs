@@ -340,13 +340,13 @@ fn build_zip_with_raw_entries(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
     out
 }
 
-#[path = "cli_parity/cli_contract.rs"]
+#[path = "cli_parity/cli_contract/mod.rs"]
 mod cli_contract;
-#[path = "cli_parity/host_backends.rs"]
-mod host_backends;
-#[path = "cli_parity/trace_artifacts.rs"]
-mod trace_artifacts;
-#[path = "cli_parity/gate_full.rs"]
+#[path = "cli_parity/gate_full/mod.rs"]
 mod gate_full;
-#[path = "cli_parity/profile_report.rs"]
+#[path = "cli_parity/host_backends/mod.rs"]
+mod host_backends;
+#[path = "cli_parity/profile_report/mod.rs"]
 mod profile_report;
+#[path = "cli_parity/trace_artifacts/mod.rs"]
+mod trace_artifacts;

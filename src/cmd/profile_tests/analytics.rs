@@ -336,4 +336,3 @@ fn diff_tie_breaking_is_deterministic() {
         .collect::<Vec<_>>();
     assert_eq!(metrics, vec!["io_ops".to_string(), "sched_ops".to_string()]);
 }
-
