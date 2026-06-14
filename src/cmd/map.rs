@@ -28,8 +28,8 @@ pub(crate) use policy::{
 };
 #[allow(unused_imports)]
 pub(crate) use repo::{
-    accumulate_signals_line, component_for_path, count_hits, hotspot_hints, is_candidate_file,
-    scan_repo, score_signals, should_skip_path,
+    accumulate_signals_line, component_for_path, count_hits, discover_scan_roots, hotspot_hints,
+    is_candidate_file, scan_repo, score_signals, should_skip_path,
 };
 #[allow(unused_imports)]
 pub(crate) use scenario::{

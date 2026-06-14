@@ -81,8 +81,8 @@ fn map_suites_with_cache(
     opt: &MapSuitesOptions,
     cache_dir: Option<PathBuf>,
 ) -> FozzyResult<MapSuitesReport> {
-    let facts = scan_repo(&opt.root)?;
     let scenario_files = discover_scenarios(&opt.scenario_root)?;
+    let facts = scan_repo(&opt.root)?;
     let scenario_build = build_scenario_facts(&scenario_files, cache_dir.as_deref());
     let scenario_facts = scenario_build.facts;
     let coverage_index = ScenarioCoverageIndex::new(&scenario_facts);

@@ -136,7 +136,71 @@ fn candidate_file_filter_excludes_dependency_and_generated_artifacts() {
 fn should_skip_repo_local_tmp_outputs() {
     assert!(should_skip_path(Path::new("./.tmp/map.suites.json")));
     assert!(should_skip_path(Path::new("/repo/.tmp/report.json")));
+    assert!(should_skip_path(Path::new("/repo/tmp/generated/map.rs")));
     assert!(!should_skip_path(Path::new("./src/map.rs")));
+}
+
+#[test]
+fn discover_scan_roots_prefers_source_trees_over_repo_bulk() {
+    let root = temp_dir("scan-roots");
+    for dir in [
+        "src",
+        "crates/core/src",
+        "tests",
+        "examples/demo",
+        "docs/reference",
+        "tmp/cache",
+    ] {
+        std::fs::create_dir_all(root.join(dir)).expect("mkdir");
+    }
+
+    let roots = discover_scan_roots(&root)
+        .into_iter()
+        .map(|path| {
+            path.strip_prefix(&root)
+                .unwrap_or(&path)
+                .display()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(roots, vec!["crates".to_string(), "src".to_string()]);
+}
+
+#[test]
+fn scan_repo_prunes_non_source_trees_before_file_walk() {
+    let root = temp_dir("scan-prune");
+    std::fs::create_dir_all(root.join("src")).expect("src");
+    std::fs::create_dir_all(root.join("tmp/generated")).expect("tmp");
+    std::fs::create_dir_all(root.join("examples/demo")).expect("examples");
+    std::fs::write(
+        root.join("src/main.rs"),
+        "fn main() { if true { std::thread::spawn(|| {}); } }",
+    )
+    .expect("write src");
+    std::fs::write(
+        root.join("tmp/generated/ignored.rs"),
+        "fn ignored() { panic!(\"nope\"); }",
+    )
+    .expect("write tmp");
+    std::fs::write(
+        root.join("examples/demo/demo.rs"),
+        "fn demo() { if retry { panic!(\"demo\"); } }",
+    )
+    .expect("write example");
+
+    let facts = scan_repo(&root).expect("scan repo");
+
+    assert_eq!(
+        facts.scanned_files, 1,
+        "expected only source trees to be scanned"
+    );
+    assert_eq!(
+        facts.hotspots.len(),
+        1,
+        "expected only src hotspot to remain"
+    );
+    assert_eq!(facts.hotspots[0].path, "src/main.rs");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::{FozzyError, FozzyResult};
@@ -21,48 +21,32 @@ pub(crate) fn scan_repo(root: &Path) -> FozzyResult<RepoFacts> {
     let mut records = Vec::<ScanRecord>::new();
     let mut scanned_files = 0usize;
     let mut skipped_source_files = Vec::new();
-    for entry in WalkDir::new(root).into_iter().flatten() {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if should_skip_path(path) || !is_candidate_file(path) {
-            continue;
-        }
-        let Ok(file) = std::fs::File::open(path) else {
-            skipped_source_files.push(format!("{}: failed to open", path.display()));
-            continue;
-        };
-        let mut signal = HotspotSignals::default();
-        let mut line_count = 0usize;
-        let reader = BufReader::new(file);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => {
-                    line_count = line_count.saturating_add(1);
-                    accumulate_signals_line(&mut signal, &line);
-                }
-                Err(err) => {
-                    skipped_source_files
-                        .push(format!("{}: failed to read line: {err}", path.display()));
-                    break;
-                }
+    let scan_roots = discover_scan_roots(root);
+    if !scan_roots.iter().any(|scan_root| scan_root == root) {
+        scan_root_level_files(
+            root,
+            &mut records,
+            &mut scanned_files,
+            &mut skipped_source_files,
+        );
+    }
+    for scan_root in scan_roots {
+        for entry in WalkDir::new(&scan_root)
+            .into_iter()
+            .filter_entry(|entry| should_descend(entry.path(), root))
+            .flatten()
+        {
+            if !entry.file_type().is_file() {
+                continue;
             }
+            scan_candidate_file(
+                root,
+                entry.path(),
+                &mut records,
+                &mut scanned_files,
+                &mut skipped_source_files,
+            );
         }
-        signal.line_count = line_count;
-        let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
-        scanned_files += 1;
-        let (risk_score, reasons) = score_signals(&signal);
-        if risk_score == 0 {
-            continue;
-        }
-        records.push(ScanRecord {
-            component: component_for_path(&rel),
-            rel,
-            signal,
-            risk_score,
-            reasons,
-        });
     }
 
     let mut hotspots = records
@@ -145,29 +129,165 @@ pub(crate) fn hotspot_hints(hotspot: &MapHotspot) -> Vec<String> {
     out.into_iter().filter(|hint| hint.len() >= 3).collect()
 }
 
+pub(crate) fn discover_scan_roots(root: &Path) -> Vec<PathBuf> {
+    let mut roots = WalkDir::new(root)
+        .max_depth(3)
+        .into_iter()
+        .filter_entry(|entry| should_descend(entry.path(), root))
+        .flatten()
+        .filter(|entry| entry.file_type().is_dir())
+        .map(|entry| entry.into_path())
+        .filter(|path| is_likely_source_dir(path))
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+
+    let mut minimal = Vec::<PathBuf>::new();
+    for candidate in roots {
+        if minimal.iter().any(|root| candidate.starts_with(root)) {
+            continue;
+        }
+        minimal.push(candidate);
+    }
+    if minimal.is_empty() {
+        vec![root.to_path_buf()]
+    } else {
+        minimal
+    }
+}
+
 pub(crate) fn should_skip_path(path: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;
     };
     parent.components().any(|component| {
-        component.as_os_str().to_str().is_some_and(|segment| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(should_skip_dir_name)
+    })
+}
+
+fn scan_root_level_files(
+    root: &Path,
+    records: &mut Vec<ScanRecord>,
+    scanned_files: &mut usize,
+    skipped_source_files: &mut Vec<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        scan_candidate_file(
+            root,
+            &entry.path(),
+            records,
+            scanned_files,
+            skipped_source_files,
+        );
+    }
+}
+
+fn scan_candidate_file(
+    root: &Path,
+    path: &Path,
+    records: &mut Vec<ScanRecord>,
+    scanned_files: &mut usize,
+    skipped_source_files: &mut Vec<String>,
+) {
+    if should_skip_path(path) || !is_candidate_file(path) {
+        return;
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        skipped_source_files.push(format!("{}: failed to open", path.display()));
+        return;
+    };
+    let mut signal = HotspotSignals::default();
+    let mut line_count = 0usize;
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        match line {
+            Ok(line) => {
+                line_count = line_count.saturating_add(1);
+                accumulate_signals_line(&mut signal, &line);
+            }
+            Err(err) => {
+                skipped_source_files
+                    .push(format!("{}: failed to read line: {err}", path.display()));
+                break;
+            }
+        }
+    }
+    signal.line_count = line_count;
+    let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+    *scanned_files += 1;
+    let (risk_score, reasons) = score_signals(&signal);
+    if risk_score == 0 {
+        return;
+    }
+    records.push(ScanRecord {
+        component: component_for_path(&rel),
+        rel,
+        signal,
+        risk_score,
+        reasons,
+    });
+}
+
+fn should_descend(path: &Path, root: &Path) -> bool {
+    if path == root {
+        return true;
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_none_or(|name| !should_skip_dir_name(name))
+}
+
+fn should_skip_dir_name(segment: &str) -> bool {
+    [
+        ".git",
+        ".fozzy",
+        ".tmp",
+        ".cache",
+        ".pnpm-store",
+        ".yarn",
+        ".venv",
+        ".tox",
+        ".turbo",
+        "__pycache__",
+        "build",
+        "cache",
+        "coverage",
+        "dist",
+        "node_modules",
+        "out",
+        "target",
+        "temp",
+        "tmp",
+        "vendor",
+        "venv",
+    ]
+    .iter()
+    .any(|needle| segment.eq_ignore_ascii_case(needle))
+}
+
+fn is_likely_source_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
             [
-                ".git",
-                "target",
-                "node_modules",
-                ".fozzy",
-                "dist",
-                "build",
-                "out",
-                "coverage",
-                "vendor",
-                ".next",
-                ".tmp",
+                "app", "apps", "bin", "cmd", "crate", "crates", "internal", "lib", "libs",
+                "package", "packages", "pkg", "service", "services", "src",
             ]
             .iter()
-            .any(|needle| segment.eq_ignore_ascii_case(needle))
+            .any(|needle| name.eq_ignore_ascii_case(needle))
         })
-    })
 }
 
 pub(crate) fn is_candidate_file(path: &Path) -> bool {
