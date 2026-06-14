@@ -1,5 +1,20 @@
 use super::*;
 
+pub(crate) const DEFAULT_WORKFLOW_SEED: u64 = 0xC0DEC0DE_u64;
+
+pub(crate) fn resolved_workflow_seed(seed: Option<u64>) -> u64 {
+    seed.unwrap_or(DEFAULT_WORKFLOW_SEED)
+}
+
+pub(crate) enum GitWorktreeCheck {
+    Clean,
+    Dirty {
+        change_count: usize,
+        preview: String,
+    },
+    NotGitRepo,
+}
+
 pub(crate) fn discover_scenarios(root: &Path) -> FullScenarioDiscovery {
     let mut out = FullScenarioDiscovery {
         steps: Vec::new(),
@@ -43,7 +58,7 @@ pub(crate) fn discover_scenarios(root: &Path) -> FullScenarioDiscovery {
     out
 }
 
-pub(crate) fn git_clean_tree_check() -> anyhow::Result<String> {
+pub(crate) fn git_clean_tree_check() -> anyhow::Result<GitWorktreeCheck> {
     let out = ProcessCommand::new("git")
         .args(["status", "--porcelain"])
         .output()
@@ -52,7 +67,7 @@ pub(crate) fn git_clean_tree_check() -> anyhow::Result<String> {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let stderr_lower = stderr.to_ascii_lowercase();
         if stderr_lower.contains("not a git repository") {
-            return Ok("git worktree check skipped: not a git repository".to_string());
+            return Ok(GitWorktreeCheck::NotGitRepo);
         }
         return Err(anyhow::anyhow!(
             "git status --porcelain failed; verify this is a git worktree{}{}",
@@ -63,7 +78,7 @@ pub(crate) fn git_clean_tree_check() -> anyhow::Result<String> {
     let body = String::from_utf8_lossy(&out.stdout);
     let dirty: Vec<&str> = body.lines().collect();
     if dirty.is_empty() {
-        return Ok("git worktree clean".to_string());
+        return Ok(GitWorktreeCheck::Clean);
     }
     let preview = dirty
         .iter()
@@ -71,11 +86,10 @@ pub(crate) fn git_clean_tree_check() -> anyhow::Result<String> {
         .copied()
         .collect::<Vec<_>>()
         .join(" | ");
-    Err(anyhow::anyhow!(
-        "git worktree is not clean ({} change(s)); example: {}",
-        dirty.len(),
-        preview
-    ))
+    Ok(GitWorktreeCheck::Dirty {
+        change_count: dirty.len(),
+        preview,
+    })
 }
 
 pub(crate) fn selected_init_test_types(

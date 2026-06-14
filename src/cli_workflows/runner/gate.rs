@@ -1,10 +1,22 @@
 use super::*;
 
-pub(crate) fn clean_tree_step_status(detail: &str) -> FullStepStatus {
-    if detail.contains("check skipped") {
-        FullStepStatus::Skipped
-    } else {
-        FullStepStatus::Passed
+pub(crate) fn clean_tree_step_status(check: &GitWorktreeCheck) -> (FullStepStatus, String) {
+    match check {
+        GitWorktreeCheck::Clean => (FullStepStatus::Passed, "git worktree clean".to_string()),
+        GitWorktreeCheck::Dirty {
+            change_count,
+            preview,
+        } => (
+            FullStepStatus::Advisory,
+            format!(
+                "git worktree is dirty ({} change(s)); advisory only; example: {}",
+                change_count, preview
+            ),
+        ),
+        GitWorktreeCheck::NotGitRepo => (
+            FullStepStatus::Skipped,
+            "git worktree check skipped: not a git repository".to_string(),
+        ),
     }
 }
 
@@ -17,6 +29,7 @@ pub(crate) fn run_gate_command(
     doctor_runs: u32,
     strict: bool,
 ) -> anyhow::Result<GateReport> {
+    let seed = Some(resolved_workflow_seed(seed));
     let mut steps = Vec::<FullStepResult>::new();
     let mut push = |name: &str, status: FullStepStatus, detail: String| {
         steps.push(FullStepResult {
@@ -28,7 +41,10 @@ pub(crate) fn run_gate_command(
 
     if strict {
         match git_clean_tree_check() {
-            Ok(detail) => push("clean_tree", clean_tree_step_status(&detail), detail),
+            Ok(check) => {
+                let (status, detail) = clean_tree_step_status(&check);
+                push("clean_tree", status, detail);
+            }
             Err(err) => push("clean_tree", FullStepStatus::Failed, err.to_string()),
         }
     } else {
@@ -143,7 +159,7 @@ pub(crate) fn run_gate_command(
                 strict,
                 primary.as_path(),
                 doctor_runs.max(2),
-                seed.unwrap_or(0xC0DEC0DE_u64),
+                resolved_workflow_seed(seed),
             );
             push("doctor_deep", status, detail);
         }
@@ -178,7 +194,7 @@ pub(crate) fn run_gate_command(
             let (status, detail) = run_summary_pass_status(
                 &test.summary,
                 strict,
-                seed.unwrap_or(0xC0DEC0DE_u64),
+                resolved_workflow_seed(seed),
                 RunMode::Test,
             );
             push(
@@ -222,7 +238,7 @@ pub(crate) fn run_gate_command(
             let (status, detail) = recorded_trace_status(
                 &run.summary,
                 strict,
-                seed.unwrap_or(0xC0DEC0DE_u64),
+                resolved_workflow_seed(seed),
                 RunMode::Run,
                 &trace_path,
             );
@@ -278,7 +294,7 @@ pub(crate) fn run_gate_command(
                     primary_status,
                     &replay.summary,
                     strict,
-                    seed.unwrap_or(0xC0DEC0DE_u64),
+                    resolved_workflow_seed(seed),
                     RunMode::Replay,
                 );
                 push("replay", status, detail);

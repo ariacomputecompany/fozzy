@@ -12,6 +12,9 @@ pub(super) fn run_extended_surface(
     strict: bool,
 ) {
     run_fuzz(state, config, selection, seed, fuzz_time, strict);
+    if state.should_abort() {
+        return;
+    }
     run_explore(
         state,
         config,
@@ -21,8 +24,14 @@ pub(super) fn run_extended_surface(
         explore_nodes,
         strict,
     );
+    if state.should_abort() {
+        return;
+    }
     run_corpus(state, config);
     run_host_backends(state, config, selection, seed, strict);
+    if state.should_abort() {
+        return;
+    }
 
     let env = fozzy::env_info(config);
     let (env_status, env_detail) = env_step_status(&env);
@@ -46,35 +55,62 @@ fn run_fuzz(
         "fozzy-full-fuzz-{}.trace.fozzy",
         uuid::Uuid::new_v4()
     )));
-    match fozzy::fuzz(
-        config,
-        &FuzzTarget::Scenario {
-            path: primary.clone(),
-        },
-        &FuzzOptions {
-            det: false,
-            mode: FuzzMode::Coverage,
-            seed,
-            time: Some(fuzz_time),
-            runs: None,
-            max_input_bytes: 4096,
-            corpus_dir: None,
-            mutator: None,
-            shrink: true,
-            record_trace_to: Some(fuzz_trace),
-            reporter: Reporter::Json,
-            crash_only: false,
-            minimize: true,
-            record_collision: RecordCollisionPolicy::Overwrite,
-            profile_capture: ProfileCaptureLevel::Baseline,
-            memory: selection.memory.clone(),
+    let fuzz_corpus_dir = state.register_temp(
+        std::env::temp_dir().join(format!("fozzy-full-fuzz-corpus-{}", uuid::Uuid::new_v4())),
+    );
+    if let Err(err) = std::fs::create_dir_all(&fuzz_corpus_dir) {
+        state.push("fuzz", FullStepStatus::Failed, err.to_string());
+        return;
+    }
+    state.start_step(
+        "fuzz",
+        format!(
+            "scenario={} corpus_dir={} time={}ms",
+            primary.display(),
+            fuzz_corpus_dir.display(),
+            fuzz_time.as_millis()
+        ),
+    );
+    match run_with_timeout(
+        "fuzz",
+        fuzz_time + EXECUTION_TIMEOUT,
+        {
+            let config = config.clone();
+            let primary = primary.clone();
+            let fuzz_trace = fuzz_trace.clone();
+            let fuzz_corpus_dir = fuzz_corpus_dir.clone();
+            let memory = selection.memory.clone();
+            move || {
+                Ok(fozzy::fuzz(
+                    &config,
+                    &FuzzTarget::Scenario { path: primary },
+                    &FuzzOptions {
+                        det: false,
+                        mode: FuzzMode::Coverage,
+                        seed,
+                        time: Some(fuzz_time),
+                        runs: None,
+                        max_input_bytes: 4096,
+                        corpus_dir: Some(fuzz_corpus_dir),
+                        mutator: None,
+                        shrink: true,
+                        record_trace_to: Some(fuzz_trace),
+                        reporter: Reporter::Json,
+                        crash_only: false,
+                        minimize: true,
+                        record_collision: RecordCollisionPolicy::Overwrite,
+                        profile_capture: ProfileCaptureLevel::Baseline,
+                        memory,
+                    },
+                )?)
+            }
         },
     ) {
         Ok(fuzz_run) => {
             let (status, detail) = run_summary_pass_status(
                 &fuzz_run.summary,
                 strict,
-                seed.unwrap_or(0xC0DEC0DE_u64),
+                resolved_workflow_seed(seed),
                 RunMode::Fuzz,
             );
             state.push(
@@ -87,7 +123,12 @@ fn run_fuzz(
                 ),
             );
         }
-        Err(err) => state.push("fuzz", FullStepStatus::Failed, err.to_string()),
+        Err(err) => state.abort_due_to_timeout(
+            "fuzz",
+            err.to_string(),
+            "Coverage fuzzing did not finish in time; `fozzy full` uses an isolated temporary corpus now and aborts with a structured failure if fuzz still stalls."
+                .to_string(),
+        ),
     }
 }
 
@@ -108,31 +149,39 @@ fn run_explore(
         return;
     };
 
-    match fozzy::explore(
-        config,
-        ScenarioPath::new(distributed.clone()),
-        &ExploreOptions {
-            seed,
-            time: None,
-            steps: Some(explore_steps),
-            nodes: Some(explore_nodes),
-            faults: None,
-            schedule: ScheduleStrategy::CoverageGuided,
-            checker: None,
-            record_trace_to: None,
-            shrink: true,
-            minimize: true,
-            reporter: Reporter::Json,
-            record_collision: RecordCollisionPolicy::Error,
-            profile_capture: ProfileCaptureLevel::Baseline,
-            memory: selection.memory.clone(),
-        },
-    ) {
+    state.start_step("explore", format!("scenario={}", distributed.display()));
+    match run_with_timeout("explore", EXECUTION_TIMEOUT, {
+        let config = config.clone();
+        let distributed = distributed.clone();
+        let memory = selection.memory.clone();
+        move || {
+            Ok(fozzy::explore(
+                &config,
+                ScenarioPath::new(distributed),
+                &ExploreOptions {
+                    seed,
+                    time: None,
+                    steps: Some(explore_steps),
+                    nodes: Some(explore_nodes),
+                    faults: None,
+                    schedule: ScheduleStrategy::CoverageGuided,
+                    checker: None,
+                    record_trace_to: None,
+                    shrink: true,
+                    minimize: true,
+                    reporter: Reporter::Json,
+                    record_collision: RecordCollisionPolicy::Error,
+                    profile_capture: ProfileCaptureLevel::Baseline,
+                    memory,
+                },
+            )?)
+        }
+    }) {
         Ok(explore) => {
             let (status, detail) = run_summary_pass_status(
                 &explore.summary,
                 strict,
-                seed.unwrap_or(0xC0DEC0DE_u64),
+                resolved_workflow_seed(seed),
                 RunMode::Explore,
             );
             state.push(
@@ -141,7 +190,12 @@ fn run_explore(
                 format!("{detail} scenario={}", distributed.display()),
             );
         }
-        Err(err) => state.push("explore", FullStepStatus::Failed, err.to_string()),
+        Err(err) => state.abort_due_to_timeout(
+            "explore",
+            err.to_string(),
+            "Distributed exploration did not finish in time; `fozzy full` stopped with a structured failure."
+                .to_string(),
+        ),
     }
 }
 
@@ -256,31 +310,43 @@ fn run_host_backends(
         "fozzy-full-host-{}.trace.fozzy",
         uuid::Uuid::new_v4()
     )));
-    match fozzy::run_scenario(
-        config,
-        ScenarioPath::new(primary.clone()),
-        &RunOptions {
-            det: false,
-            seed,
-            timeout: None,
-            reporter: Reporter::Json,
-            record_trace_to: Some(host_trace.clone()),
-            filter: None,
-            jobs: None,
-            fail_fast: false,
-            record_collision: RecordCollisionPolicy::Error,
-            profile_capture: ProfileCaptureLevel::Baseline,
-            proc_backend: fozzy::ProcBackend::Host,
-            fs_backend: fozzy::FsBackend::Host,
-            http_backend: fozzy::HttpBackend::Host,
-            memory: selection.memory.clone(),
-        },
-    ) {
+    state.start_step(
+        "host_backends_run",
+        format!("scenario={}", primary.display()),
+    );
+    match run_with_timeout("host_backends_run", EXECUTION_TIMEOUT, {
+        let config = config.clone();
+        let primary = primary.clone();
+        let host_trace = host_trace.clone();
+        let memory = selection.memory.clone();
+        move || {
+            Ok(fozzy::run_scenario(
+                &config,
+                ScenarioPath::new(primary),
+                &RunOptions {
+                    det: false,
+                    seed,
+                    timeout: None,
+                    reporter: Reporter::Json,
+                    record_trace_to: Some(host_trace.clone()),
+                    filter: None,
+                    jobs: None,
+                    fail_fast: false,
+                    record_collision: RecordCollisionPolicy::Error,
+                    profile_capture: ProfileCaptureLevel::Baseline,
+                    proc_backend: fozzy::ProcBackend::Host,
+                    fs_backend: fozzy::FsBackend::Host,
+                    http_backend: fozzy::HttpBackend::Host,
+                    memory,
+                },
+            )?)
+        }
+    }) {
         Ok(host_run) => {
             let (run_status, run_detail) = run_summary_pass_status(
                 &host_run.summary,
                 strict,
-                seed.unwrap_or(0xC0DEC0DE_u64),
+                resolved_workflow_seed(seed),
                 RunMode::Run,
             );
             let (trace_status, trace_detail) = host_backed_trace_status(&host_trace);
@@ -297,6 +363,11 @@ fn run_host_backends(
                 format!("{run_detail}; {trace_detail}"),
             );
         }
-        Err(err) => state.push("host_backends_run", FullStepStatus::Failed, err.to_string()),
+        Err(err) => state.abort_due_to_timeout(
+            "host_backends_run",
+            err.to_string(),
+            "Host-backed execution did not finish in time; `fozzy full` stopped with a structured failure."
+                .to_string(),
+        ),
     }
 }

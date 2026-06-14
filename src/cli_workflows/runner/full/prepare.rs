@@ -14,10 +14,13 @@ pub(super) fn prepare_scenarios(
     topology_min_risk: u8,
     topology_profile: TopologyProfile,
     topology_shrink_policy: ShrinkCoveragePolicy,
-) -> ScenarioSelection {
+) -> Option<ScenarioSelection> {
     if state.strict {
         match git_clean_tree_check() {
-            Ok(detail) => state.push("clean_tree", clean_tree_step_status(&detail), detail),
+            Ok(check) => {
+                let (status, detail) = clean_tree_step_status(&check);
+                state.push("clean_tree", status, detail);
+            }
             Err(err) => state.push("clean_tree", FullStepStatus::Failed, err.to_string()),
         }
     } else {
@@ -51,7 +54,27 @@ pub(super) fn prepare_scenarios(
 
     run_init_check(state, config, doctor_runs, seed);
 
-    let mut discovered = discover_scenarios(scenario_root);
+    state.start_step(
+        "discover_scenarios",
+        format!("scanning {}", scenario_root.display()),
+    );
+    let mut discovered = match run_with_timeout("discover_scenarios", DISCOVERY_TIMEOUT, {
+        let scenario_root = scenario_root.to_path_buf();
+        move || Ok(discover_scenarios(&scenario_root))
+    }) {
+        Ok(discovered) => discovered,
+        Err(err) => {
+            state.abort_due_to_timeout(
+                "discover_scenarios",
+                err.to_string(),
+                format!(
+                    "Scenario discovery did not complete under {}; `fozzy full --json` aborted with a structured failure instead of hanging silently.",
+                    scenario_root.display()
+                ),
+            );
+            return None;
+        }
+    };
     if let Some(filter) = scenario_filter {
         if !filter.is_empty() {
             discovered
@@ -98,6 +121,9 @@ pub(super) fn prepare_scenarios(
         topology_profile,
         topology_shrink_policy,
     );
+    if state.should_abort() {
+        return None;
+    }
 
     let step = discovered
         .steps
@@ -117,7 +143,7 @@ pub(super) fn prepare_scenarios(
         .cloned()
         .or_else(|| discovered.distributed.first().cloned());
 
-    ScenarioSelection {
+    Some(ScenarioSelection {
         discovered,
         step,
         host_step,
@@ -132,7 +158,7 @@ pub(super) fn prepare_scenarios(
             fragmentation_seed: config.mem_fragmentation_seed,
             pressure_wave: config.mem_pressure_wave.clone(),
         },
-    }
+    })
 }
 
 fn run_init_check(
@@ -190,7 +216,15 @@ fn push_topology_step(
     topology_shrink_policy: ShrinkCoveragePolicy,
 ) {
     if let Some(root) = require_topology_coverage {
-        match fozzy::map_suites(&MapSuitesOptions {
+        state.start_step(
+            "topology_coverage",
+            format!(
+                "mapping suites for root={} scenario_root={}",
+                root.display(),
+                scenario_root.display()
+            ),
+        );
+        let options = MapSuitesOptions {
             root: root.to_path_buf(),
             scenario_root: scenario_root.to_path_buf(),
             min_risk: topology_min_risk,
@@ -199,6 +233,9 @@ fn push_topology_step(
             limit: 200,
             offset: 0,
             max_matched_scenarios: 25,
+        };
+        match run_with_timeout("topology_coverage", TOPOLOGY_TIMEOUT, move || {
+            Ok(fozzy::map_suites(&options)?)
         }) {
             Ok(report) => {
                 let (status, detail) = topology_coverage_status(
@@ -211,7 +248,12 @@ fn push_topology_step(
                 );
                 state.push("topology_coverage", status, detail);
             }
-            Err(err) => state.push("topology_coverage", FullStepStatus::Failed, err.to_string()),
+            Err(err) => state.abort_due_to_timeout(
+                "topology_coverage",
+                err.to_string(),
+                "Suite-map coverage did not finish in time; investigate repo scan size, scenario parsing cost, or disable topology coverage intentionally."
+                    .to_string(),
+            ),
         }
     } else {
         state.push_skipped(

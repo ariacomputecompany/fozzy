@@ -381,7 +381,10 @@ pub(super) fn run_command(
             Ok(ExitCode::SUCCESS)
         }
         Command::Map { command } => {
-            let out = fozzy::map_command(config, command)?;
+            let out = match command {
+                MapCommand::Suites { .. } => run_map_with_timeout(config, command)?,
+                _ => fozzy::map_command(config, command)?,
+            };
             logger.print_serialized(&out)?;
             Ok(ExitCode::SUCCESS)
         }
@@ -589,6 +592,7 @@ pub(super) fn run_command(
                 *topology_min_risk,
                 *topology_profile,
                 *topology_shrink_policy,
+                cli.json,
             )?;
             let has_failed = report
                 .steps
@@ -601,5 +605,26 @@ pub(super) fn run_command(
                 ExitCode::SUCCESS
             })
         }
+    }
+}
+
+fn run_map_with_timeout(
+    config: &Config,
+    command: &MapCommand,
+) -> anyhow::Result<serde_json::Value> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let config = config.clone();
+    let command = command.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(fozzy::map_command(&config, &command).map_err(|err| err.into()));
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(anyhow::anyhow!(
+            "map suites timed out after 30000ms while scanning the repository; rerun with a narrower --root/--scenario-root or reduce repo surface before using it as a gate"
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(anyhow::anyhow!(
+            "map suites ended without returning a result"
+        )),
     }
 }

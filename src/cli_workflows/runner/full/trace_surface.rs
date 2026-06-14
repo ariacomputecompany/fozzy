@@ -20,26 +20,41 @@ pub(super) fn run_deterministic_surface(
         return run_state;
     };
 
-    match fozzy::doctor(
-        config,
-        &fozzy::DoctorOptions {
-            deep: true,
-            scenario: Some(ScenarioPath::new(primary.clone())),
-            runs: doctor_runs.max(2),
-            seed,
-        },
-    ) {
+    state.start_step("doctor_deep", format!("scenario={}", primary.display()));
+    match run_with_timeout("doctor_deep", EXECUTION_TIMEOUT, {
+        let config = config.clone();
+        let primary = primary.clone();
+        move || {
+            Ok(fozzy::doctor(
+                &config,
+                &fozzy::DoctorOptions {
+                    deep: true,
+                    scenario: Some(ScenarioPath::new(primary.clone())),
+                    runs: doctor_runs.max(2),
+                    seed,
+                },
+            )?)
+        }
+    }) {
         Ok(doctor) => {
             let (status, detail) = doctor_report_status(
                 &doctor,
                 strict,
                 primary.as_path(),
                 doctor_runs.max(2),
-                seed.unwrap_or(0xC0DEC0DE_u64),
+                resolved_workflow_seed(seed),
             );
             state.push("doctor_deep", status, detail);
         }
-        Err(err) => state.push("doctor_deep", FullStepStatus::Failed, err.to_string()),
+        Err(err) => {
+            state.abort_due_to_timeout(
+                "doctor_deep",
+                err.to_string(),
+                "The deterministic doctor audit did not finish in time; `fozzy full` stopped here with a structured failure."
+                    .to_string(),
+            );
+            return run_state;
+        }
     }
 
     let filtered_steps: Vec<PathBuf> = selection
@@ -58,31 +73,39 @@ pub(super) fn run_deterministic_surface(
         .iter()
         .map(|path| path.to_string_lossy().to_string())
         .collect();
-    match fozzy::run_tests(
-        config,
-        &test_globs,
-        &RunOptions {
-            det: true,
-            seed,
-            timeout: None,
-            reporter: Reporter::Json,
-            record_trace_to: None,
-            filter: None,
-            jobs: None,
-            fail_fast: false,
-            record_collision: RecordCollisionPolicy::Error,
-            profile_capture: ProfileCaptureLevel::Baseline,
-            proc_backend: config.proc_backend,
-            fs_backend: config.fs_backend,
-            http_backend: config.http_backend,
-            memory: selection.memory.clone(),
-        },
-    ) {
+    state.start_step("test_det", format!("scenarios={}", test_globs.len()));
+    match run_with_timeout("test_det", EXECUTION_TIMEOUT, {
+        let config = config.clone();
+        let test_globs = test_globs.clone();
+        let memory = selection.memory.clone();
+        move || {
+            Ok(fozzy::run_tests(
+                &config,
+                &test_globs,
+                &RunOptions {
+                    det: true,
+                    seed,
+                    timeout: None,
+                    reporter: Reporter::Json,
+                    record_trace_to: None,
+                    filter: None,
+                    jobs: None,
+                    fail_fast: false,
+                    record_collision: RecordCollisionPolicy::Error,
+                    profile_capture: ProfileCaptureLevel::Baseline,
+                    proc_backend: config.proc_backend,
+                    fs_backend: config.fs_backend,
+                    http_backend: config.http_backend,
+                    memory,
+                },
+            )?)
+        }
+    }) {
         Ok(test) => {
             let (status, detail) = run_summary_pass_status(
                 &test.summary,
                 strict,
-                seed.unwrap_or(0xC0DEC0DE_u64),
+                resolved_workflow_seed(seed),
                 RunMode::Test,
             );
             state.push(
@@ -91,38 +114,58 @@ pub(super) fn run_deterministic_surface(
                 format!("{detail} run_id={}", test.summary.identity.run_id),
             );
         }
-        Err(err) => state.push("test_det", FullStepStatus::Failed, err.to_string()),
+        Err(err) => {
+            state.abort_due_to_timeout(
+                "test_det",
+                err.to_string(),
+                "Deterministic suite execution did not finish in time; `fozzy full` emitted a structured failure instead of hanging."
+                    .to_string(),
+            );
+            return run_state;
+        }
     }
 
     let trace_path = state.register_temp(
         std::env::temp_dir().join(format!("fozzy-full-{}.trace.fozzy", uuid::Uuid::new_v4())),
     );
-    match fozzy::run_scenario(
-        config,
-        ScenarioPath::new(primary),
-        &RunOptions {
-            det: true,
-            seed,
-            timeout: None,
-            reporter: Reporter::Json,
-            record_trace_to: Some(trace_path.clone()),
-            filter: None,
-            jobs: None,
-            fail_fast: false,
-            record_collision: RecordCollisionPolicy::Overwrite,
-            profile_capture: ProfileCaptureLevel::Baseline,
-            proc_backend: config.proc_backend,
-            fs_backend: config.fs_backend,
-            http_backend: config.http_backend,
-            memory: selection.memory.clone(),
-        },
-    ) {
+    state.start_step(
+        "run_record_trace",
+        format!("scenario={}", primary.display()),
+    );
+    match run_with_timeout("run_record_trace", EXECUTION_TIMEOUT, {
+        let config = config.clone();
+        let primary = primary.clone();
+        let trace_path = trace_path.clone();
+        let memory = selection.memory.clone();
+        move || {
+            Ok(fozzy::run_scenario(
+                &config,
+                ScenarioPath::new(primary),
+                &RunOptions {
+                    det: true,
+                    seed,
+                    timeout: None,
+                    reporter: Reporter::Json,
+                    record_trace_to: Some(trace_path),
+                    filter: None,
+                    jobs: None,
+                    fail_fast: false,
+                    record_collision: RecordCollisionPolicy::Overwrite,
+                    profile_capture: ProfileCaptureLevel::Baseline,
+                    proc_backend: config.proc_backend,
+                    fs_backend: config.fs_backend,
+                    http_backend: config.http_backend,
+                    memory,
+                },
+            )?)
+        }
+    }) {
         Ok(run) => {
             run_state.primary_status = Some(run.summary.status);
             let (status, detail) = recorded_trace_status(
                 &run.summary,
                 strict,
-                seed.unwrap_or(0xC0DEC0DE_u64),
+                resolved_workflow_seed(seed),
                 RunMode::Run,
                 &trace_path,
             );
@@ -133,7 +176,12 @@ pub(super) fn run_deterministic_surface(
             }
             state.push("run_record_trace", status, detail);
         }
-        Err(err) => state.push("run_record_trace", FullStepStatus::Failed, err.to_string()),
+        Err(err) => state.abort_due_to_timeout(
+            "run_record_trace",
+            err.to_string(),
+            "Primary deterministic trace recording did not finish in time; `fozzy full` stopped with a machine-readable failure."
+                .to_string(),
+        ),
     }
 
     run_state
@@ -175,8 +223,9 @@ pub(super) fn run_trace_surface(
         return;
     };
 
-    let seed_value = seed.unwrap_or(0xC0DEC0DE_u64);
+    let seed_value = resolved_workflow_seed(seed);
 
+    state.start_step("trace_verify", format!("trace={}", trace.display()));
     match fozzy::verify_trace_file(trace) {
         Ok(verify) => {
             let strict_verify_ok = !strict
@@ -214,37 +263,64 @@ pub(super) fn run_trace_surface(
         "replay",
     );
 
-    match fozzy::ci_evaluate(
-        config,
-        &CiOptions {
-            trace: trace.clone(),
-            flake_runs: Vec::new(),
-            flake_budget_pct: None,
-            perf_baseline: None,
-            max_p99_delta_pct: None,
-            strict,
-        },
-    ) {
+    if state.should_abort() {
+        return;
+    }
+
+    state.start_step("ci", format!("trace={}", trace.display()));
+    match run_with_timeout("ci", EXECUTION_TIMEOUT, {
+        let config = config.clone();
+        let trace = trace.to_path_buf();
+        move || {
+            Ok(fozzy::ci_evaluate(
+                &config,
+                &CiOptions {
+                    trace,
+                    flake_runs: Vec::new(),
+                    flake_budget_pct: None,
+                    perf_baseline: None,
+                    max_p99_delta_pct: None,
+                    strict,
+                },
+            )?)
+        }
+    }) {
         Ok(ci) => {
             let (status, detail) = ci_report_status(&ci);
             state.push("ci", status, detail);
         }
-        Err(err) => state.push("ci", FullStepStatus::Failed, err.to_string()),
+        Err(err) => {
+            state.abort_due_to_timeout(
+                "ci",
+                err.to_string(),
+                "CI evaluation did not finish in time; `fozzy full` terminated with a structured failure."
+                    .to_string(),
+            );
+            return;
+        }
     }
 
     let shrink_out = state.register_temp(
         std::env::temp_dir().join(format!("fozzy-full-{}.min.fozzy", uuid::Uuid::new_v4())),
     );
-    match fozzy::shrink_trace(
-        config,
-        TracePath::new(trace.clone()),
-        &fozzy::ShrinkOptions {
-            out_trace_path: Some(shrink_out),
-            budget: None,
-            aggressive: false,
-            minimize: ShrinkMinimize::All,
-        },
-    ) {
+    state.start_step("shrink", format!("trace={}", trace.display()));
+    match run_with_timeout("shrink", EXECUTION_TIMEOUT, {
+        let config = config.clone();
+        let trace = trace.to_path_buf();
+        let shrink_out = shrink_out.clone();
+        move || {
+            Ok(fozzy::shrink_trace(
+                &config,
+                TracePath::new(trace),
+                &fozzy::ShrinkOptions {
+                    out_trace_path: Some(shrink_out),
+                    budget: None,
+                    aggressive: false,
+                    minimize: ShrinkMinimize::All,
+                },
+            )?)
+        }
+    }) {
         Ok(shrink) => {
             run_state.shrunk_trace = Some(PathBuf::from(shrink.out_trace_path.clone()));
             run_state.shrunk_status = Some(shrink.result.summary.status);
@@ -262,7 +338,13 @@ pub(super) fn run_trace_surface(
         }
         Err(err) => {
             state.shrink_classification = Some("tooling_failure".to_string());
-            state.push("shrink", FullStepStatus::Failed, err.to_string());
+            state.abort_due_to_timeout(
+                "shrink",
+                err.to_string(),
+                "Trace shrinking did not finish in time; `fozzy full` stopped with a machine-readable failure."
+                    .to_string(),
+            );
+            return;
         }
     }
 
@@ -278,6 +360,9 @@ pub(super) fn run_trace_surface(
         );
     } else {
         state.push_skipped("replay_shrunk", "shrink output not available");
+    }
+    if state.should_abort() {
+        return;
     }
 
     run_artifact_surface(state, config, trace, run_state.shrunk_trace.as_ref());
@@ -301,17 +386,24 @@ fn run_replay_step(
     seed: u64,
     step_name: &str,
 ) {
-    match fozzy::replay_trace(
-        config,
-        TracePath::new(trace.to_path_buf()),
-        &fozzy::ReplayOptions {
-            step: false,
-            until: None,
-            dump_events: false,
-            profile_capture: ProfileCaptureLevel::Baseline,
-            reporter: Reporter::Json,
-        },
-    ) {
+    state.start_step(step_name, format!("trace={}", trace.display()));
+    match run_with_timeout(step_name, EXECUTION_TIMEOUT, {
+        let config = config.clone();
+        let trace = trace.to_path_buf();
+        move || {
+            Ok(fozzy::replay_trace(
+                &config,
+                TracePath::new(trace),
+                &fozzy::ReplayOptions {
+                    step: false,
+                    until: None,
+                    dump_events: false,
+                    profile_capture: ProfileCaptureLevel::Baseline,
+                    reporter: Reporter::Json,
+                },
+            )?)
+        }
+    }) {
         Ok(replay) => {
             let (status, detail) = replay_summary_status(
                 expected_status,
@@ -327,7 +419,13 @@ fn run_replay_step(
             };
             state.push(step_name, status, detail);
         }
-        Err(err) => state.push(step_name, FullStepStatus::Failed, err.to_string()),
+        Err(err) => state.abort_due_to_timeout(
+            step_name,
+            err.to_string(),
+            format!(
+                "Trace replay phase `{step_name}` did not finish in time; `fozzy full` returned a structured failure."
+            ),
+        ),
     }
 }
 

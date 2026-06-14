@@ -615,6 +615,7 @@ pub(crate) enum FullStepStatus {
     Passed,
     Failed,
     Skipped,
+    Advisory,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

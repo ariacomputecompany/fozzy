@@ -19,7 +19,7 @@ pub enum ShrinkCoveragePolicy {
     NoKnownFailures,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub enum MapCommand {
     /// Analyze repository hotspots and risk-ranked candidate areas for granular suites
     Hotspots {

@@ -220,6 +220,19 @@ fn parse_first_json_stdout(output: &std::process::Output) -> serde_json::Value {
         .expect("first stdout json")
 }
 
+fn parse_json_stderr_docs(output: &std::process::Output) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || !trimmed.starts_with('{') {
+                return None;
+            }
+            serde_json::from_str(trimmed).ok()
+        })
+        .collect()
+}
+
 fn json_run_id(doc: &serde_json::Value) -> String {
     doc.get("identity")
         .and_then(|v| v.get("runId").or_else(|| v.get("run_id")))
