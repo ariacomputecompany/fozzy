@@ -1,16 +1,19 @@
 use std::time::Duration;
 
-use crate::host::{HostHttpDispatch, assert_http_when_response_matches_host, canonical_headers, dispatch_host_http, host_http_rule_matches, host_http_rule_path_supported};
+use crate::host::{
+    HostHttpDispatch, assert_http_when_response_matches_host, canonical_headers,
+    dispatch_host_http, host_http_request_details, host_http_request_kind,
+    host_http_rule_matches, host_http_rule_path_supported, host_http_upgrade_requested,
+};
 use crate::{Decision, Finding, FindingKind, TraceEvent};
 
-use super::ExecCtx;
 use super::super::helpers::{HttpRule, decode_hex, encode_hex, measure_duration_ms};
 use super::super::types::{FsBackend, HttpBackend};
+use super::ExecCtx;
 
 impl ExecCtx<'_> {
     pub(super) fn exec_file_http_step(&mut self, step: &crate::Step) -> Result<bool, Finding> {
         match step {
-
             crate::Step::FsWrite { path, data } => {
                 let start_ms = self.clock.now_ms();
                 if let Some(Decision::FsWrite {
@@ -360,6 +363,12 @@ impl ExecCtx<'_> {
                 save_body_as,
             } => {
                 let start_ms = self.clock.now_ms();
+                let request_headers = canonical_headers(headers.as_ref())?;
+                let request_kind = if matches!(self.http_backend, HttpBackend::Host) {
+                    host_http_request_kind(method, &request_headers).to_string()
+                } else {
+                    "http_request".to_string()
+                };
                 if expect_body.is_some() && expect_json.is_some() {
                     return Err(Finding {
                         kind: FindingKind::Checker,
@@ -369,7 +378,7 @@ impl ExecCtx<'_> {
                         location: None,
                     });
                 }
-                let (status_code, resp_headers, resp_body, backend) = match self
+                let (status_code, resp_headers, resp_body, backend, observed_request_kind, completion_boundary, upgrade_accepted) = match self
                     .replay_peek()
                     .cloned()
                 {
@@ -393,7 +402,15 @@ impl ExecCtx<'_> {
                         }
                         let _ = self.replay_take_if(|d| matches!(d, Decision::HttpRequest { .. }));
                         self.advance_recorded_time(duration_ms);
-                        (status_code, headers, body, "replay".to_string())
+                        (
+                            status_code,
+                            headers,
+                            body,
+                            "replay".to_string(),
+                            request_kind.clone(),
+                            "recorded_decision".to_string(),
+                            false,
+                        )
                     }
                     Some(Decision::HttpRequestTimeout {
                         method: replay_method,
@@ -417,7 +434,11 @@ impl ExecCtx<'_> {
                             kind: FindingKind::Hang,
                             title: "timeout".to_string(),
                             message: format!("host http request timed out for {method} {path}"),
-                            location: self.current_finding_location(),
+                            location: self.current_finding_location().map(|mut location| {
+                                location.details =
+                                    Some(host_http_request_details(method, path, &request_headers));
+                                location
+                            }),
                         });
                     }
                     _ if matches!(self.http_backend, HttpBackend::Host) => {
@@ -437,19 +458,33 @@ impl ExecCtx<'_> {
                                 && host_http_rule_matches(&r.path, path)
                         });
                         if !self.http_rules.is_empty() && host_rule_idx.is_none() {
-                            return Err(Finding {
-                                kind: FindingKind::Assertion,
-                                title: "http_when_host_unmatched".to_string(),
-                                message: format!(
-                                    "no http_when matched host request {method} {path}. remediation: \
+                            let remediation = if request_kind == "websocket_upgrade" {
+                                "no http_when matched host websocket upgrade. remediation: \
+                                 1) align http_when.method/path with this upgrade request, \
+                                 2) verify websocket auth/upgrade headers match the live route contract, \
+                                 3) run with --http-backend scripted if you intended a mocked handshake."
+                            } else {
+                                "no http_when matched host request. remediation: \
                                  1) align http_when.method/path with this request (absolute url or '/path'), \
                                  2) run with --http-backend scripted to use mocked responses. example: \
                                  fozzy run <scenario.fozzy.json> --http-backend scripted --json"
-                                ),
-                                location: None,
+                            };
+                            return Err(Finding {
+                                kind: FindingKind::Assertion,
+                                title: "http_when_host_unmatched".to_string(),
+                                message: format!("{remediation} request={method} {path}"),
+                                location: Some(crate::FindingLocation {
+                                    file: None,
+                                    line: None,
+                                    col: None,
+                                    details: Some(host_http_request_details(
+                                        method,
+                                        path,
+                                        &request_headers,
+                                    )),
+                                }),
                             });
                         }
-                        let request_headers = canonical_headers(headers.as_ref())?;
                         let (response, duration_ms) = measure_duration_ms(|| {
                             dispatch_host_http(
                                 method,
@@ -485,13 +520,22 @@ impl ExecCtx<'_> {
                                     duration_ms,
                                 });
                                 self.advance_recorded_time(duration_ms);
+                                let message = if request_kind == "websocket_upgrade" {
+                                    format!(
+                                        "host websocket upgrade timed out for {method} {path}; no terminal handshake boundary was observed before timeout"
+                                    )
+                                } else {
+                                    format!("host http request timed out for {method} {path}")
+                                };
                                 return Err(Finding {
                                     kind: FindingKind::Hang,
                                     title: "timeout".to_string(),
-                                    message: format!(
-                                        "host http request timed out for {method} {path}"
-                                    ),
-                                    location: self.current_finding_location(),
+                                    message,
+                                    location: self.current_finding_location().map(|mut location| {
+                                        location.details =
+                                            Some(host_http_request_details(method, path, &request_headers));
+                                        location
+                                    }),
                                 });
                             }
                         };
@@ -518,6 +562,9 @@ impl ExecCtx<'_> {
                             response.headers,
                             response.body,
                             "host".to_string(),
+                            response.request_kind,
+                            response.completion_boundary,
+                            response.upgrade_accepted,
                         )
                     }
                     _ => {
@@ -560,6 +607,9 @@ impl ExecCtx<'_> {
                             rule.headers.clone(),
                             resp_body,
                             "scripted".to_string(),
+                            request_kind.clone(),
+                            "scripted_response".to_string(),
+                            false,
                         )
                     }
                 };
@@ -574,6 +624,22 @@ impl ExecCtx<'_> {
                         ),
                         ("path".to_string(), serde_json::Value::String(path.clone())),
                         ("backend".to_string(), serde_json::Value::String(backend)),
+                        (
+                            "request_kind".to_string(),
+                            serde_json::Value::String(observed_request_kind),
+                        ),
+                        (
+                            "completion_boundary".to_string(),
+                            serde_json::Value::String(completion_boundary),
+                        ),
+                        (
+                            "upgrade_requested".to_string(),
+                            serde_json::Value::Bool(host_http_upgrade_requested(&request_headers)),
+                        ),
+                        (
+                            "upgrade_accepted".to_string(),
+                            serde_json::Value::Bool(upgrade_accepted),
+                        ),
                         (
                             "status".to_string(),
                             serde_json::Value::Number(serde_json::Number::from(status_code)),

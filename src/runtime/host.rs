@@ -30,6 +30,9 @@ pub(crate) struct HostHttpResponse {
     pub(crate) status: u16,
     pub(crate) headers: BTreeMap<String, String>,
     pub(crate) body: String,
+    pub(crate) request_kind: String,
+    pub(crate) completion_boundary: String,
+    pub(crate) upgrade_accepted: bool,
 }
 
 #[derive(Debug)]
@@ -47,6 +50,50 @@ fn host_http_response_has_no_body(method: &str, status: u16) -> bool {
         || (100..200).contains(&status)
         || status == 204
         || status == 304
+}
+
+pub(crate) fn host_http_request_kind(
+    method: &str,
+    headers: &BTreeMap<String, String>,
+) -> &'static str {
+    if method.eq_ignore_ascii_case("GET") && host_http_upgrade_requested(headers) {
+        "websocket_upgrade"
+    } else {
+        "http_request"
+    }
+}
+
+pub(crate) fn host_http_upgrade_requested(headers: &BTreeMap<String, String>) -> bool {
+    headers
+        .get("connection")
+        .is_some_and(|value| value.to_ascii_lowercase().contains("upgrade"))
+        && headers
+            .get("upgrade")
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
+pub(crate) fn host_http_upgrade_accepted(
+    status: u16,
+    headers: &BTreeMap<String, String>,
+) -> bool {
+    status == 101
+        && headers
+            .get("upgrade")
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
+pub(crate) fn host_http_request_details(
+    method: &str,
+    path: &str,
+    headers: &BTreeMap<String, String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "requestKind": host_http_request_kind(method, headers),
+        "method": method,
+        "path": path,
+        "upgradeRequested": host_http_upgrade_requested(headers),
+        "headers": headers,
+    })
 }
 
 fn spawn_stream_reader<T>(
@@ -278,6 +325,7 @@ pub(crate) fn dispatch_host_http(
     for (k, v) in headers {
         req = req.set(k, v);
     }
+    let request_kind = host_http_request_kind(&method, headers).to_string();
     let result = if let Some(payload) = body {
         req.send_string(payload)
     } else {
@@ -301,11 +349,19 @@ pub(crate) fn dispatch_host_http(
         }
     }
     let status_code = response.status();
+    let upgrade_accepted = host_http_upgrade_accepted(status_code, &out_headers);
     if host_http_response_has_no_body(&method, status_code) {
         return Ok(HostHttpDispatch::Completed(HostHttpResponse {
             status: status_code,
             headers: out_headers,
             body: String::new(),
+            request_kind,
+            completion_boundary: if upgrade_accepted {
+                "upgrade_headers".to_string()
+            } else {
+                "http_no_body_semantics".to_string()
+            },
+            upgrade_accepted,
         }));
     }
     let mut reader = response.into_reader();
@@ -337,6 +393,9 @@ pub(crate) fn dispatch_host_http(
         status: status_code,
         headers: out_headers,
         body: String::from_utf8_lossy(&body_bytes).to_string(),
+        request_kind,
+        completion_boundary: "response_body_complete".to_string(),
+        upgrade_accepted,
     }))
 }
 
@@ -629,6 +688,9 @@ mod tests {
             HostHttpDispatch::Completed(resp) => {
                 assert_eq!(resp.status, 101);
                 assert_eq!(resp.body, "");
+                assert_eq!(resp.request_kind, "websocket_upgrade");
+                assert_eq!(resp.completion_boundary, "upgrade_headers");
+                assert!(resp.upgrade_accepted);
                 assert_eq!(
                     resp.headers.get("upgrade").map(String::as_str),
                     Some("websocket")

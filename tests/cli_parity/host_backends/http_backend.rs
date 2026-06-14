@@ -299,3 +299,87 @@ fn host_http_websocket_upgrade_status_completes_without_hanging() {
         "replay must preserve upgraded host http decision"
     );
 }
+
+#[test]
+fn host_http_websocket_upgrade_with_http_when_and_auth_completes_cleanly() {
+    let (url, stop_tx) = spawn_websocket_upgrade_http_server();
+    let ws = temp_workspace("host-http-ws-afw-contract");
+    let scenario = ws.join("host-http-ws-afw-contract.fozzy.json");
+    let trace = ws.join("host-http-ws-afw-contract.fozzy");
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-http-ws-afw-contract",
+      "steps":[
+        {{
+          "type":"http_when",
+          "method":"GET",
+          "path":"{url}",
+          "status":101,
+          "times":1
+        }},
+        {{
+          "type":"http_request",
+          "method":"GET",
+          "path":"{url}",
+          "headers":{{
+            "authorization":"Bearer mn_bootstrap",
+            "connection":"Upgrade",
+            "upgrade":"websocket",
+            "sec-websocket-version":"13",
+            "sec-websocket-key":"dGhlIHNhbXBsZSBub25jZQ=="
+          }},
+          "expect_status":101
+        }}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    let _ = stop_tx.send(());
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "afw-style websocket upgrade should complete cleanly: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let trace_doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&trace).expect("read trace")).expect("trace json");
+    let http_event = trace_doc
+        .get("events")
+        .and_then(|v| v.as_array())
+        .and_then(|events| {
+            events.iter().find(|event| {
+                event.get("name").and_then(|v| v.as_str()) == Some("http_request")
+            })
+        })
+        .expect("http event");
+    let fields = http_event.get("fields").expect("event fields");
+    assert_eq!(
+        fields.get("request_kind").and_then(|v| v.as_str()),
+        Some("websocket_upgrade")
+    );
+    assert_eq!(
+        fields.get("completion_boundary").and_then(|v| v.as_str()),
+        Some("upgrade_headers")
+    );
+    assert_eq!(
+        fields.get("upgrade_requested").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        fields.get("upgrade_accepted").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
