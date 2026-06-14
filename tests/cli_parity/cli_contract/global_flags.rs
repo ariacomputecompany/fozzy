@@ -108,6 +108,30 @@ fn common_global_and_mode_flags_parse_across_run_like_commands() {
 }
 
 #[test]
+fn strict_verify_alias_maps_to_canonical_strict_flag() {
+    let ws = temp_workspace("strict-verify-alias");
+    let scenario = ws.join("example.fozzy.json");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+
+    let run = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--strict-verify".into(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "strict-verify alias should map to strict: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[test]
 fn non_finite_flake_budget_is_rejected() {
     let ws = temp_workspace("flake-budget");
     std::fs::write(ws.join("fozzy.toml"), "base_dir = \".fozzy\"\n").expect("write config");

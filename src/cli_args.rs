@@ -62,8 +62,8 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     no_color: bool,
 
-    /// Treat warning-like conditions as errors (non-zero exit). Enabled by default.
-    #[arg(long, global = true, default_value_t = true)]
+    /// Explicitly enforce strict mode. Strict mode is enabled by default unless `--unsafe` is set.
+    #[arg(long, global = true, alias = "strict-verify", conflicts_with = "unsafe_mode")]
     strict: bool,
 
     /// Opt out of strict mode and allow potentially unsafe relaxed checks.

@@ -30,10 +30,17 @@ pub(super) fn load_explore_scenario(
     let bytes = std::fs::read(path.as_path())?;
     let file: ScenarioFile = serde_json::from_slice(&bytes)?;
     let ScenarioFile::Distributed(d) = file else {
-        return Err(FozzyError::Scenario(format!(
-            "scenario file {} is not a distributed scenario (use `distributed` section)",
-            path.as_path().display()
-        )));
+        return Err(match file {
+            ScenarioFile::Steps(_) => FozzyError::Scenario(format!(
+                "scenario file {} is a steps scenario, not a distributed explore scenario. Use `fozzy run` for one scenario, `fozzy test` for suites, or convert it to the `distributed` schema before using `fozzy explore`.",
+                path.as_path().display()
+            )),
+            ScenarioFile::Suites(_) => FozzyError::Scenario(format!(
+                "scenario file {} is a suites scenario, not a distributed explore scenario. Use `fozzy test` for suites, or author a `distributed` scenario before using `fozzy explore`.",
+                path.as_path().display()
+            )),
+            ScenarioFile::Distributed(_) => unreachable!(),
+        });
     };
     d.validate()?;
     distributed_to_explore(d, nodes_override)

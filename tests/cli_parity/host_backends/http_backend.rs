@@ -242,3 +242,60 @@ fn host_http_backend_accepts_https_scheme() {
         "https must be supported by host backend, got: {msg}"
     );
 }
+
+#[test]
+fn host_http_websocket_upgrade_status_completes_without_hanging() {
+    let (url, stop_tx) = spawn_websocket_upgrade_http_server();
+    let ws = temp_workspace("host-http-ws-upgrade");
+    let scenario = ws.join("host-http-ws-upgrade.fozzy.json");
+    let trace = ws.join("host-http-ws-upgrade.fozzy");
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-http-ws-upgrade",
+      "steps":[
+        {{
+          "type":"http_request",
+          "method":"GET",
+          "path":"{url}",
+          "headers":{{
+            "connection":"Upgrade",
+            "upgrade":"websocket",
+            "sec-websocket-version":"13",
+            "sec-websocket-key":"dGhlIHNhbXBsZSBub25jZQ=="
+          }},
+          "expect_status":101
+        }}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let run = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    let _ = stop_tx.send(());
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "websocket upgrade should complete cleanly: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let replay = run_cli(&[
+        "replay".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        replay.status.code(),
+        Some(0),
+        "replay must preserve upgraded host http decision"
+    );
+}

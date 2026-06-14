@@ -239,6 +239,24 @@ struct RunAliasEntry {
     directory_modified_ns: u128,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RunAliasIndex {
+    #[serde(rename = "schemaVersion")]
+    schema_version: String,
+    entries: Vec<RunAliasIndexEntryRecord>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RunAliasIndexEntryRecord {
+    #[serde(rename = "runId")]
+    run_id: String,
+    status: ExitStatus,
+    #[serde(rename = "finishedAt")]
+    finished_at: String,
+    #[serde(rename = "artifactsDir")]
+    artifacts_dir: String,
+}
+
 fn run_index_cache()
 -> &'static Mutex<std::collections::HashMap<PathBuf, (crate::FileFingerprint, Vec<RunAliasEntry>)>>
 {
@@ -290,6 +308,7 @@ fn load_run_index(runs_dir: &Path) -> FozzyResult<Vec<RunAliasEntry>> {
             .then_with(|| b.summary.identity.run_id.cmp(&a.summary.identity.run_id))
             .then_with(|| a.dir.cmp(&b.dir))
     });
+    let _ = write_run_alias_index_entries(runs_dir, &entries);
     run_index_cache()
         .lock()
         .expect("run index cache poisoned")
@@ -315,7 +334,11 @@ pub(crate) fn resolve_filtered_run_alias(
         )));
     }
 
-    let run_index = load_run_index(&runs_dir)?;
+    let run_index = if let Some(index) = read_run_alias_index(config)? {
+        index
+    } else {
+        load_run_index(&runs_dir)?
+    };
     if run_index.is_empty() {
         return Err(FozzyError::InvalidArgument(format!(
             "run alias {run:?} cannot be resolved: no coherent completed runs found"
@@ -347,4 +370,98 @@ pub(crate) fn resolve_filtered_run_alias(
 
 fn resolve_run_alias(config: &Config, run: &str) -> FozzyResult<Option<PathBuf>> {
     resolve_filtered_run_alias(config, run, |_dir, _summary| true)
+}
+
+pub(crate) fn update_run_alias_index(
+    summary: &RunSummary,
+    artifacts_dir: &Path,
+) -> FozzyResult<()> {
+    let Some(runs_dir) = artifacts_dir.parent() else {
+        return Ok(());
+    };
+    let index_path = runs_dir
+        .parent()
+        .unwrap_or(runs_dir)
+        .join("run-alias-index.json");
+    let mut index = read_run_alias_index_file(&index_path).unwrap_or(RunAliasIndex {
+        schema_version: "fozzy.run_alias_index.v1".to_string(),
+        entries: Vec::new(),
+    });
+    let record = RunAliasIndexEntryRecord {
+        run_id: summary.identity.run_id.clone(),
+        status: summary.status,
+        finished_at: summary.finished_at.clone(),
+        artifacts_dir: artifacts_dir.to_string_lossy().to_string(),
+    };
+    index.entries.retain(|entry| entry.run_id != record.run_id);
+    index.entries.push(record);
+    index.entries.sort_by(|a, b| {
+        b.finished_at
+            .cmp(&a.finished_at)
+            .then_with(|| b.run_id.cmp(&a.run_id))
+            .then_with(|| a.artifacts_dir.cmp(&b.artifacts_dir))
+    });
+    index
+        .entries
+        .retain(|entry| Path::new(&entry.artifacts_dir).exists());
+    write_run_alias_index_file(&index_path, &index)
+}
+
+fn read_run_alias_index(config: &Config) -> FozzyResult<Option<Vec<RunAliasEntry>>> {
+    let index = match read_run_alias_index_file(&config.run_alias_index_path()) {
+        Ok(index) => index,
+        Err(_) => return Ok(None),
+    };
+    let mut entries = Vec::new();
+    for record in index.entries {
+        let dir = PathBuf::from(&record.artifacts_dir);
+        if !dir.exists() {
+            continue;
+        }
+        let selector = dir.display().to_string();
+        let summary = match load_checked_run_summary_from_artifacts_dir(&dir, &selector) {
+            Ok(Some(summary)) => summary,
+            Ok(None) | Err(_) => continue,
+        };
+        let directory_modified_ns = crate::FileFingerprint::for_path(&dir)?.modified_ns;
+        entries.push(RunAliasEntry {
+            dir,
+            summary,
+            directory_modified_ns,
+        });
+    }
+    Ok(Some(entries))
+}
+
+fn write_run_alias_index_entries(runs_dir: &Path, entries: &[RunAliasEntry]) -> FozzyResult<()> {
+    let index_path = runs_dir
+        .parent()
+        .unwrap_or(runs_dir)
+        .join("run-alias-index.json");
+    let index = RunAliasIndex {
+        schema_version: "fozzy.run_alias_index.v1".to_string(),
+        entries: entries
+            .iter()
+            .map(|entry| RunAliasIndexEntryRecord {
+                run_id: entry.summary.identity.run_id.clone(),
+                status: entry.summary.status,
+                finished_at: entry.summary.finished_at.clone(),
+                artifacts_dir: entry.dir.to_string_lossy().to_string(),
+            })
+            .collect(),
+    };
+    write_run_alias_index_file(&index_path, &index)
+}
+
+fn read_run_alias_index_file(path: &Path) -> FozzyResult<RunAliasIndex> {
+    let bytes = std::fs::read(path)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn write_run_alias_index_file(path: &Path, index: &RunAliasIndex) -> FozzyResult<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(index)?)?;
+    Ok(())
 }

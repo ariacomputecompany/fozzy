@@ -152,6 +152,10 @@ impl Config {
         self.base_dir.join("runs")
     }
 
+    pub fn run_alias_index_path(&self) -> PathBuf {
+        self.base_dir.join("run-alias-index.json")
+    }
+
     pub fn corpora_dir(&self) -> PathBuf {
         self.base_dir.join("corpora")
     }

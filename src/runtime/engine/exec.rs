@@ -12,16 +12,16 @@ use crate::{
 use super::helpers::{HttpRule, NetMessage, ProcRule, ReplayCursor, rng_from_seed};
 use super::types::{FsBackend, HttpBackend, ProcBackend, ScenarioRun};
 
-#[path = "exec/fs.rs"]
-mod fs;
 #[path = "exec/basic.rs"]
 mod basic;
 #[path = "exec/file_http.rs"]
 mod file_http;
-#[path = "exec/proc_net.rs"]
-mod proc_net;
+#[path = "exec/fs.rs"]
+mod fs;
 #[path = "exec/memory.rs"]
 mod memory;
+#[path = "exec/proc_net.rs"]
+mod proc_net;
 
 pub(crate) struct ExecCtx<'a> {
     pub(super) det: bool,
@@ -111,6 +111,7 @@ impl<'a> ExecCtx<'a> {
             file: Some(path.display().to_string()),
             line: None,
             col: None,
+            details: None,
         })
     }
 
@@ -229,7 +230,10 @@ impl<'a> ExecCtx<'a> {
             return Ok(());
         };
         match cursor.next() {
-            Some(Decision::SchedulerPick { task_id: expected_id, .. }) if *expected_id == task_id => Ok(()),
+            Some(Decision::SchedulerPick {
+                task_id: expected_id,
+                ..
+            }) if *expected_id == task_id => Ok(()),
             Some(other) => Err(FozzyError::Trace(format!(
                 "replay drift: expected SchedulerPick(task_id={task_id}), got {other:?}"
             ))),

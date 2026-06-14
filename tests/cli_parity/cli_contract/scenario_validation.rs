@@ -157,6 +157,38 @@ fn explore_rejects_invalid_distributed_scenario_missing_topology() {
 }
 
 #[test]
+fn explore_rejects_steps_scenarios_with_actionable_mode_guidance() {
+    let output = run_cli(&[
+        "explore".into(),
+        "tests/example.fozzy.json".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "explore should reject steps scenario"
+    );
+    let out = parse_json_stdout(&output);
+    let msg = out
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        msg.contains("steps scenario"),
+        "expected scenario kind, got: {msg}"
+    );
+    assert!(
+        msg.contains("Use `fozzy run`"),
+        "expected run guidance, got: {msg}"
+    );
+    assert!(
+        msg.contains("distributed"),
+        "expected distributed authoring guidance, got: {msg}"
+    );
+}
+
+#[test]
 fn test_rejects_explicit_missing_scenario_path_even_if_other_inputs_exist() {
     let ws = temp_workspace("test-missing-explicit");
     let scenario = ws.join("ok.fozzy.json");

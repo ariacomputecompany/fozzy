@@ -1,5 +1,5 @@
-use crate::cli_workflows::*;
 use crate::FullStepStatus;
+use crate::cli_workflows::*;
 
 #[test]
 fn ci_report_status_surfaces_failing_check_detail() {
@@ -125,6 +125,7 @@ fn doctor_report_status_surfaces_issue_and_hint() {
             code: "proc_unmatched_preflight".to_string(),
             message: "strict proc backend preflight found an undeclared subprocess".to_string(),
             hint: Some("Add a `proc_when` step".to_string()),
+            details: None,
         }],
         nondeterminism_signals: None,
         determinism_audit: Some(fozzy::DeterminismAudit {
@@ -154,6 +155,7 @@ fn doctor_report_status_rejects_inconsistent_ok_summary() {
             code: "determinism_audit_mismatch".to_string(),
             message: "mismatch".to_string(),
             hint: None,
+            details: None,
         }],
         nondeterminism_signals: None,
         determinism_audit: Some(fozzy::DeterminismAudit {
@@ -202,6 +204,7 @@ fn doctor_report_status_rejects_invalid_issue_rows() {
             code: "".to_string(),
             message: " ".to_string(),
             hint: None,
+            details: None,
         }],
         nondeterminism_signals: None,
         determinism_audit: Some(fozzy::DeterminismAudit {
@@ -228,6 +231,7 @@ fn doctor_report_status_rejects_unknown_issue_codes() {
             code: "mystery_issue".to_string(),
             message: "unexpected".to_string(),
             hint: None,
+            details: None,
         }],
         nondeterminism_signals: None,
         determinism_audit: Some(fozzy::DeterminismAudit {
@@ -255,11 +259,13 @@ fn doctor_report_status_rejects_duplicate_issue_rows() {
                 code: "determinism_audit_mismatch".to_string(),
                 message: "mismatch".to_string(),
                 hint: None,
+                details: None,
             },
             fozzy::DoctorIssue {
                 code: "determinism_audit_mismatch".to_string(),
                 message: "mismatch".to_string(),
                 hint: Some("same issue repeated".to_string()),
+                details: None,
             },
         ],
         nondeterminism_signals: None,
@@ -451,6 +457,7 @@ fn doctor_report_status_rejects_spurious_mismatch_issue_for_consistent_audit() {
             code: "determinism_audit_mismatch".to_string(),
             message: "mismatch".to_string(),
             hint: None,
+            details: None,
         }],
         nondeterminism_signals: None,
         determinism_audit: Some(fozzy::DeterminismAudit {

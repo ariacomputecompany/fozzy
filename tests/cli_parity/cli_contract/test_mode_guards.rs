@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn test_strict_proc_unmatched_reports_actionable_stub_and_location() {
+fn test_strict_proc_unmatched_reports_structured_scaffold_and_location() {
     let ws = temp_workspace("proc-unmatched-guidance");
     let scenario = ws.join("repo-owned.fozzy.json");
     std::fs::write(
@@ -43,16 +43,8 @@ fn test_strict_proc_unmatched_reports_actionable_stub_and_location() {
         "expected higher-context headline, got: {msg}"
     );
     assert!(
-        msg.contains("Add a `proc_when` step"),
+        msg.contains("Add a matching `proc_when` step"),
         "expected concrete remediation, got: {msg}"
-    );
-    assert!(
-        msg.contains("\"cmd\": \"cargo\""),
-        "expected stub example for cargo, got: {msg}"
-    );
-    assert!(
-        msg.contains("\"args\": [\"test\"]"),
-        "expected args example, got: {msg}"
     );
     assert_eq!(
         finding
@@ -61,6 +53,27 @@ fn test_strict_proc_unmatched_reports_actionable_stub_and_location() {
             .and_then(|v| v.as_str()),
         Some(scenario.to_string_lossy().as_ref())
     );
+    let details = finding
+        .get("location")
+        .and_then(|v| v.get("details"))
+        .expect("proc scaffold details");
+    assert_eq!(
+        details
+            .get("suggestedProcWhen")
+            .and_then(|v| v.get("cmd"))
+            .and_then(|v| v.as_str()),
+        Some("cargo")
+    );
+    assert_eq!(
+        details
+            .get("suggestedProcWhen")
+            .and_then(|v| v.get("args"))
+            .and_then(|v| v.as_array())
+            .and_then(|args| args.first())
+            .and_then(|v| v.as_str()),
+        Some("test")
+    );
+    assert_eq!(details.get("stepIndex").and_then(|v| v.as_u64()), Some(0));
 }
 
 #[test]

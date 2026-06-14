@@ -110,6 +110,42 @@ fn spawn_header_http_server() -> (String, mpsc::Sender<()>) {
     (format!("http://{addr}/headers"), stop_tx)
 }
 
+fn spawn_json_http_server() -> (String, mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind http listener");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let start = std::time::Instant::now();
+        loop {
+            if stop_rx.try_recv().is_ok() || start.elapsed() > Duration::from_secs(10) {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0u8; 4096];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    let body =
+                        r#"{"ok":true,"service":"actual","nested":{"status":"warmup"},"extra":1}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    (format!("http://{addr}/json"), stop_tx)
+}
+
 fn spawn_slow_http_server(delay: Duration) -> (String, mpsc::Sender<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind http listener");
     listener
@@ -183,6 +219,47 @@ fn spawn_large_body_http_server(body_len: usize) -> (String, mpsc::Sender<()>) {
         }
     });
     (format!("http://{addr}/large"), stop_tx)
+}
+
+fn spawn_websocket_upgrade_http_server() -> (String, mpsc::Sender<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind upgrade listener");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let start = std::time::Instant::now();
+        loop {
+            if stop_rx.try_recv().is_ok() || start.elapsed() > Duration::from_secs(10) {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0u8; 4096];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    let response = concat!(
+                        "HTTP/1.1 101 Switching Protocols\r\n",
+                        "Connection: Upgrade\r\n",
+                        "Upgrade: websocket\r\n",
+                        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n",
+                        "\r\n",
+                        "{\"type\":\"status_stream_ready\"}\n",
+                        "{\"type\":\"status_update\",\"runtime\":{\"ready\":true}}\n"
+                    );
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                    let _ = std::io::Write::flush(&mut stream);
+                    thread::sleep(Duration::from_secs(2));
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    (format!("http://{addr}/ws/status?client=macos-app&deviceKey=dev-1"), stop_tx)
 }
 
 fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {

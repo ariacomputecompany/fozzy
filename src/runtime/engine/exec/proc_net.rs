@@ -3,14 +3,16 @@ use rand_core::RngCore as _;
 use crate::host::{HostProcDispatch, dispatch_host_proc};
 use crate::{Decision, Finding, FindingKind, TraceEvent};
 
-use super::ExecCtx;
-use super::super::helpers::{NetMessage, ProcRule, assert_proc_when_matches_host, measure_duration_ms, proc_rule, proc_unmatched_message, sorted_pair, truncate_event_text};
+use super::super::helpers::{
+    NetMessage, ProcRule, assert_proc_when_matches_host, measure_duration_ms, proc_rule,
+    proc_unmatched_details, proc_unmatched_message, sorted_pair, truncate_event_text,
+};
 use super::super::types::ProcBackend;
+use super::ExecCtx;
 
 impl ExecCtx<'_> {
     pub(super) fn exec_proc_net_step(&mut self, step: &crate::Step) -> Result<bool, Finding> {
         match step {
-
             crate::Step::ProcWhen {
                 cmd,
                 args,
@@ -196,6 +198,15 @@ impl ExecCtx<'_> {
                     (rule, "scripted")
                 } else {
                     let step_index = self.current_step_index.unwrap_or_default();
+                    let mut location = self.current_finding_location();
+                    if let Some(location) = location.as_mut() {
+                        location.details = Some(proc_unmatched_details(
+                            cmd,
+                            &call_args,
+                            self.scenario_path.as_deref(),
+                            step_index,
+                        ));
+                    }
                     return Err(Finding {
                         kind: FindingKind::Assertion,
                         title: "proc_unmatched".to_string(),
@@ -205,7 +216,7 @@ impl ExecCtx<'_> {
                             self.scenario_path.as_deref(),
                             step_index,
                         ),
-                        location: self.current_finding_location(),
+                        location,
                     });
                 };
 

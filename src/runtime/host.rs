@@ -42,6 +42,13 @@ const HOST_PROC_MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 const HOST_PROC_MAX_STDERR_BYTES: usize = 8 * 1024 * 1024;
 const HOST_HTTP_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
+fn host_http_response_has_no_body(method: &str, status: u16) -> bool {
+    method.eq_ignore_ascii_case("HEAD")
+        || (100..200).contains(&status)
+        || status == 204
+        || status == 304
+}
+
 fn spawn_stream_reader<T>(
     mut stream: T,
     max_bytes: usize,
@@ -294,6 +301,13 @@ pub(crate) fn dispatch_host_http(
         }
     }
     let status_code = response.status();
+    if host_http_response_has_no_body(&method, status_code) {
+        return Ok(HostHttpDispatch::Completed(HostHttpResponse {
+            status: status_code,
+            headers: out_headers,
+            body: String::new(),
+        }));
+    }
     let mut reader = response.into_reader();
     let mut body_bytes = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -408,13 +422,230 @@ pub(crate) fn assert_http_when_response_matches_host(
             location: None,
         })?;
         if &got != expected_json {
+            let mismatch_details = json_mismatch_details(expected_json, &got);
+            let mismatch_count = mismatch_details
+                .get("mismatches")
+                .and_then(|value| value.as_array())
+                .map_or(0, Vec::len);
             return Err(Finding {
                 kind: FindingKind::Assertion,
                 title: "http_when_host_json".to_string(),
-                message: format!("http_when json mismatch for {method} {path}"),
-                location: None,
+                message: format!(
+                    "http_when json mismatch for {method} {path} ({mismatch_count} structural difference(s))"
+                ),
+                location: Some(crate::FindingLocation {
+                    file: None,
+                    line: None,
+                    col: None,
+                    details: Some(mismatch_details),
+                }),
             });
         }
     }
     Ok(())
+}
+
+fn json_mismatch_details(
+    expected: &serde_json::Value,
+    actual: &serde_json::Value,
+) -> serde_json::Value {
+    let mut mismatches = Vec::new();
+    collect_json_mismatches("$", expected, actual, &mut mismatches);
+    serde_json::json!({
+        "expected": expected,
+        "actual": actual,
+        "mismatches": mismatches,
+    })
+}
+
+fn collect_json_mismatches(
+    path: &str,
+    expected: &serde_json::Value,
+    actual: &serde_json::Value,
+    out: &mut Vec<serde_json::Value>,
+) {
+    if out.len() >= 64 {
+        return;
+    }
+    match (expected, actual) {
+        (serde_json::Value::Object(expected_map), serde_json::Value::Object(actual_map)) => {
+            for (key, expected_value) in expected_map {
+                let child_path = format!("{path}.{}", escape_json_path_segment(key));
+                match actual_map.get(key) {
+                    Some(actual_value) => {
+                        collect_json_mismatches(&child_path, expected_value, actual_value, out);
+                    }
+                    None => out.push(serde_json::json!({
+                        "kind": "missing_key",
+                        "path": child_path,
+                        "expected": expected_value,
+                    })),
+                }
+                if out.len() >= 64 {
+                    return;
+                }
+            }
+            for (key, actual_value) in actual_map {
+                if expected_map.contains_key(key) {
+                    continue;
+                }
+                out.push(serde_json::json!({
+                    "kind": "extra_key",
+                    "path": format!("{path}.{}", escape_json_path_segment(key)),
+                    "actual": actual_value,
+                }));
+                if out.len() >= 64 {
+                    return;
+                }
+            }
+        }
+        (serde_json::Value::Array(expected_items), serde_json::Value::Array(actual_items)) => {
+            let shared = expected_items.len().min(actual_items.len());
+            for idx in 0..shared {
+                collect_json_mismatches(
+                    &format!("{path}[{idx}]"),
+                    &expected_items[idx],
+                    &actual_items[idx],
+                    out,
+                );
+                if out.len() >= 64 {
+                    return;
+                }
+            }
+            for (idx, expected_value) in expected_items.iter().enumerate().skip(shared) {
+                out.push(serde_json::json!({
+                    "kind": "missing_index",
+                    "path": format!("{path}[{idx}]"),
+                    "expected": expected_value,
+                }));
+                if out.len() >= 64 {
+                    return;
+                }
+            }
+            for (idx, actual_value) in actual_items.iter().enumerate().skip(shared) {
+                out.push(serde_json::json!({
+                    "kind": "extra_index",
+                    "path": format!("{path}[{idx}]"),
+                    "actual": actual_value,
+                }));
+                if out.len() >= 64 {
+                    return;
+                }
+            }
+        }
+        _ if expected != actual => out.push(serde_json::json!({
+            "kind": "value_mismatch",
+            "path": path,
+            "expected": expected,
+            "actual": actual,
+        })),
+        _ => {}
+    }
+}
+
+fn escape_json_path_segment(segment: &str) -> String {
+    if segment
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        segment.to_string()
+    } else {
+        format!("[{}]", serde_json::Value::String(segment.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+
+    fn spawn_upgrade_response_server() -> (String, mpsc::Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind upgrade listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            let start = Instant::now();
+            loop {
+                if stop_rx.try_recv().is_ok() || start.elapsed() > Duration::from_secs(5) {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0u8; 2048];
+                        let _ = stream.read(&mut buf);
+                        let response = concat!(
+                            "HTTP/1.1 101 Switching Protocols\r\n",
+                            "Connection: Upgrade\r\n",
+                            "Upgrade: websocket\r\n",
+                            "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n",
+                            "\r\n",
+                            "{\"type\":\"status_stream_ready\"}\n"
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                        thread::sleep(Duration::from_secs(2));
+                        break;
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (
+            format!("http://{addr}/ws/status?client=test&deviceKey=test"),
+            stop_tx,
+        )
+    }
+
+    #[test]
+    fn host_http_upgrade_response_completes_without_draining_stream() {
+        let (url, stop_tx) = spawn_upgrade_response_server();
+        let response = dispatch_host_http(
+            "GET",
+            &url,
+            &BTreeMap::from([
+                ("connection".to_string(), "Upgrade".to_string()),
+                ("upgrade".to_string(), "websocket".to_string()),
+                ("sec-websocket-version".to_string(), "13".to_string()),
+                (
+                    "sec-websocket-key".to_string(),
+                    "dGhlIHNhbXBsZSBub25jZQ==".to_string(),
+                ),
+            ]),
+            None,
+            Some(Duration::from_millis(200)),
+        )
+        .expect("dispatch upgrade request");
+        let _ = stop_tx.send(());
+        match response {
+            HostHttpDispatch::Completed(resp) => {
+                assert_eq!(resp.status, 101);
+                assert_eq!(resp.body, "");
+                assert_eq!(
+                    resp.headers.get("upgrade").map(String::as_str),
+                    Some("websocket")
+                );
+            }
+            HostHttpDispatch::TimedOut => {
+                panic!("upgrade response should complete without timing out")
+            }
+        }
+    }
+
+    #[test]
+    fn host_http_response_has_no_body_covers_upgrade_and_head_semantics() {
+        assert!(host_http_response_has_no_body("GET", 101));
+        assert!(host_http_response_has_no_body("HEAD", 200));
+        assert!(host_http_response_has_no_body("GET", 204));
+        assert!(host_http_response_has_no_body("GET", 304));
+        assert!(!host_http_response_has_no_body("GET", 200));
+    }
 }

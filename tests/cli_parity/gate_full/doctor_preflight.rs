@@ -44,8 +44,16 @@ fn doctor_deep_preflights_proc_unmatched_scenarios() {
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     assert!(
-        hint.contains("Add a `proc_when` step"),
+        hint.contains("Add a matching `proc_when` step"),
         "expected doctor hint to carry proc_when guidance, got: {hint}"
+    );
+    let details = issue.get("details").expect("doctor details");
+    assert_eq!(
+        details
+            .get("suggestedProcWhen")
+            .and_then(|v| v.get("cmd"))
+            .and_then(|v| v.as_str()),
+        Some("cargo")
     );
 }
 
@@ -91,5 +99,5 @@ fn gate_doctor_deep_surfaces_issue_detail() {
     );
     let detail = full_step_detail(&doc, "doctor_deep").expect("doctor detail");
     assert!(detail.contains("proc_unmatched_preflight"));
-    assert!(detail.contains("Add a `proc_when` step"));
+    assert!(detail.contains("Add a matching `proc_when` step"));
 }

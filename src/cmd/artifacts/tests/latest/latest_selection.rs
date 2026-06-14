@@ -178,3 +178,38 @@ fn latest_alias_accepts_newer_manifest_only_wrapper() {
     let resolved = resolve_artifacts_dir(&cfg, "latest").expect("resolve latest");
     assert_eq!(resolved, newer_dir);
 }
+
+#[test]
+fn latest_alias_reads_persisted_run_alias_index_without_scanning_history() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzy-artifacts-latest-index-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let cfg = crate::Config {
+        base_dir: root.join(".fozzy"),
+        ..crate::Config::default()
+    };
+    let run_dir = cfg.runs_dir().join("indexed");
+    std::fs::create_dir_all(&run_dir).expect("run dir");
+    let trace = run_dir.join("trace.fozzy");
+    let report = run_dir.join("report.json");
+    let (report_json, manifest_json) =
+        valid_report_and_manifest_json("indexed", &report, &run_dir, Some(&trace));
+    std::fs::write(
+        &trace,
+        valid_trace_json("indexed", &trace, &report, &run_dir),
+    )
+    .expect("trace");
+    std::fs::write(&report, report_json).expect("report");
+    std::fs::write(run_dir.join("manifest.json"), manifest_json).expect("manifest");
+    let summary = crate::read_cached_run_summary(&report).expect("summary");
+
+    crate::update_run_alias_index(&summary, &run_dir).expect("write alias index");
+
+    let resolved = resolve_artifacts_dir(&cfg, "latest").expect("resolve latest");
+    assert_eq!(resolved, run_dir);
+    assert!(
+        cfg.run_alias_index_path().exists(),
+        "expected persisted alias index to be written"
+    );
+}

@@ -110,7 +110,10 @@ pub(super) struct ReplayCursor<'a> {
 
 impl<'a> ReplayCursor<'a> {
     pub(super) fn new(decisions: &'a [Decision]) -> Self {
-        Self { decisions, index: 0 }
+        Self {
+            decisions,
+            index: 0,
+        }
     }
 
     pub(super) fn next(&mut self) -> Option<&Decision> {
@@ -220,29 +223,44 @@ const TRACE_EVENT_TEXT_LIMIT_BYTES: usize = 16 * 1024;
 
 pub(super) fn proc_unmatched_message(
     cmd: &str,
-    args: &[String],
+    _args: &[String],
     scenario_path: Option<&Path>,
     step_index: usize,
 ) -> String {
-    let invocation = if args.is_empty() {
-        cmd.to_string()
-    } else {
-        format!("{cmd} {}", args.join(" "))
-    };
-    let args_json = serde_json::to_string(args).unwrap_or_else(|_| "[]".to_string());
-    let snippet = format!(
-        "{{\n  \"type\": \"proc_when\",\n  \"cmd\": {cmd:?},\n  \"args\": {args_json},\n  \"exit_code\": 0,\n  \"stdout\": \"\",\n  \"stderr\": \"\",\n  \"times\": 1\n}}",
-        cmd = cmd,
-        args_json = args_json
-    );
     let scenario_hint = scenario_path
         .map(|path| format!(" in {}", path.display()))
         .unwrap_or_default();
     format!(
-        "Strict proc backend blocked an undeclared subprocess: {invocation:?}. Add a `proc_when` step for `cmd={cmd}` and `args={args_json}` before step #{} (`proc_spawn`){scenario_hint}. Example:
-{snippet}",
+        "Strict proc backend blocked an undeclared subprocess for `cmd={cmd}` before step #{} (`proc_spawn`){scenario_hint}. Add a matching `proc_when` step or opt into host proc execution intentionally.",
         step_index + 1
     )
+}
+
+pub(crate) fn proc_unmatched_hint() -> String {
+    "Add a matching `proc_when` step with the emitted scaffold details, or remove strict proc preflight if unrestricted host subprocess execution is intentional.".to_string()
+}
+
+pub(super) fn proc_unmatched_details(
+    cmd: &str,
+    args: &[String],
+    scenario_path: Option<&Path>,
+    step_index: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "command": cmd,
+        "args": args,
+        "scenarioPath": scenario_path.map(|path| path.display().to_string()),
+        "stepIndex": step_index,
+        "suggestedProcWhen": {
+            "type": "proc_when",
+            "cmd": cmd,
+            "args": args,
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "times": 1
+        }
+    })
 }
 
 pub(super) fn truncate_event_text(text: &str) -> String {

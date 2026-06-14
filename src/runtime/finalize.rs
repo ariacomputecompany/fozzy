@@ -140,6 +140,7 @@ pub(crate) fn write_summary_report(
 ) -> FozzyResult<()> {
     std::fs::write(report_path, serde_json::to_vec(summary)?)?;
     crate::write_run_manifest_with_profile(summary, artifacts_dir, profile)?;
+    crate::update_run_alias_index(summary, artifacts_dir)?;
     Ok(())
 }
 

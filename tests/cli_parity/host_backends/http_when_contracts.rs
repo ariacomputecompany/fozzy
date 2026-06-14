@@ -129,3 +129,51 @@ fn host_http_when_unmatched_includes_remediation_guidance() {
         "expected remediation guidance in message, got: {msg}"
     );
 }
+
+#[test]
+fn host_http_when_json_mismatch_emits_structured_diff_details() {
+    let ws = temp_workspace("host-http-when-json-diff");
+    let scenario = ws.join("host-http-when-json-diff.fozzy.json");
+    let (url, stop_tx) = spawn_json_http_server();
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-http-when-json-diff",
+      "steps":[
+        {{"type":"http_when","method":"GET","path":"{url}","status":200,"json":{{"ok":true,"service":"expected","nested":{{"status":"ready"}}}}}},
+        {{"type":"http_request","method":"GET","path":"{url}"}}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+    let run = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    let _ = stop_tx.send(());
+    assert_eq!(run.status.code(), Some(1), "json mismatch should fail");
+    let doc = parse_json_stdout(&run);
+    let finding = doc
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .expect("json mismatch finding");
+    assert_eq!(
+        finding.get("title").and_then(|v| v.as_str()),
+        Some("http_when_host_json")
+    );
+    let details = finding
+        .get("location")
+        .and_then(|v| v.get("details"))
+        .expect("json mismatch details");
+    assert!(
+        details
+            .get("mismatches")
+            .and_then(|v| v.as_array())
+            .is_some_and(|rows| !rows.is_empty()),
+        "expected structured mismatch rows, got: {details}"
+    );
+}

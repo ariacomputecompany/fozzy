@@ -101,7 +101,7 @@ mod tests {
 }
 
 pub(super) fn strict_enabled(cli: &Cli) -> bool {
-    cli.strict && !cli.unsafe_mode
+    cli.strict || !cli.unsafe_mode
 }
 
 pub(super) fn print_error_and_exit(logger: &CliLogger, err: anyhow::Error) -> ExitCode {

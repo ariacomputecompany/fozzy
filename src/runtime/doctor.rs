@@ -19,6 +19,8 @@ pub struct DoctorIssue {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,7 +95,11 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
                         code: "proc_unmatched_preflight".to_string(),
                         message: "strict proc backend preflight found an undeclared subprocess"
                             .to_string(),
-                        hint: Some(finding.message.clone()),
+                        hint: Some(crate::proc_unmatched_hint()),
+                        details: finding
+                            .location
+                            .as_ref()
+                            .and_then(|location| location.details.clone()),
                     });
                 }
                 let sig = scenario_run_signature(&run);
@@ -120,6 +126,7 @@ pub fn doctor(config: &Config, opt: &DoctorOptions) -> FozzyResult<DoctorReport>
                         "Run `fozzy run --det --seed <seed>` repeatedly and compare traces/events."
                             .to_string(),
                     ),
+                    details: None,
                 });
             }
 
