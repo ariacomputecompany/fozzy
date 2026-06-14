@@ -87,6 +87,65 @@ fn strict_rejects_checksumless_trace_in_verify_and_ci() {
 }
 
 #[test]
+fn strict_verify_accepts_trace_recorded_by_passing_deterministic_run() {
+    let ws = temp_workspace("strict-verify-recorded-trace");
+    let scenario = ws.join("example.fozzy.json");
+    let trace = ws.join("recorded.trace.fozzy");
+    std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
+
+    let run = run_cli_in(
+        &ws,
+        &[
+            "run".into(),
+            scenario.display().to_string(),
+            "--det".into(),
+            "--record".into(),
+            trace.display().to_string(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "deterministic run should pass: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let verify = run_cli_in(
+        &ws,
+        &[
+            "trace".into(),
+            "verify".into(),
+            trace.display().to_string(),
+            "--strict-verify".into(),
+            "--json".into(),
+        ],
+    );
+    assert_eq!(
+        verify.status.code(),
+        Some(0),
+        "strict trace verify should pass for a freshly recorded deterministic trace: {}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let doc = parse_json_stdout(&verify);
+    assert_eq!(doc.get("ok").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        doc.get("checksumPresent").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        doc.get("checksumValid").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert!(
+        doc.get("warnings")
+            .and_then(|v| v.as_array())
+            .is_none_or(|warnings| warnings.is_empty()),
+        "fresh deterministic trace should not emit replay drift warnings"
+    );
+}
+
+#[test]
 fn strict_trace_verify_json_emits_single_error_document() {
     let ws = temp_workspace("strict-json-contract");
     let trace = ws.join("stale.fozzy");
