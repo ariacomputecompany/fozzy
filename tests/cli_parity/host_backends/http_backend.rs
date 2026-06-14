@@ -383,3 +383,161 @@ fn host_http_websocket_upgrade_with_http_when_and_auth_completes_cleanly() {
         Some(true)
     );
 }
+
+#[test]
+fn host_http_websocket_upgrade_timeout_emits_lifecycle_specific_diagnostics() {
+    let (url, stop_tx) = spawn_slow_http_server(Duration::from_millis(200));
+    let ws = temp_workspace("host-http-ws-timeout");
+    let scenario = ws.join("host-http-ws-timeout.fozzy.json");
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-http-ws-timeout",
+      "steps":[
+        {{
+          "type":"http_request",
+          "method":"GET",
+          "path":"{url}",
+          "headers":{{
+            "connection":"Upgrade",
+            "upgrade":"websocket",
+            "sec-websocket-version":"13",
+            "sec-websocket-key":"dGhlIHNhbXBsZSBub25jZQ=="
+          }},
+          "expect_status":101
+        }}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--timeout".into(),
+        "50ms".into(),
+        "--json".into(),
+    ]);
+    let _ = stop_tx.send(());
+    assert_eq!(
+        run.status.code(),
+        Some(3),
+        "websocket upgrade timeout should exit 3: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let doc = parse_json_stdout(&run);
+    let finding = doc
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .and_then(|v| v.first())
+        .expect("timeout finding");
+    assert_eq!(finding.get("title").and_then(|v| v.as_str()), Some("timeout"));
+    assert!(
+        finding
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|msg| msg.contains("host websocket upgrade timed out")),
+        "expected websocket-specific timeout message, got: {finding:?}"
+    );
+    let details = finding
+        .get("location")
+        .and_then(|v| v.get("details"))
+        .expect("location details");
+    assert_eq!(
+        details.get("requestKind").and_then(|v| v.as_str()),
+        Some("websocket_upgrade")
+    );
+    assert_eq!(
+        details.get("upgradeRequested").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
+#[test]
+fn host_http_websocket_upgrade_unmatched_rule_reports_contract_guidance() {
+    let (url, stop_tx) = spawn_websocket_upgrade_http_server();
+    let ws = temp_workspace("host-http-ws-unmatched");
+    let scenario = ws.join("host-http-ws-unmatched.fozzy.json");
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"host-http-ws-unmatched",
+      "steps":[
+        {{
+          "type":"http_when",
+          "method":"GET",
+          "path":"{url}&lane=wrong",
+          "status":101,
+          "times":1
+        }},
+        {{
+          "type":"http_request",
+          "method":"GET",
+          "path":"{url}",
+          "headers":{{
+            "authorization":"Bearer mn_bootstrap",
+            "connection":"Upgrade",
+            "upgrade":"websocket",
+            "sec-websocket-version":"13",
+            "sec-websocket-key":"dGhlIHNhbXBsZSBub25jZQ=="
+          }},
+          "expect_status":101
+        }}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--http-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--json".into(),
+    ]);
+    let _ = stop_tx.send(());
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "unmatched websocket upgrade rule should fail: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let doc = parse_json_stdout(&run);
+    let finding = doc
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .and_then(|v| v.first())
+        .expect("unmatched finding");
+    assert_eq!(
+        finding.get("title").and_then(|v| v.as_str()),
+        Some("http_when_host_unmatched")
+    );
+    assert!(
+        finding
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|msg| {
+                msg.contains("host websocket upgrade")
+                    && msg.contains("auth/upgrade headers")
+            }),
+        "expected websocket-specific contract guidance, got: {finding:?}"
+    );
+    let details = finding
+        .get("location")
+        .and_then(|v| v.get("details"))
+        .expect("location details");
+    assert_eq!(
+        details.get("requestKind").and_then(|v| v.as_str()),
+        Some("websocket_upgrade")
+    );
+    assert_eq!(
+        details.get("upgradeRequested").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
