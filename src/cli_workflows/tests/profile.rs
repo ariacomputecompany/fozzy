@@ -1,5 +1,5 @@
-use crate::cli_workflows::*;
 use crate::FullStepStatus;
+use crate::cli_workflows::*;
 
 #[test]
 fn profile_diff_status_rejects_regressions() {

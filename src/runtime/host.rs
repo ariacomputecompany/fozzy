@@ -72,10 +72,7 @@ pub(crate) fn host_http_upgrade_requested(headers: &BTreeMap<String, String>) ->
             .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
 }
 
-pub(crate) fn host_http_upgrade_accepted(
-    status: u16,
-    headers: &BTreeMap<String, String>,
-) -> bool {
+pub(crate) fn host_http_upgrade_accepted(status: u16, headers: &BTreeMap<String, String>) -> bool {
     status == 101
         && headers
             .get("upgrade")

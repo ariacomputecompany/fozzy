@@ -8,10 +8,8 @@ use crate::{
 use std::path::{Path, PathBuf};
 
 fn temp_workspace(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "fozzy-fuzz-test-{name}-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("fozzy-fuzz-test-{name}-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("create temp workspace");
     root
 }
@@ -98,7 +96,9 @@ fn scenario_fuzz_target_preserves_structured_memory() {
 
     assert_eq!(exec.status, crate::ExitStatus::Fail);
     assert_eq!(
-        exec.memory.as_ref().map(|memory| memory.summary.leaked_bytes),
+        exec.memory
+            .as_ref()
+            .map(|memory| memory.summary.leaked_bytes),
         Some(256)
     );
 }
@@ -173,7 +173,11 @@ fn replay_fuzz_trace_uses_replayed_memory_summary() {
     )
     .expect("replay fuzz trace");
     assert_eq!(
-        replayed.summary.memory.as_ref().map(|memory| memory.leaked_bytes),
+        replayed
+            .summary
+            .memory
+            .as_ref()
+            .map(|memory| memory.leaked_bytes),
         Some(256)
     );
 }

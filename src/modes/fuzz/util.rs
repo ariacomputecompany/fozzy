@@ -3,7 +3,7 @@ use rand_core::{RngCore as _, SeedableRng as _};
 
 use crate::{Config, ExitStatus, FozzyError, FozzyResult, MemoryOptions};
 
-use super::{execute_target, FuzzTarget};
+use super::{FuzzTarget, execute_target};
 
 pub(crate) fn mutate_bytes(buf: &mut Vec<u8>, rng: &mut ChaCha20Rng, max_len: usize) {
     let choice = (rng.next_u64() % 4) as u8;

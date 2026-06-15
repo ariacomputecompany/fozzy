@@ -1,6 +1,6 @@
 use super::reports::{sample_run_summary, write_trace_fixture};
-use crate::cli_workflows::*;
 use crate::FullStepStatus;
+use crate::cli_workflows::*;
 
 #[test]
 fn shrink_step_status_rejects_strict_warning_for_pass_summary() {

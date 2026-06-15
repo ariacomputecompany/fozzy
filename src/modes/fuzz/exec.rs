@@ -7,7 +7,7 @@ use crate::{
     ScenarioPath, TraceEvent, TraceFile, wall_time_iso_utc,
 };
 
-use super::{seed_from_input, stable_edge, FuzzTarget};
+use super::{FuzzTarget, seed_from_input, stable_edge};
 
 #[derive(Debug, Clone)]
 pub(crate) struct FuzzExec {

@@ -1,5 +1,5 @@
-use crate::cli_workflows::*;
 use crate::FullStepStatus;
+use crate::cli_workflows::*;
 
 #[test]
 fn memory_graph_status_skips_empty_graph() {

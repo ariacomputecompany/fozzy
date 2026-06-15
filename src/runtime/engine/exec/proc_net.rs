@@ -122,7 +122,9 @@ impl ExecCtx<'_> {
                     .proc_rules
                     .iter()
                     .position(|r| r.remaining > 0 && r.cmd == *cmd && r.args == call_args);
-                let (rule, backend, completion_boundary) = if let Some((rule, backend)) = replay_rule {
+                let (rule, backend, completion_boundary) = if let Some((rule, backend)) =
+                    replay_rule
+                {
                     (rule, backend, "recorded_decision")
                 } else if matches!(self.proc_backend, ProcBackend::Host) {
                     if !self.proc_rules.is_empty() && host_rule_idx.is_none() {

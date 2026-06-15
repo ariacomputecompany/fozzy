@@ -3,8 +3,8 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::{Finding, FindingKind};
 
-use super::ExecCtx;
 use super::super::helpers::decode_hex;
+use super::ExecCtx;
 
 impl ExecCtx<'_> {
     pub(super) fn replay_host_fs_write(&mut self, path: &str, data: &[u8]) {

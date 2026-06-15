@@ -1,5 +1,5 @@
-use crate::cli_workflows::*;
 use crate::FullStepStatus;
+use crate::cli_workflows::*;
 use fozzy::{RunIdentity, RunMode};
 
 pub(super) fn sample_run_summary(status: ExitStatus) -> RunSummary {

@@ -83,14 +83,18 @@ fn direct_trace_export_and_pack_reject_incomplete_declared_detached_metadata() {
 
     let err_pack = export_reproducer_pack(&cfg, &trace_path.to_string_lossy(), &out_pack)
         .expect_err("pack must fail");
-    assert!(err_pack
-        .to_string()
-        .contains("missing required files: manifest.json"));
+    assert!(
+        err_pack
+            .to_string()
+            .contains("missing required files: manifest.json")
+    );
     let err_export = export_artifacts(&cfg, &trace_path.to_string_lossy(), &out_export)
         .expect_err("export must fail");
-    assert!(err_export
-        .to_string()
-        .contains("missing required files: manifest.json"));
+    assert!(
+        err_export
+            .to_string()
+            .contains("missing required files: manifest.json")
+    );
 }
 #[test]
 fn direct_trace_list_rejects_incomplete_declared_detached_metadata() {
@@ -136,9 +140,10 @@ fn direct_trace_list_rejects_incomplete_declared_detached_metadata() {
     };
 
     let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
-    assert!(err
-        .to_string()
-        .contains("missing required files: manifest.json"));
+    assert!(
+        err.to_string()
+            .contains("missing required files: manifest.json")
+    );
 }
 
 #[test]
@@ -211,7 +216,8 @@ fn direct_trace_list_rejects_unchecked_sibling_artifacts() {
     };
 
     let err = artifacts_list(&cfg, &trace_path.to_string_lossy()).expect_err("list must fail");
-    assert!(err
-        .to_string()
-        .contains("report.json and manifest.json are required to trust sibling files"));
+    assert!(
+        err.to_string()
+            .contains("report.json and manifest.json are required to trust sibling files")
+    );
 }

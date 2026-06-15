@@ -360,9 +360,9 @@ fn host_http_websocket_upgrade_with_http_when_and_auth_completes_cleanly() {
         .get("events")
         .and_then(|v| v.as_array())
         .and_then(|events| {
-            events.iter().find(|event| {
-                event.get("name").and_then(|v| v.as_str()) == Some("http_request")
-            })
+            events
+                .iter()
+                .find(|event| event.get("name").and_then(|v| v.as_str()) == Some("http_request"))
         })
         .expect("http event");
     let fields = http_event.get("fields").expect("event fields");
@@ -435,7 +435,10 @@ fn host_http_websocket_upgrade_timeout_emits_lifecycle_specific_diagnostics() {
         .and_then(|v| v.as_array())
         .and_then(|v| v.first())
         .expect("timeout finding");
-    assert_eq!(finding.get("title").and_then(|v| v.as_str()), Some("timeout"));
+    assert_eq!(
+        finding.get("title").and_then(|v| v.as_str()),
+        Some("timeout")
+    );
     assert!(
         finding
             .get("message")
@@ -523,8 +526,7 @@ fn host_http_websocket_upgrade_unmatched_rule_reports_contract_guidance() {
             .get("message")
             .and_then(|v| v.as_str())
             .is_some_and(|msg| {
-                msg.contains("host websocket upgrade")
-                    && msg.contains("auth/upgrade headers")
+                msg.contains("host websocket upgrade") && msg.contains("auth/upgrade headers")
             }),
         "expected websocket-specific contract guidance, got: {finding:?}"
     );

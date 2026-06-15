@@ -411,7 +411,8 @@ fn bundle_rejects_stale_report_without_manifest() {
     let out = root.join("bundle.zip");
 
     let err = export_gate_bundle(&cfg, "r1", &out).expect_err("bundle must fail");
-    assert!(err
-        .to_string()
-        .contains("missing required files: manifest.json"));
+    assert!(
+        err.to_string()
+            .contains("missing required files: manifest.json")
+    );
 }

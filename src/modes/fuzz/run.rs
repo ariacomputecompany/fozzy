@@ -1,24 +1,23 @@
+use rand_core::RngCore as _;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
-use rand_core::RngCore as _;
 use uuid::Uuid;
 
 use crate::finalize::{write_reporter_artifacts, write_summary_report};
+use crate::heap_budget_findings_from_trace;
 use crate::{
     Config, ExitStatus, Finding, FindingKind, MemoryState, ProfileCaptureLevel, RunIdentity,
     RunMode, RunSummary, TraceFile, should_emit_profile_artifacts, wall_time_iso_utc,
     write_memory_artifacts, write_profile_artifacts_from_trace_with_source,
 };
 use crate::{FozzyError, FozzyResult};
-use crate::heap_budget_findings_from_trace;
 
 use super::{
-    FuzzCoverageStats, FuzzMode, FuzzOptions, FuzzTarget, crash_trace_output_path,
-    execute_target, fuzz_exec_memory, fuzz_trace_memory_options, gen_seed, heap_budget_policy,
-    hex_decode, load_corpus, minimize_input, mutate_bytes, persist_corpus_input,
-    persist_crash_input, persist_crash_min_input, rng_from_seed, should_emit_heavy_artifacts,
-    target_string,
+    FuzzCoverageStats, FuzzMode, FuzzOptions, FuzzTarget, crash_trace_output_path, execute_target,
+    fuzz_exec_memory, fuzz_trace_memory_options, gen_seed, heap_budget_policy, hex_decode,
+    load_corpus, minimize_input, mutate_bytes, persist_corpus_input, persist_crash_input,
+    persist_crash_min_input, rng_from_seed, should_emit_heavy_artifacts, target_string,
 };
 
 type LastExec = (
@@ -162,7 +161,9 @@ pub fn fuzz(
             let finished_at = wall_time_iso_utc();
             let (duration_ms, duration_ns) = crate::duration_fields(started.elapsed());
 
-            let harness_memory = memory_state.as_ref().map(|memory| memory.clone().finalize());
+            let harness_memory = memory_state
+                .as_ref()
+                .map(|memory| memory.clone().finalize());
             let crash_memory = fuzz_exec_memory(exec.memory.as_ref(), harness_memory.as_ref());
             let mut summary = RunSummary {
                 status: exec.status,
@@ -291,12 +292,15 @@ pub fn fuzz(
         duration_ms,
         duration_ns,
         tests: None,
-        memory: effective_memory.as_ref().map(|memory| memory.summary.clone()),
+        memory: effective_memory
+            .as_ref()
+            .map(|memory| memory.summary.clone()),
         findings,
     };
-    let (profile_input, profile_events, profile_status, profile_findings, profile_memory) = last_exec
-        .clone()
-        .unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new(), None));
+    let (profile_input, profile_events, profile_status, profile_findings, profile_memory) =
+        last_exec
+            .clone()
+            .unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new(), None));
     let mut profile_summary = summary.clone();
     profile_summary.status = profile_status;
     profile_summary.findings = profile_findings;
@@ -343,8 +347,8 @@ pub fn fuzz(
     if let Some(record_path) = &opt.record_trace_to
         && crash_trace_path.is_none()
     {
-        let (input, events, exec_status, exec_findings, exec_memory) =
-            last_exec.unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new(), None));
+        let (input, events, exec_status, exec_findings, exec_memory) = last_exec
+            .unwrap_or_else(|| (Vec::new(), Vec::new(), ExitStatus::Pass, Vec::new(), None));
         let written = crate::resolve_record_target(record_path, opt.record_collision)?;
         summary.identity.trace_path = Some(written.to_string_lossy().to_string());
         let mut trace_summary = summary.clone();
@@ -352,7 +356,8 @@ pub fn fuzz(
         trace_summary.findings = exec_findings;
         trace_summary.identity.trace_path = Some(written.to_string_lossy().to_string());
         let mut trace = TraceFile::new_fuzz(target_string(target), &input, events, trace_summary);
-        trace.memory = exec_memory.or_else(|| effective_memory.as_ref().map(|memory| memory.to_trace()));
+        trace.memory =
+            exec_memory.or_else(|| effective_memory.as_ref().map(|memory| memory.to_trace()));
         crate::write_trace_to_target(&trace, &written)?;
     }
     profile_trace.summary = {
@@ -363,7 +368,11 @@ pub fn fuzz(
     let explicit_capture = opt.record_trace_to.is_some() || crash_trace_path.is_some();
     let emit_heavy = should_emit_heavy_artifacts(status, explicit_capture)
         || matches!(opt.profile_capture, ProfileCaptureLevel::Full);
-    let source_trace_path = summary.identity.trace_path.as_deref().map(std::path::Path::new);
+    let source_trace_path = summary
+        .identity
+        .trace_path
+        .as_deref()
+        .map(std::path::Path::new);
     let mut profile_metadata = None;
     if emit_heavy {
         profile_metadata = Some(write_profile_artifacts_from_trace_with_source(
@@ -546,7 +555,12 @@ pub fn shrink_fuzz_trace(
         target_status,
         &fuzz_trace_memory_options(&trace),
     )?;
-    let exec = execute_target(config, &target, &minimized, &fuzz_trace_memory_options(&trace))?;
+    let exec = execute_target(
+        config,
+        &target,
+        &minimized,
+        &fuzz_trace_memory_options(&trace),
+    )?;
 
     let out_path = opt
         .out_trace_path

@@ -119,9 +119,10 @@ fn artifacts_diff_rejects_stale_report_without_manifest() {
         ..crate::Config::default()
     };
     let err = artifacts_diff(&cfg, "left", "right").expect_err("must reject stale left");
-    assert!(err
-        .to_string()
-        .contains("missing required files: manifest.json"));
+    assert!(
+        err.to_string()
+            .contains("missing required files: manifest.json")
+    );
 }
 #[test]
 fn artifacts_list_rejects_stale_report_without_manifest() {
@@ -159,9 +160,10 @@ fn artifacts_list_rejects_stale_report_without_manifest() {
         ..crate::Config::default()
     };
     let err = artifacts_list(&cfg, "stale").expect_err("must reject stale list");
-    assert!(err
-        .to_string()
-        .contains("missing required files: manifest.json"));
+    assert!(
+        err.to_string()
+            .contains("missing required files: manifest.json")
+    );
 }
 
 #[test]
@@ -190,9 +192,10 @@ fn artifacts_list_rejects_trace_only_run_wrapper() {
         ..crate::Config::default()
     };
     let err = artifacts_list(&cfg, "trace-only").expect_err("must reject trace-only list");
-    assert!(err
-        .to_string()
-        .contains("missing required files: report.json, manifest.json"));
+    assert!(
+        err.to_string()
+            .contains("missing required files: report.json, manifest.json")
+    );
 }
 
 #[test]

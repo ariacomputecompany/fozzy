@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use crate::host::{
     HostHttpDispatch, assert_http_when_response_matches_host, canonical_headers,
-    dispatch_host_http, host_http_request_details, host_http_request_kind,
-    host_http_rule_matches, host_http_rule_path_supported, host_http_upgrade_requested,
+    dispatch_host_http, host_http_request_details, host_http_request_kind, host_http_rule_matches,
+    host_http_rule_path_supported, host_http_upgrade_requested,
 };
 use crate::{Decision, Finding, FindingKind, TraceEvent};
 
@@ -378,10 +378,15 @@ impl ExecCtx<'_> {
                         location: None,
                     });
                 }
-                let (status_code, resp_headers, resp_body, backend, observed_request_kind, completion_boundary, upgrade_accepted) = match self
-                    .replay_peek()
-                    .cloned()
-                {
+                let (
+                    status_code,
+                    resp_headers,
+                    resp_body,
+                    backend,
+                    observed_request_kind,
+                    completion_boundary,
+                    upgrade_accepted,
+                ) = match self.replay_peek().cloned() {
                     Some(Decision::HttpRequest {
                         method: replay_method,
                         path: replay_path,
@@ -531,11 +536,16 @@ impl ExecCtx<'_> {
                                     kind: FindingKind::Hang,
                                     title: "timeout".to_string(),
                                     message,
-                                    location: self.current_finding_location().map(|mut location| {
-                                        location.details =
-                                            Some(host_http_request_details(method, path, &request_headers));
-                                        location
-                                    }),
+                                    location: self.current_finding_location().map(
+                                        |mut location| {
+                                            location.details = Some(host_http_request_details(
+                                                method,
+                                                path,
+                                                &request_headers,
+                                            ));
+                                            location
+                                        },
+                                    ),
                                 });
                             }
                         };

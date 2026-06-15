@@ -9,7 +9,9 @@ use std::process::ExitCode;
 
 use clap::error::ErrorKind;
 use cli_logger::CliLogger;
-use cli_runtime::{args_request_json, init_tracing, print_clap_error_and_exit, print_error_and_exit};
+use cli_runtime::{
+    args_request_json, init_tracing, print_clap_error_and_exit, print_error_and_exit,
+};
 use tracing_subscriber::EnvFilter;
 
 include!("cli_args.rs");

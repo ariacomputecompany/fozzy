@@ -2,13 +2,12 @@ use std::time::Duration;
 
 use crate::{Decision, DecisionLog, Finding, FindingKind, TraceEvent};
 
-use super::ExecCtx;
 use super::super::helpers::{ExecCheckpoint, duration_to_ms};
+use super::ExecCtx;
 
 impl ExecCtx<'_> {
     pub(super) fn exec_memory_step(&mut self, step: &crate::Step) -> Result<bool, Finding> {
         match step {
-
             crate::Step::MemoryAlloc { bytes, key, tag } => {
                 let callsite =
                     self.current_memory_callsite("memory_alloc", key.as_ref(), tag.as_ref());

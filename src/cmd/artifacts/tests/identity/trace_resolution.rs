@@ -154,9 +154,10 @@ fn resolve_trace_path_rejects_conflicting_local_and_declared_trace_identities() 
     .expect("external trace");
 
     let err = resolve_trace_path_from_artifacts_dir(&run_dir).expect_err("must reject conflict");
-    assert!(err
-        .to_string()
-        .contains("conflicting local and declared trace identities"));
+    assert!(
+        err.to_string()
+            .contains("conflicting local and declared trace identities")
+    );
 }
 
 #[test]
@@ -218,7 +219,8 @@ fn resolve_trace_path_rejects_conflicting_report_and_manifest_trace_identities()
     .expect("manifest trace");
 
     let err = resolve_trace_path_from_artifacts_dir(&run_dir).expect_err("must reject conflict");
-    assert!(err
-        .to_string()
-        .contains("conflicting declared trace identities"));
+    assert!(
+        err.to_string()
+            .contains("conflicting declared trace identities")
+    );
 }

@@ -259,7 +259,10 @@ fn spawn_websocket_upgrade_http_server() -> (String, mpsc::Sender<()>) {
             }
         }
     });
-    (format!("http://{addr}/ws/status?client=macos-app&deviceKey=dev-1"), stop_tx)
+    (
+        format!("http://{addr}/ws/status?client=macos-app&deviceKey=dev-1"),
+        stop_tx,
+    )
 }
 
 fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {

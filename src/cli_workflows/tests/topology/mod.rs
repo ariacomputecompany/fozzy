@@ -1,5 +1,5 @@
-use crate::cli_workflows::*;
 use crate::FullStepStatus;
+use crate::cli_workflows::*;
 use std::path::Path;
 
 fn topology_status_for_report(report: &fozzy::MapSuitesReport) -> (FullStepStatus, String) {

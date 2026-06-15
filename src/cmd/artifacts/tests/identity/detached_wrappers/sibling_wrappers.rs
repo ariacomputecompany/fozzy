@@ -142,14 +142,18 @@ fn direct_trace_export_and_pack_reject_unchecked_sibling_artifacts() {
 
     let err_pack = export_reproducer_pack(&cfg, &trace_path.to_string_lossy(), &out_pack)
         .expect_err("pack must fail");
-    assert!(err_pack
-        .to_string()
-        .contains("report.json and manifest.json are required to trust sibling files"));
+    assert!(
+        err_pack
+            .to_string()
+            .contains("report.json and manifest.json are required to trust sibling files")
+    );
     let err_export = export_artifacts(&cfg, &trace_path.to_string_lossy(), &out_export)
         .expect_err("export must fail");
-    assert!(err_export
-        .to_string()
-        .contains("report.json and manifest.json are required to trust sibling files"));
+    assert!(
+        err_export
+            .to_string()
+            .contains("report.json and manifest.json are required to trust sibling files")
+    );
 }
 
 #[test]

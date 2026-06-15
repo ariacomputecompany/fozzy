@@ -29,7 +29,6 @@ pub fn should_emit_profile_artifacts(
     }
 }
 
-
 pub(crate) fn run_scenario_inner(
     _config: &Config,
     _mode: RunMode,

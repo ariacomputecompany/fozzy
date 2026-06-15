@@ -30,8 +30,10 @@ fn topology_coverage_status_rejects_degraded_confidence_warnings() {
     let (status, detail) = topology_status_for_report(&report);
     assert!(matches!(status, FullStepStatus::Failed));
     assert!(detail.contains("uncovered=0"));
-    assert!(detail
-        .contains("warnings=map scan skipped 1 source file(s); hotspot coverage is incomplete"));
+    assert!(
+        detail
+            .contains("warnings=map scan skipped 1 source file(s); hotspot coverage is incomplete")
+    );
 }
 
 #[test]

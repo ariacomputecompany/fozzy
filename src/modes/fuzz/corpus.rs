@@ -64,7 +64,10 @@ pub(crate) fn crash_trace_output_path(
 
 pub(crate) fn with_numeric_suffix(path: &Path, suffix: u64) -> PathBuf {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let stem = path.file_stem().and_then(|segment| segment.to_str()).unwrap_or("trace");
+    let stem = path
+        .file_stem()
+        .and_then(|segment| segment.to_str())
+        .unwrap_or("trace");
     match path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) => parent.join(format!("{stem}.{suffix}.{ext}")),
         None => parent.join(format!("{stem}.{suffix}")),

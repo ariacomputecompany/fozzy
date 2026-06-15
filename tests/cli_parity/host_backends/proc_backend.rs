@@ -349,7 +349,10 @@ fn host_proc_timeout_emits_lifecycle_specific_diagnostics() {
         .and_then(|v| v.as_array())
         .and_then(|v| v.first())
         .expect("timeout finding");
-    assert_eq!(finding.get("title").and_then(|v| v.as_str()), Some("timeout"));
+    assert_eq!(
+        finding.get("title").and_then(|v| v.as_str()),
+        Some("timeout")
+    );
     assert!(
         finding
             .get("message")
