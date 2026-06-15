@@ -314,6 +314,206 @@ fn host_proc_timeout_is_recorded_and_replayed_as_timeout() {
 
 #[cfg(unix)]
 #[test]
+fn host_proc_timeout_emits_lifecycle_specific_diagnostics() {
+    let ws = temp_workspace("host-proc-timeout-details");
+    let scenario = ws.join("host-proc-timeout-details.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc-timeout-details",
+      "steps":[
+        {"type":"proc_spawn","cmd":"/bin/sh","args":["-c","sleep 2"]}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--timeout".into(),
+        "50ms".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(3),
+        "host proc timeout should exit 3, stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let doc = parse_json_stdout(&run);
+    let finding = doc
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .and_then(|v| v.first())
+        .expect("timeout finding");
+    assert_eq!(finding.get("title").and_then(|v| v.as_str()), Some("timeout"));
+    assert!(
+        finding
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|msg| msg.contains("terminal process-exit boundary")),
+        "expected process lifecycle timeout guidance, got: {finding:?}"
+    );
+    let details = finding
+        .get("location")
+        .and_then(|v| v.get("details"))
+        .expect("location details");
+    assert_eq!(
+        details.get("requestKind").and_then(|v| v.as_str()),
+        Some("process_spawn")
+    );
+    assert_eq!(
+        details.get("command").and_then(|v| v.as_str()),
+        Some("/bin/sh")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn host_proc_unmatched_rule_reports_contract_guidance_with_details() {
+    let ws = temp_workspace("host-proc-unmatched");
+    let scenario = ws.join("host-proc-unmatched.fozzy.json");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc-unmatched",
+      "steps":[
+        {"type":"proc_when","cmd":"/bin/echo","args":["wrong"],"exit_code":0,"stdout":"wrong\n","stderr":"","times":1},
+        {"type":"proc_spawn","cmd":"/bin/echo","args":["right"],"expect_exit":0,"expect_stdout":"right\n"}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "unmatched proc_when should fail, stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let doc = parse_json_stdout(&run);
+    let finding = doc
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .and_then(|v| v.first())
+        .expect("unmatched finding");
+    assert_eq!(
+        finding.get("title").and_then(|v| v.as_str()),
+        Some("proc_when_host_unmatched")
+    );
+    let details = finding
+        .get("location")
+        .and_then(|v| v.get("details"))
+        .expect("location details");
+    assert_eq!(
+        details.get("requestKind").and_then(|v| v.as_str()),
+        Some("process_spawn")
+    );
+    assert_eq!(
+        details.get("args").and_then(|v| v.as_array()).map(Vec::len),
+        Some(1)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn mixed_host_http_and_proc_lifecycle_completes_with_terminal_boundaries() {
+    let (url, stop_tx) = spawn_websocket_upgrade_http_server();
+    let ws = temp_workspace("mixed-host-lifecycle");
+    let scenario = ws.join("mixed-host-lifecycle.fozzy.json");
+    let trace = ws.join("mixed-host-lifecycle.fozzy");
+    let marker = ws.join("proc.txt");
+    let command = format!("printf 'ok\\n' >> {}; echo proc-ok", marker.display());
+    let raw = format!(
+        r#"{{
+      "version":1,
+      "name":"mixed-host-lifecycle",
+      "steps":[
+        {{"type":"proc_when","cmd":"/bin/sh","args":["-lc","{command}"],"exit_code":0,"stdout":"proc-ok\n","stderr":"","times":1}},
+        {{"type":"http_when","method":"GET","path":"{url}","status":101,"times":1}},
+        {{"type":"proc_spawn","cmd":"/bin/sh","args":["-lc","{command}"],"expect_exit":0,"expect_stdout":"proc-ok\n"}},
+        {{"type":"http_request","method":"GET","path":"{url}","headers":{{"authorization":"Bearer mn_bootstrap","connection":"Upgrade","upgrade":"websocket","sec-websocket-version":"13","sec-websocket-key":"dGhlIHNhbXBsZSBub25jZQ=="}},"expect_status":101}}
+      ]
+    }}"#
+    );
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli_in(
+        &ws,
+        &[
+            "--proc-backend".into(),
+            "host".into(),
+            "--http-backend".into(),
+            "host".into(),
+            "run".into(),
+            scenario.to_string_lossy().to_string(),
+            "--det".into(),
+            "--record".into(),
+            trace.to_string_lossy().to_string(),
+            "--json".into(),
+        ],
+    );
+    let _ = stop_tx.send(());
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "mixed host-backed lifecycle should complete cleanly: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("marker"),
+        "ok\n",
+        "host proc should run exactly once"
+    );
+
+    let trace_doc = read_trace_json(&trace);
+    let events = trace_doc
+        .get("events")
+        .and_then(|v| v.as_array())
+        .expect("events");
+    let proc_event = events
+        .iter()
+        .find(|event| event.get("name").and_then(|v| v.as_str()) == Some("proc_spawn"))
+        .expect("proc event");
+    assert_eq!(
+        proc_event
+            .get("fields")
+            .and_then(|v| v.get("completion_boundary"))
+            .and_then(|v| v.as_str()),
+        Some("process_exit")
+    );
+    let http_event = events
+        .iter()
+        .find(|event| {
+            event.get("name").and_then(|v| v.as_str()) == Some("http_request")
+                && event
+                    .get("fields")
+                    .and_then(|v| v.get("path"))
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|path| path.contains("/ws/status"))
+        })
+        .expect("http event");
+    assert_eq!(
+        http_event
+            .get("fields")
+            .and_then(|v| v.get("completion_boundary"))
+            .and_then(|v| v.as_str()),
+        Some("upgrade_headers")
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn host_proc_stdout_limit_is_enforced_during_streaming() {
     let ws = temp_workspace("host-proc-limit");
     let scenario = ws.join("host-proc-limit.fozzy.json");

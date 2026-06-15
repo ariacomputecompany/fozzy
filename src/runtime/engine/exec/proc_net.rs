@@ -10,6 +10,21 @@ use super::super::helpers::{
 use super::super::types::ProcBackend;
 use super::ExecCtx;
 
+fn proc_invocation_details(
+    cmd: &str,
+    args: &[String],
+    stdout: Option<&str>,
+    stderr: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "requestKind": "process_spawn",
+        "command": cmd,
+        "args": args,
+        "stdoutPreview": stdout.map(|value| truncate_event_text(value)),
+        "stderrPreview": stderr.map(|value| truncate_event_text(value)),
+    })
+}
+
 impl ExecCtx<'_> {
     pub(super) fn exec_proc_net_step(&mut self, step: &crate::Step) -> Result<bool, Finding> {
         match step {
@@ -93,7 +108,11 @@ impl ExecCtx<'_> {
                             kind: FindingKind::Hang,
                             title: "timeout".to_string(),
                             message: format!("host proc timed out for {cmd:?} {:?}", call_args),
-                            location: self.current_finding_location(),
+                            location: self.current_finding_location().map(|mut location| {
+                                location.details =
+                                    Some(proc_invocation_details(cmd, &call_args, None, None));
+                                location
+                            }),
                         });
                     }
                     Some(_) | None => None,
@@ -103,8 +122,8 @@ impl ExecCtx<'_> {
                     .proc_rules
                     .iter()
                     .position(|r| r.remaining > 0 && r.cmd == *cmd && r.args == call_args);
-                let (rule, backend) = if let Some((rule, backend)) = replay_rule {
-                    (rule, backend)
+                let (rule, backend, completion_boundary) = if let Some((rule, backend)) = replay_rule {
+                    (rule, backend, "recorded_decision")
                 } else if matches!(self.proc_backend, ProcBackend::Host) {
                     if !self.proc_rules.is_empty() && host_rule_idx.is_none() {
                         return Err(Finding {
@@ -117,7 +136,11 @@ impl ExecCtx<'_> {
                                  3) run with --proc-backend scripted to use mocked responses.",
                                 call_args
                             ),
-                            location: self.current_finding_location(),
+                            location: self.current_finding_location().map(|mut location| {
+                                location.details =
+                                    Some(proc_invocation_details(cmd, &call_args, None, None));
+                                location
+                            }),
                         });
                     }
                     let (dispatch, duration_ms) = measure_duration_ms(|| {
@@ -162,9 +185,15 @@ impl ExecCtx<'_> {
                                 duration_ms,
                             });
                             self.advance_recorded_time(duration_ms);
-                            (rule, "host")
+                            (rule, "host", "process_exit")
                         }
                         HostProcDispatch::TimedOut { stdout, stderr } => {
+                            let details = proc_invocation_details(
+                                cmd,
+                                &call_args,
+                                Some(&stdout),
+                                Some(&stderr),
+                            );
                             self.decisions.push(Decision::ProcSpawnTimeout {
                                 cmd: cmd.clone(),
                                 args: call_args.clone(),
@@ -176,8 +205,14 @@ impl ExecCtx<'_> {
                             return Err(Finding {
                                 kind: FindingKind::Hang,
                                 title: "timeout".to_string(),
-                                message: format!("host proc timed out for {cmd:?} {:?}", call_args),
-                                location: self.current_finding_location(),
+                                message: format!(
+                                    "host proc timed out for {cmd:?} {:?}; no terminal process-exit boundary was observed before timeout",
+                                    call_args
+                                ),
+                                location: self.current_finding_location().map(|mut location| {
+                                    location.details = Some(details);
+                                    location
+                                }),
                             });
                         }
                     }
@@ -195,7 +230,7 @@ impl ExecCtx<'_> {
                         stderr: rule.stderr.clone(),
                         duration_ms: 0,
                     });
-                    (rule, "scripted")
+                    (rule, "scripted", "process_exit")
                 } else {
                     let step_index = self.current_step_index.unwrap_or_default();
                     let mut location = self.current_finding_location();
@@ -220,11 +255,20 @@ impl ExecCtx<'_> {
                     });
                 };
 
+                let backend = backend.to_string();
                 let mut proc_fields = serde_json::Map::new();
                 proc_fields.insert("cmd".to_string(), serde_json::Value::String(cmd.clone()));
                 proc_fields.insert(
                     "backend".to_string(),
-                    serde_json::Value::String(backend.to_string()),
+                    serde_json::Value::String(backend.clone()),
+                );
+                proc_fields.insert(
+                    "request_kind".to_string(),
+                    serde_json::Value::String("process_spawn".to_string()),
+                );
+                proc_fields.insert(
+                    "completion_boundary".to_string(),
+                    serde_json::Value::String(completion_boundary.to_string()),
                 );
                 proc_fields.insert(
                     "exit_code".to_string(),
