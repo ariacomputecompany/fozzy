@@ -36,6 +36,9 @@ fn map_suites_reports_uncovered_hotspots() {
         shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
         limit: 50,
         offset: 0,
+        all: false,
+        only_required: false,
+        only_uncovered: false,
         max_matched_scenarios: 25,
     })
     .expect("map suites");
@@ -242,6 +245,9 @@ fn map_suites_credits_natural_fetch_host_scenario() {
         shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
         limit: 50,
         offset: 0,
+        all: false,
+        only_required: false,
+        only_uncovered: false,
         max_matched_scenarios: 25,
     })
     .expect("map suites");
@@ -280,6 +286,9 @@ fn map_suites_reports_unreadable_scenarios() {
         shrink_policy: ShrinkCoveragePolicy::NoKnownFailures,
         limit: 50,
         offset: 0,
+        all: false,
+        only_required: false,
+        only_uncovered: false,
         max_matched_scenarios: 25,
     })
     .expect("map suites");
@@ -437,6 +446,9 @@ fn map_suites_credits_short_natural_hotspot_names() {
         shrink_policy: ShrinkCoveragePolicy::ExercisedOk,
         limit: 50,
         offset: 0,
+        all: false,
+        only_required: false,
+        only_uncovered: false,
         max_matched_scenarios: 25,
     })
     .expect("map suites");
@@ -473,4 +485,133 @@ fn map_suites_credits_short_natural_hotspot_names() {
             .iter()
             .any(|suite| suite == SUITE_EXPLORE)
     );
+}
+
+#[test]
+fn map_suites_applies_filters_before_pagination() {
+    let root = temp_dir("filters-before-pagination");
+    let src = root.join("src");
+    let tests = root.join("tests");
+    std::fs::create_dir_all(&src).expect("src");
+    std::fs::create_dir_all(&tests).expect("tests");
+
+    std::fs::write(
+        src.join("alpha.rs"),
+        r#"
+            pub fn main() {
+                let values = [1, 2, 3, 4, 5, 6, 7, 8];
+                let _total: i32 = values.iter().sum();
+            }
+        "#,
+    )
+    .expect("write alpha");
+    std::fs::write(
+        src.join("bravo.rs"),
+        r#"
+            pub fn bravo() {
+                if retry { panic!("bravo"); }
+                if timeout { panic!("bravo"); }
+                if backoff { panic!("bravo"); }
+                if true {}
+                if true {}
+                if true {}
+                if true {}
+                if true {}
+            }
+        "#,
+    )
+    .expect("write bravo");
+    std::fs::write(
+        tests.join("alpha.fozzy.json"),
+        r#"{"version":1,"name":"alpha","steps":[{"type":"assert_ok","value":true}]}"#,
+    )
+    .expect("write alpha scenario");
+
+    let base = MapSuitesOptions {
+        root: root.clone(),
+        scenario_root: tests.clone(),
+        min_risk: 1,
+        profile: TopologyProfile::Balanced,
+        shrink_policy: ShrinkCoveragePolicy::ExercisedOk,
+        limit: 10,
+        offset: 0,
+        all: false,
+        only_required: false,
+        only_uncovered: false,
+        max_matched_scenarios: 25,
+    };
+
+    let full = map_suites(&base).expect("full report");
+    assert_eq!(full.total_suites, 2);
+
+    let uncovered = map_suites(&MapSuitesOptions {
+        only_uncovered: true,
+        ..base.clone()
+    })
+    .expect("uncovered report");
+    assert_eq!(uncovered.total_suites, 1);
+    assert_eq!(uncovered.returned_suites, 1);
+    assert_eq!(uncovered.suites[0].path, "src/bravo.rs");
+
+    let paged = map_suites(&MapSuitesOptions {
+        only_uncovered: true,
+        limit: 1,
+        offset: 0,
+        ..base.clone()
+    })
+    .expect("paged uncovered report");
+    assert_eq!(paged.total_suites, 1);
+    assert_eq!(paged.returned_suites, 1);
+    assert_eq!(paged.suites[0].path, "src/bravo.rs");
+}
+
+#[test]
+fn map_suites_all_returns_full_filtered_set_without_truncation() {
+    let root = temp_dir("all-returns-full-set");
+    let src = root.join("src");
+    let tests = root.join("tests");
+    std::fs::create_dir_all(&src).expect("src");
+    std::fs::create_dir_all(&tests).expect("tests");
+
+    for name in ["alpha", "bravo", "charlie"] {
+        std::fs::write(
+            src.join(format!("{name}.rs")),
+            format!(
+                r#"
+                pub fn {name}() {{
+                    if retry {{ panic!("{name}"); }}
+                    if timeout {{ panic!("{name}"); }}
+                    if backoff {{ panic!("{name}"); }}
+                    if true {{}}
+                    if true {{}}
+                    if true {{}}
+                    if true {{}}
+                    if true {{}}
+                }}
+            "#
+            ),
+        )
+        .expect("write source");
+    }
+
+    let report = map_suites(&MapSuitesOptions {
+        root,
+        scenario_root: tests,
+        min_risk: 1,
+        profile: TopologyProfile::Pedantic,
+        shrink_policy: ShrinkCoveragePolicy::ExercisedOk,
+        limit: 1,
+        offset: 99,
+        all: true,
+        only_required: true,
+        only_uncovered: true,
+        max_matched_scenarios: 25,
+    })
+    .expect("all report");
+
+    assert_eq!(report.total_suites, 3);
+    assert_eq!(report.returned_suites, 3);
+    assert_eq!(report.offset, 0);
+    assert_eq!(report.limit, 3);
+    assert!(!report.truncated);
 }

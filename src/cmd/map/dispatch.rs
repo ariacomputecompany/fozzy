@@ -53,6 +53,9 @@ pub fn map_command(config: &Config, command: &MapCommand) -> FozzyResult<serde_j
             shrink_policy,
             limit,
             offset,
+            all,
+            only_required,
+            only_uncovered,
             max_matched_scenarios,
         } => {
             let report = map_suites_with_cache(
@@ -64,6 +67,9 @@ pub fn map_command(config: &Config, command: &MapCommand) -> FozzyResult<serde_j
                     shrink_policy: *shrink_policy,
                     limit: *limit,
                     offset: *offset,
+                    all: *all,
+                    only_required: *only_required,
+                    only_uncovered: *only_uncovered,
                     max_matched_scenarios: *max_matched_scenarios,
                 },
                 Some(config.base_dir.join("cache")),
@@ -160,14 +166,21 @@ fn map_suites_with_cache(
             .cmp(&a.risk_score)
             .then_with(|| a.path.cmp(&b.path))
     });
-    let total_suites = suites.len();
-    let suites = suites
+    let filtered_suites = suites
         .into_iter()
-        .skip(opt.offset)
-        .take(opt.limit)
+        .filter(|suite| !opt.only_required || suite.required_by_policy)
+        .filter(|suite| !opt.only_uncovered || !suite.covered)
+        .collect::<Vec<_>>();
+    let total_suites = filtered_suites.len();
+    let applied_offset = if opt.all { 0 } else { opt.offset };
+    let applied_limit = if opt.all { total_suites } else { opt.limit };
+    let suites = filtered_suites
+        .into_iter()
+        .skip(applied_offset)
+        .take(applied_limit)
         .collect::<Vec<_>>();
     let returned_suites = suites.len();
-    let truncated = opt.offset.saturating_add(returned_suites) < total_suites;
+    let truncated = applied_offset.saturating_add(returned_suites) < total_suites;
     let uncovered_hotspot_count = required_hotspot_count.saturating_sub(covered_hotspot_count);
 
     Ok(MapSuitesReport {
@@ -191,8 +204,8 @@ fn map_suites_with_cache(
         uncovered_hotspot_count,
         total_suites,
         returned_suites,
-        offset: opt.offset,
-        limit: opt.limit,
+        offset: applied_offset,
+        limit: applied_limit,
         truncated,
         suites,
     })

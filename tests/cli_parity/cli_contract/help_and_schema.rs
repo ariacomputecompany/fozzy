@@ -172,3 +172,192 @@ fn map_hotspots_services_and_suites_emit_expected_schema() {
                 .unwrap_or(0)
     );
 }
+
+#[test]
+fn map_suites_help_documents_closure_flags() {
+    let out = run_cli(&["map".into(), "suites".into(), "--help".into()]);
+    assert_eq!(out.status.code(), Some(0), "help should exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for flag in [
+        "--offset",
+        "--limit",
+        "--all",
+        "--only-required",
+        "--only-uncovered",
+        "--max-matched-scenarios",
+    ] {
+        assert!(
+            stdout.contains(flag),
+            "expected map suites help to include {flag}; got: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn map_suites_pagination_and_uncovered_filters_are_publicly_retrievable() {
+    let ws = temp_workspace("map-pagination");
+    let src_dir = ws.join("src");
+    let tests_dir = ws.join("tests");
+    std::fs::create_dir_all(&src_dir).expect("src dir");
+    std::fs::create_dir_all(&tests_dir).expect("tests dir");
+
+    std::fs::write(
+        src_dir.join("alpha.rs"),
+        r#"
+        pub fn main() {
+            let values = [1, 2, 3, 4, 5, 6, 7, 8];
+            let _total: i32 = values.iter().sum();
+        }
+        "#,
+    )
+    .expect("write alpha");
+    std::fs::write(
+        src_dir.join("bravo.rs"),
+        r#"
+        pub fn bravo() {
+            if retry { panic!("bravo"); }
+            if timeout { panic!("bravo"); }
+            if backoff { panic!("bravo"); }
+            if true {}
+            if true {}
+            if true {}
+            if true {}
+            if true {}
+        }
+        "#,
+    )
+    .expect("write bravo");
+    std::fs::write(
+        src_dir.join("charlie.rs"),
+        r#"
+        pub fn charlie() {
+            if retry { panic!("charlie"); }
+            if timeout { panic!("charlie"); }
+            if backoff { panic!("charlie"); }
+            if true {}
+            if true {}
+            if true {}
+            if true {}
+            if true {}
+        }
+        "#,
+    )
+    .expect("write charlie");
+    std::fs::write(
+        tests_dir.join("alpha.fozzy.json"),
+        r#"{"version":1,"name":"alpha","steps":[{"type":"assert_ok","value":true}]}"#,
+    )
+    .expect("write alpha scenario");
+
+    let root = ws.to_string_lossy().to_string();
+    let scenario_root = tests_dir.to_string_lossy().to_string();
+
+    let page0 = run_cli(&[
+        "map".into(),
+        "suites".into(),
+        "--root".into(),
+        root.clone(),
+        "--scenario-root".into(),
+        scenario_root.clone(),
+        "--min-risk".into(),
+        "1".into(),
+        "--profile".into(),
+        "balanced".into(),
+        "--limit".into(),
+        "1".into(),
+        "--offset".into(),
+        "0".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        page0.status.code(),
+        Some(0),
+        "page0 stderr={}",
+        String::from_utf8_lossy(&page0.stderr)
+    );
+    let page0_doc = parse_json_stdout(&page0);
+    let page1 = run_cli(&[
+        "map".into(),
+        "suites".into(),
+        "--root".into(),
+        root.clone(),
+        "--scenario-root".into(),
+        scenario_root.clone(),
+        "--min-risk".into(),
+        "1".into(),
+        "--profile".into(),
+        "balanced".into(),
+        "--limit".into(),
+        "1".into(),
+        "--offset".into(),
+        "1".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        page1.status.code(),
+        Some(0),
+        "page1 stderr={}",
+        String::from_utf8_lossy(&page1.stderr)
+    );
+    let page1_doc = parse_json_stdout(&page1);
+
+    assert_eq!(page0_doc.get("offset").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(page1_doc.get("offset").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(page0_doc.get("limit").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(page1_doc.get("limit").and_then(|v| v.as_u64()), Some(1));
+
+    let page0_path = page0_doc["suites"][0]["path"].as_str().unwrap_or_default();
+    let page1_path = page1_doc["suites"][0]["path"].as_str().unwrap_or_default();
+    assert_ne!(page0_path, page1_path, "different offsets must move pages");
+
+    let uncovered = run_cli(&[
+        "map".into(),
+        "suites".into(),
+        "--root".into(),
+        root,
+        "--scenario-root".into(),
+        scenario_root,
+        "--min-risk".into(),
+        "1".into(),
+        "--profile".into(),
+        "balanced".into(),
+        "--only-required".into(),
+        "--only-uncovered".into(),
+        "--all".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        uncovered.status.code(),
+        Some(0),
+        "uncovered stderr={}",
+        String::from_utf8_lossy(&uncovered.stderr)
+    );
+    let uncovered_doc = parse_json_stdout(&uncovered);
+    let uncovered_suites = uncovered_doc
+        .get("suites")
+        .and_then(|v| v.as_array())
+        .expect("uncovered suites array");
+    assert_eq!(
+        uncovered_doc.get("truncated").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        uncovered_doc.get("offset").and_then(|v| v.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        uncovered_doc.get("returnedSuites").and_then(|v| v.as_u64()),
+        uncovered_doc.get("totalSuites").and_then(|v| v.as_u64())
+    );
+    assert_eq!(uncovered_suites.len(), 2);
+    assert!(uncovered_suites.iter().all(|suite| {
+        suite
+            .get("requiredByPolicy")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            && !suite
+                .get("covered")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
+    }));
+}

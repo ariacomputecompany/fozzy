@@ -232,6 +232,9 @@ fn push_topology_step(
             shrink_policy: topology_shrink_policy,
             limit: 200,
             offset: 0,
+            all: false,
+            only_required: false,
+            only_uncovered: false,
             max_matched_scenarios: 25,
         };
         match run_with_timeout("topology_coverage", TOPOLOGY_TIMEOUT, move || {

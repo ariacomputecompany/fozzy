@@ -36,7 +36,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fozzy map".to_string(),
                 when: "Start here: generate a language-agnostic code-topology map (hotspots, service boundaries, granular suite recommendations) before running broad gates.".to_string(),
-                how: "fozzy map suites --root . --scenario-root tests --min-risk 60 --profile pedantic --json (run this first); then use fozzy map hotspots --root . --min-risk 60 --limit 50 --json and fozzy map services --root . --json for deeper targeting. `pedantic` is the default profile and biases toward over-specifying granular suite coverage; optionally use `balanced` or `overkill`.".to_string(),
+                how: "fozzy map suites --root . --scenario-root tests --min-risk 60 --profile pedantic --json (run this first); then use fozzy map suites --only-uncovered --only-required --all --json to close the remaining required gaps directly, plus fozzy map hotspots --root . --min-risk 60 --limit 50 --json and fozzy map services --root . --json for deeper targeting. `pedantic` is the default profile and biases toward over-specifying granular suite coverage; optionally use `balanced` or `overkill`.".to_string(),
             },
             UsageItem {
                 command: "fozzy full".to_string(),

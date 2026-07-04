@@ -254,7 +254,13 @@ export interface MapSuitesOptions {
   scenarioRoot?: string;
   minRisk?: number;
   profile?: TopologyProfile;
+  shrinkPolicy?: "failure-only" | "exercised-ok" | "no-known-failures";
   limit?: number;
+  offset?: number;
+  all?: boolean;
+  onlyRequired?: boolean;
+  onlyUncovered?: boolean;
+  maxMatchedScenarios?: number;
 }
 
 export interface MemoryGraphOptions {
@@ -565,7 +571,13 @@ export class Fozzy {
     kv(args, "--scenario-root", opts.scenarioRoot);
     kv(args, "--min-risk", opts.minRisk);
     kv(args, "--profile", opts.profile);
+    kv(args, "--shrink-policy", opts.shrinkPolicy);
     kv(args, "--limit", opts.limit);
+    kv(args, "--offset", opts.offset);
+    flag(args, opts.all, "--all");
+    flag(args, opts.onlyRequired, "--only-required");
+    flag(args, opts.onlyUncovered, "--only-uncovered");
+    kv(args, "--max-matched-scenarios", opts.maxMatchedScenarios);
     return await this.execJson(args);
   }
 

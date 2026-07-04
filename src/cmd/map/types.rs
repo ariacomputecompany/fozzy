@@ -51,6 +51,12 @@ pub enum MapCommand {
         limit: usize,
         #[arg(long, default_value_t = 0)]
         offset: usize,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        only_required: bool,
+        #[arg(long)]
+        only_uncovered: bool,
         #[arg(long, default_value_t = 25)]
         max_matched_scenarios: usize,
     },
@@ -217,6 +223,9 @@ pub struct MapSuitesOptions {
     pub shrink_policy: ShrinkCoveragePolicy,
     pub limit: usize,
     pub offset: usize,
+    pub all: bool,
+    pub only_required: bool,
+    pub only_uncovered: bool,
     pub max_matched_scenarios: usize,
 }
 

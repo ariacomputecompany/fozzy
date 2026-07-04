@@ -83,6 +83,7 @@ fozzy env --json
 - `fozzy artifacts`: list/export/pack/bundle run artifacts.
 - `fozzy map`: language-agnostic code topology mapping for hotspot-driven suite planning.
   `fozzy map suites` defaults to a `pedantic` coverage profile.
+  For closure work, use `fozzy map suites --only-uncovered --only-required --all --json` to enumerate the remaining required gaps directly.
 
 Full command contract: [CLI.md](CLI.md)
 

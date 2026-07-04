@@ -278,12 +278,15 @@ Strictest setting suggestion: strict mode is already on by default; pass `--unsa
 ```bash
 fozzy map hotspots [--root <repo>] [--min-risk <0..100>] [--limit <n>]
 fozzy map services [--root <repo>]
-fozzy map suites [--root <repo>] [--scenario-root <dir>] [--min-risk <0..100>] [--profile <balanced|pedantic|overkill>] [--limit <n>]
+fozzy map suites [--root <repo>] [--scenario-root <dir>] [--min-risk <0..100>] \
+  [--profile <balanced|pedantic|overkill>] [--shrink-policy <failure-only|exercised-ok|no-known-failures>] \
+  [--limit <n>] [--offset <n>] [--all] [--only-required] [--only-uncovered] [--max-matched-scenarios <n>]
 ```
 
 `map` is language-agnostic and derives risk hotspots from control-flow density, concurrency indicators, external side-effect boundaries, failure/timeout/retry logic, and entrypoint/service signals.
 Use `map suites` to find high-risk hotspots lacking dedicated scenario coverage and drive granular Fozzy suite generation.
 `map suites` defaults to `--profile pedantic` (safer-by-default over-spec bias).
+Use `--only-uncovered --only-required --all` to enumerate the exact unresolved required hotspot set without truncation.
 
 ### `doctor`
 
