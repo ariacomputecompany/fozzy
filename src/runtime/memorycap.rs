@@ -202,6 +202,30 @@ impl MemoryState {
         );
     }
 
+    pub fn record_host_proc_peak(
+        &mut self,
+        cmd: &str,
+        args: &[String],
+        peak_rss_bytes: u64,
+        sample_count: u64,
+        time_ms: u64,
+    ) {
+        if peak_rss_bytes == 0 || sample_count == 0 {
+            return;
+        }
+        self.peak_bytes = self.peak_bytes.max(peak_rss_bytes);
+        self.push_timeline(
+            time_ms,
+            "host_proc_peak",
+            vec![
+                ("cmd", serde_json::json!(cmd)),
+                ("args", serde_json::json!(args)),
+                ("peakBytes", serde_json::json!(peak_rss_bytes)),
+                ("sampleCount", serde_json::json!(sample_count)),
+            ],
+        );
+    }
+
     pub fn in_use_bytes(&self) -> u64 {
         self.in_use_bytes
     }

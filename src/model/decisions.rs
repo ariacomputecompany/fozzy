@@ -64,6 +64,10 @@ pub enum Decision {
         stdout: String,
         stderr: String,
         #[serde(default)]
+        peak_rss_bytes: u64,
+        #[serde(default)]
+        rss_sample_count: u64,
+        #[serde(default)]
         duration_ms: u64,
     },
     ProcSpawnTimeout {
@@ -71,6 +75,10 @@ pub enum Decision {
         args: Vec<String>,
         stdout: String,
         stderr: String,
+        #[serde(default)]
+        peak_rss_bytes: u64,
+        #[serde(default)]
+        rss_sample_count: u64,
         #[serde(default)]
         duration_ms: u64,
     },

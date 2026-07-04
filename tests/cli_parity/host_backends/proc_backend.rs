@@ -193,6 +193,119 @@ fn host_proc_trace_records_real_duration() {
 
 #[cfg(unix)]
 #[test]
+fn host_proc_memory_observability_surfaces_peak_usage_end_to_end() {
+    let ws = temp_workspace("host-proc-memory");
+    let scenario = ws.join("host-proc-memory.fozzy.json");
+    let trace = ws.join("host-proc-memory.fozzy");
+    let raw = r#"{
+      "version":1,
+      "name":"host-proc-memory",
+      "steps":[
+        {"type":"proc_spawn","cmd":"/bin/sh","args":["-lc","python3 -c 'import time; buf = bytearray(16000000); time.sleep(0.35); print(len(buf))'"],"expect_exit":0,"expect_stdout":"16000000\n"}
+      ]
+    }"#;
+    std::fs::write(&scenario, raw).expect("write scenario");
+
+    let run = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--mem-track".into(),
+        "--mem-artifacts".into(),
+        "--record".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(run.status.code(), Some(0), "host memory run should pass");
+    let run_doc = parse_json_stdout(&run);
+    let peak_bytes = run_doc
+        .get("memory")
+        .and_then(|v| v.get("peakBytes"))
+        .and_then(|v| v.as_u64())
+        .expect("memory peak bytes");
+    assert!(
+        peak_bytes >= 8 * 1024 * 1024,
+        "expected observed host peak bytes, got {peak_bytes}"
+    );
+    assert_eq!(
+        run_doc
+            .get("memory")
+            .and_then(|v| v.get("allocCount"))
+            .and_then(|v| v.as_u64()),
+        Some(0),
+        "host memory observations should not masquerade as synthetic alloc counts"
+    );
+
+    let trace_doc = read_trace_json(&trace);
+    let trace_peak = trace_doc
+        .get("summary")
+        .and_then(|v| v.get("memory"))
+        .and_then(|v| v.get("peakBytes"))
+        .and_then(|v| v.as_u64())
+        .expect("trace summary peak bytes");
+    assert_eq!(
+        trace_peak, peak_bytes,
+        "recorded trace should preserve observed host memory peak"
+    );
+    let proc_event = trace_doc
+        .get("events")
+        .and_then(|v| v.as_array())
+        .and_then(|events| {
+            events
+                .iter()
+                .find(|event| event.get("name").and_then(|v| v.as_str()) == Some("proc_spawn"))
+        })
+        .expect("proc event");
+    assert!(
+        proc_event
+            .get("fields")
+            .and_then(|v| v.get("peak_rss_bytes"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default()
+            >= peak_bytes,
+        "proc event should carry host memory observation"
+    );
+
+    let memory_top = run_cli(&[
+        "memory".into(),
+        "top".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(memory_top.status.code(), Some(0), "memory top should pass");
+    let top_doc = parse_json_stdout(&memory_top);
+    assert_eq!(top_doc.get("total").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(
+        top_doc
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .and_then(|entries| entries.first())
+            .and_then(|entry| entry.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("peak")
+    );
+
+    let replay = run_cli(&[
+        "replay".into(),
+        trace.to_string_lossy().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(replay.status.code(), Some(0), "replay should pass");
+    let replay_doc = parse_json_stdout(&replay);
+    assert_eq!(
+        replay_doc
+            .get("memory")
+            .and_then(|v| v.get("peakBytes"))
+            .and_then(|v| v.as_u64()),
+        Some(peak_bytes),
+        "replay should preserve observed host memory peak"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn host_proc_backend_executes_real_command_even_with_proc_when_contract() {
     let ws = temp_workspace("host-proc-when");
     let scenario = ws.join("host-proc-when.fozzy.json");

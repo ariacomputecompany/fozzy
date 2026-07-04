@@ -9,7 +9,12 @@ use crate::{Finding, FindingKind};
 #[derive(Debug)]
 pub(crate) enum HostProcDispatch {
     Completed(HostProcOutput),
-    TimedOut { stdout: String, stderr: String },
+    TimedOut {
+        stdout: String,
+        stderr: String,
+        peak_rss_bytes: u64,
+        rss_sample_count: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -17,6 +22,8 @@ pub(crate) struct HostProcOutput {
     pub(crate) exit_code: i32,
     pub(crate) stdout: String,
     pub(crate) stderr: String,
+    pub(crate) peak_rss_bytes: u64,
+    pub(crate) rss_sample_count: u64,
 }
 
 #[derive(Debug)]
@@ -44,6 +51,67 @@ enum StreamReadError {
 const HOST_PROC_MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 const HOST_PROC_MAX_STDERR_BYTES: usize = 8 * 1024 * 1024;
 const HOST_HTTP_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+const HOST_PROC_MEMORY_SAMPLE_INTERVAL_MS: u64 = 25;
+
+#[derive(Debug, Default, Clone, Copy)]
+struct HostProcMemoryStats {
+    peak_rss_bytes: u64,
+    sample_count: u64,
+}
+
+#[cfg(unix)]
+fn sample_host_proc_tree_rss_bytes(root_pid: u32) -> Option<u64> {
+    let output = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,rss="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let mut children = BTreeMap::<u32, Vec<u32>>::new();
+    let mut rss_kb = BTreeMap::<u32, u64>::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut cols = line.split_whitespace();
+        let (Some(pid), Some(ppid), Some(rss)) = (cols.next(), cols.next(), cols.next()) else {
+            continue;
+        };
+        let (Ok(pid), Ok(ppid), Ok(rss)) =
+            (pid.parse::<u32>(), ppid.parse::<u32>(), rss.parse::<u64>())
+        else {
+            continue;
+        };
+        rss_kb.insert(pid, rss);
+        children.entry(ppid).or_default().push(pid);
+    }
+
+    if !rss_kb.contains_key(&root_pid) {
+        return None;
+    }
+
+    let mut total_kb = 0u64;
+    let mut stack = vec![root_pid];
+    while let Some(pid) = stack.pop() {
+        total_kb = total_kb.saturating_add(rss_kb.get(&pid).copied().unwrap_or(0));
+        if let Some(descendants) = children.get(&pid) {
+            stack.extend(descendants.iter().copied());
+        }
+    }
+    Some(total_kb.saturating_mul(1024))
+}
+
+#[cfg(not(unix))]
+fn sample_host_proc_tree_rss_bytes(_root_pid: u32) -> Option<u64> {
+    None
+}
+
+fn record_host_proc_memory_sample(stats: &mut HostProcMemoryStats, root_pid: u32) {
+    let Some(bytes) = sample_host_proc_tree_rss_bytes(root_pid) else {
+        return;
+    };
+    stats.sample_count = stats.sample_count.saturating_add(1);
+    stats.peak_rss_bytes = stats.peak_rss_bytes.max(bytes);
+}
 
 fn host_http_response_has_no_body(method: &str, status: u16) -> bool {
     method.eq_ignore_ascii_case("HEAD")
@@ -211,8 +279,18 @@ pub(crate) fn dispatch_host_proc(
         .ok_or_else(|| format!("host proc stderr pipe missing for {invocation}"))?;
     let (stdout_buf, stdout_rx) = spawn_stream_reader(stdout, HOST_PROC_MAX_STDOUT_BYTES);
     let (stderr_buf, stderr_rx) = spawn_stream_reader(stderr, HOST_PROC_MAX_STDERR_BYTES);
+    let child_pid = child.id();
+    let mut memory_stats = HostProcMemoryStats::default();
+    let mut next_memory_sample = Instant::now();
+    record_host_proc_memory_sample(&mut memory_stats, child_pid);
 
     loop {
+        if Instant::now() >= next_memory_sample {
+            record_host_proc_memory_sample(&mut memory_stats, child_pid);
+            next_memory_sample =
+                Instant::now() + Duration::from_millis(HOST_PROC_MEMORY_SAMPLE_INTERVAL_MS);
+        }
+
         if let Some(deadline) = deadline
             && Instant::now() >= deadline
         {
@@ -223,6 +301,8 @@ pub(crate) fn dispatch_host_proc(
             return Ok(HostProcDispatch::TimedOut {
                 stdout: String::from_utf8_lossy(&snapshot_stream(&stdout_buf)).to_string(),
                 stderr: String::from_utf8_lossy(&snapshot_stream(&stderr_buf)).to_string(),
+                peak_rss_bytes: memory_stats.peak_rss_bytes,
+                rss_sample_count: memory_stats.sample_count,
             });
         }
 
@@ -232,10 +312,13 @@ pub(crate) fn dispatch_host_proc(
         {
             wait_stream_reader(&stdout_rx, "stdout", &invocation)?;
             wait_stream_reader(&stderr_rx, "stderr", &invocation)?;
+            record_host_proc_memory_sample(&mut memory_stats, child_pid);
             return Ok(HostProcDispatch::Completed(HostProcOutput {
                 exit_code: status.code().unwrap_or(-1),
                 stdout: String::from_utf8_lossy(&snapshot_stream(&stdout_buf)).to_string(),
                 stderr: String::from_utf8_lossy(&snapshot_stream(&stderr_buf)).to_string(),
+                peak_rss_bytes: memory_stats.peak_rss_bytes,
+                rss_sample_count: memory_stats.sample_count,
             }));
         }
 
@@ -245,10 +328,13 @@ pub(crate) fn dispatch_host_proc(
             let status = child
                 .wait()
                 .map_err(|e| format!("host proc wait failed for {invocation}: {e}"))?;
+            record_host_proc_memory_sample(&mut memory_stats, child_pid);
             return Ok(HostProcDispatch::Completed(HostProcOutput {
                 exit_code: status.code().unwrap_or(-1),
                 stdout: String::from_utf8_lossy(&snapshot_stream(&stdout_buf)).to_string(),
                 stderr: String::from_utf8_lossy(&snapshot_stream(&stderr_buf)).to_string(),
+                peak_rss_bytes: memory_stats.peak_rss_bytes,
+                rss_sample_count: memory_stats.sample_count,
             }));
         }
 

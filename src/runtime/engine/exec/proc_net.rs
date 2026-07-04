@@ -57,6 +57,8 @@ impl ExecCtx<'_> {
             } => {
                 let start_ms = self.clock.now_ms();
                 let call_args = args.clone().unwrap_or_default();
+                let mut observed_peak_rss_bytes = 0u64;
+                let mut observed_rss_sample_count = 0u64;
                 let replay_rule = match self.replay_peek().cloned() {
                     Some(Decision::ProcSpawn {
                         cmd: replay_cmd,
@@ -64,6 +66,8 @@ impl ExecCtx<'_> {
                         exit_code,
                         stdout,
                         stderr,
+                        peak_rss_bytes,
+                        rss_sample_count,
                         duration_ms,
                     }) => {
                         if replay_cmd != *cmd || replay_args != call_args {
@@ -79,6 +83,15 @@ impl ExecCtx<'_> {
                         }
                         let _ = self.replay_take_if(|d| matches!(d, Decision::ProcSpawn { .. }));
                         self.advance_recorded_time(duration_ms);
+                        observed_peak_rss_bytes = peak_rss_bytes;
+                        observed_rss_sample_count = rss_sample_count;
+                        self.memory.record_host_proc_peak(
+                            cmd,
+                            &call_args,
+                            peak_rss_bytes,
+                            rss_sample_count,
+                            self.clock.now_ms(),
+                        );
                         Some((
                             proc_rule(cmd, &call_args, exit_code, stdout, stderr),
                             "replay",
@@ -87,6 +100,8 @@ impl ExecCtx<'_> {
                     Some(Decision::ProcSpawnTimeout {
                         cmd: replay_cmd,
                         args: replay_args,
+                        peak_rss_bytes,
+                        rss_sample_count,
                         duration_ms,
                         ..
                     }) => {
@@ -104,6 +119,13 @@ impl ExecCtx<'_> {
                         let _ =
                             self.replay_take_if(|d| matches!(d, Decision::ProcSpawnTimeout { .. }));
                         self.advance_recorded_time(duration_ms);
+                        self.memory.record_host_proc_peak(
+                            cmd,
+                            &call_args,
+                            peak_rss_bytes,
+                            rss_sample_count,
+                            self.clock.now_ms(),
+                        );
                         return Err(Finding {
                             kind: FindingKind::Hang,
                             title: "timeout".to_string(),
@@ -178,18 +200,43 @@ impl ExecCtx<'_> {
                                     self.current_finding_location(),
                                 )?;
                             }
+                            observed_peak_rss_bytes = output.peak_rss_bytes;
+                            observed_rss_sample_count = output.rss_sample_count;
+                            self.memory.record_host_proc_peak(
+                                cmd,
+                                &call_args,
+                                observed_peak_rss_bytes,
+                                observed_rss_sample_count,
+                                self.clock.now_ms(),
+                            );
                             self.decisions.push(Decision::ProcSpawn {
                                 cmd: cmd.clone(),
                                 args: call_args.clone(),
                                 exit_code: rule.exit_code,
                                 stdout: rule.stdout.clone(),
                                 stderr: rule.stderr.clone(),
+                                peak_rss_bytes: observed_peak_rss_bytes,
+                                rss_sample_count: observed_rss_sample_count,
                                 duration_ms,
                             });
                             self.advance_recorded_time(duration_ms);
                             (rule, "host", "process_exit")
                         }
-                        HostProcDispatch::TimedOut { stdout, stderr } => {
+                        HostProcDispatch::TimedOut {
+                            stdout,
+                            stderr,
+                            peak_rss_bytes,
+                            rss_sample_count,
+                        } => {
+                            observed_peak_rss_bytes = peak_rss_bytes;
+                            observed_rss_sample_count = rss_sample_count;
+                            self.memory.record_host_proc_peak(
+                                cmd,
+                                &call_args,
+                                observed_peak_rss_bytes,
+                                observed_rss_sample_count,
+                                self.clock.now_ms(),
+                            );
                             let details = proc_invocation_details(
                                 cmd,
                                 &call_args,
@@ -201,6 +248,8 @@ impl ExecCtx<'_> {
                                 args: call_args.clone(),
                                 stdout,
                                 stderr,
+                                peak_rss_bytes: observed_peak_rss_bytes,
+                                rss_sample_count: observed_rss_sample_count,
                                 duration_ms,
                             });
                             self.advance_recorded_time(duration_ms);
@@ -230,6 +279,8 @@ impl ExecCtx<'_> {
                         exit_code: rule.exit_code,
                         stdout: rule.stdout.clone(),
                         stderr: rule.stderr.clone(),
+                        peak_rss_bytes: 0,
+                        rss_sample_count: 0,
                         duration_ms: 0,
                     });
                     (rule, "scripted", "process_exit")
@@ -292,26 +343,47 @@ impl ExecCtx<'_> {
                     "stderr_bytes".to_string(),
                     serde_json::Value::Number(serde_json::Number::from(rule.stderr.len() as u64)),
                 );
+                if observed_peak_rss_bytes > 0 {
+                    proc_fields.insert(
+                        "peak_rss_bytes".to_string(),
+                        serde_json::json!(observed_peak_rss_bytes),
+                    );
+                    proc_fields.insert(
+                        "rss_sample_count".to_string(),
+                        serde_json::json!(observed_rss_sample_count),
+                    );
+                }
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "proc_spawn".to_string(),
                     fields: proc_fields,
                 });
+                let mut capability_fields = serde_json::Map::from_iter([
+                    ("op".to_string(), serde_json::json!("spawn")),
+                    ("cmd".to_string(), serde_json::json!(cmd)),
+                    (
+                        "payload_bytes".to_string(),
+                        serde_json::json!((rule.stdout.len() + rule.stderr.len()) as u64),
+                    ),
+                    (
+                        "duration_ms".to_string(),
+                        serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
+                    ),
+                ]);
+                if observed_peak_rss_bytes > 0 {
+                    capability_fields.insert(
+                        "peak_rss_bytes".to_string(),
+                        serde_json::json!(observed_peak_rss_bytes),
+                    );
+                    capability_fields.insert(
+                        "rss_sample_count".to_string(),
+                        serde_json::json!(observed_rss_sample_count),
+                    );
+                }
                 self.events.push(TraceEvent {
                     time_ms: self.clock.now_ms(),
                     name: "capability_proc".to_string(),
-                    fields: serde_json::Map::from_iter([
-                        ("op".to_string(), serde_json::json!("spawn")),
-                        ("cmd".to_string(), serde_json::json!(cmd)),
-                        (
-                            "payload_bytes".to_string(),
-                            serde_json::json!((rule.stdout.len() + rule.stderr.len()) as u64),
-                        ),
-                        (
-                            "duration_ms".to_string(),
-                            serde_json::json!(self.clock.now_ms().saturating_sub(start_ms)),
-                        ),
-                    ]),
+                    fields: capability_fields,
                 });
 
                 if let Some(expected) = expect_exit

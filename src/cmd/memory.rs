@@ -2,9 +2,12 @@
 
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::{Config, FozzyError, FozzyResult, MemoryGraph, MemoryLeak, MemorySummary};
+use crate::{
+    Config, FozzyError, FozzyResult, MemoryGraph, MemoryLeak, MemorySummary, MemoryTimelineEntry,
+};
 
 #[derive(Debug, Subcommand)]
 pub enum MemoryCommand {
@@ -60,7 +63,16 @@ pub struct MemoryTop {
     pub run: String,
     pub limit: usize,
     pub total: usize,
-    pub leaks: Vec<MemoryLeak>,
+    pub entries: Vec<MemoryTopEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryTopEntry {
+    pub kind: String,
+    pub label: String,
+    pub bytes: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +85,7 @@ pub struct MemoryGraphOutput {
 struct MemoryBundle {
     summary: MemorySummary,
     leaks: Vec<MemoryLeak>,
+    timeline: Vec<MemoryTimelineEntry>,
     graph: MemoryGraph,
 }
 
@@ -160,8 +173,9 @@ fn load_memory_bundle_from_sidecars(
 ) -> FozzyResult<Option<MemoryBundle>> {
     let artifacts_dir = &source.artifacts_dir;
     let leaks_path = artifacts_dir.join("memory.leaks.json");
+    let timeline_path = artifacts_dir.join("memory.timeline.json");
     let graph_path = artifacts_dir.join("memory.graph.json");
-    if !leaks_path.exists() && !graph_path.exists() {
+    if !leaks_path.exists() && !timeline_path.exists() && !graph_path.exists() {
         return Ok(None);
     }
 
@@ -184,10 +198,16 @@ fn load_memory_bundle_from_sidecars(
         validate_graph_against_summary(&summary, &graph, &graph_path)?;
     }
 
+    let mut timeline: Vec<MemoryTimelineEntry> = if timeline_path.exists() {
+        serde_json::from_slice(&std::fs::read(&timeline_path)?)?
+    } else {
+        Vec::new()
+    };
     let missing_leaks = !leaks_path.exists();
+    let missing_timeline = !timeline_path.exists();
     let missing_graph = !graph_path.exists();
     let mut hydrated_missing_memory = false;
-    if (missing_leaks || missing_graph)
+    if (missing_leaks || missing_timeline || missing_graph)
         && let Some(trace_path) = source
             .validated_bundle
             .as_ref()
@@ -197,13 +217,16 @@ fn load_memory_bundle_from_sidecars(
         if missing_leaks {
             leaks = trace_bundle.leaks;
         }
+        if missing_timeline {
+            timeline = trace_bundle.timeline;
+        }
         if missing_graph {
             graph = trace_bundle.graph;
         }
         hydrated_missing_memory = true;
     }
 
-    if (missing_leaks || missing_graph) && !hydrated_missing_memory {
+    if (missing_leaks || missing_timeline || missing_graph) && !hydrated_missing_memory {
         return Err(FozzyError::InvalidArgument(format!(
             "partial memory sidecars in {} require a trusted trace artifact to supply missing memory evidence",
             artifacts_dir.display()
@@ -213,6 +236,7 @@ fn load_memory_bundle_from_sidecars(
     Ok(Some(MemoryBundle {
         summary,
         leaks,
+        timeline,
         graph,
     }))
 }
@@ -254,21 +278,103 @@ pub fn memory_command(config: &Config, command: &MemoryCommand) -> FozzyResult<s
         }
         MemoryCommand::Top { run, limit } => {
             let run_label = crate::normalize_run_or_trace_selector(run);
-            let mut bundle = load_memory_bundle(config, run)?;
-            bundle.leaks.sort_by(|a, b| {
-                b.bytes
-                    .cmp(&a.bytes)
-                    .then_with(|| a.alloc_id.cmp(&b.alloc_id))
-            });
+            let bundle = load_memory_bundle(config, run)?;
+            let mut entries = memory_top_entries(&bundle);
             let out = MemoryTop {
                 run: run_label,
                 limit: *limit,
-                total: bundle.leaks.len(),
-                leaks: bundle.leaks.into_iter().take(*limit).collect(),
+                total: entries.len(),
+                entries: entries.drain(..entries.len().min(*limit)).collect(),
             };
             Ok(serde_json::to_value(out)?)
         }
     }
+}
+
+fn memory_top_entries(bundle: &MemoryBundle) -> Vec<MemoryTopEntry> {
+    let mut entries: Vec<MemoryTopEntry> = bundle
+        .leaks
+        .iter()
+        .map(|leak| MemoryTopEntry {
+            kind: "leak".to_string(),
+            label: leak
+                .tag
+                .clone()
+                .unwrap_or_else(|| format!("alloc {}", leak.alloc_id)),
+            bytes: leak.bytes,
+            fields: BTreeMap::from([
+                ("allocId".to_string(), serde_json::json!(leak.alloc_id)),
+                (
+                    "callsiteHash".to_string(),
+                    serde_json::json!(leak.callsite_hash.clone()),
+                ),
+                ("tag".to_string(), serde_json::json!(leak.tag.clone())),
+            ]),
+        })
+        .collect();
+
+    for entry in &bundle.timeline {
+        if entry.kind != "host_proc_peak" {
+            continue;
+        }
+        let peak_bytes = entry
+            .fields
+            .get("peakBytes")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        if peak_bytes == 0 {
+            continue;
+        }
+        let cmd = entry
+            .fields
+            .get("cmd")
+            .and_then(|value| value.as_str())
+            .unwrap_or("host-proc");
+        let args = entry
+            .fields
+            .get("args")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        let label = if args.is_empty() {
+            cmd.to_string()
+        } else {
+            format!("{cmd} {args}")
+        };
+        entries.push(MemoryTopEntry {
+            kind: "host_proc_peak".to_string(),
+            label,
+            bytes: peak_bytes,
+            fields: entry.fields.clone(),
+        });
+    }
+
+    if entries.is_empty() && bundle.summary.peak_bytes > 0 {
+        entries.push(MemoryTopEntry {
+            kind: "peak".to_string(),
+            label: "observed peak memory".to_string(),
+            bytes: bundle.summary.peak_bytes,
+            fields: BTreeMap::from([
+                (
+                    "peakBytes".to_string(),
+                    serde_json::json!(bundle.summary.peak_bytes),
+                ),
+                (
+                    "leakedBytes".to_string(),
+                    serde_json::json!(bundle.summary.leaked_bytes),
+                ),
+            ]),
+        });
+    }
+
+    entries.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.label.cmp(&b.label)));
+    entries
 }
 
 fn load_memory_bundle(config: &Config, run: &str) -> FozzyResult<MemoryBundle> {
@@ -402,6 +508,7 @@ fn load_from_trace(path: &Path, run_name: &str) -> FozzyResult<MemoryBundle> {
     Ok(MemoryBundle {
         summary,
         leaks: final_leaks,
+        timeline: Vec::new(),
         graph: final_graph,
     })
 }

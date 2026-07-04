@@ -324,8 +324,17 @@ fn artifacts_run_id_uses_external_recorded_trace_identity() {
     let memory_doc = parse_json_stdout(&memory);
     assert_eq!(
         memory_doc.get("total").and_then(|v| v.as_u64()),
-        Some(0),
-        "external recorded run id should resolve trace-backed memory summary"
+        Some(1),
+        "external recorded run id should surface the trace-backed host memory peak"
+    );
+    assert_eq!(
+        memory_doc
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .and_then(|entries| entries.first())
+            .and_then(|entry| entry.get("kind"))
+            .and_then(|v| v.as_str()),
+        Some("peak")
     );
 }
 
