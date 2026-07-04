@@ -116,6 +116,52 @@ fn validate_rejects_invalid_nested_steps() {
 }
 
 #[test]
+fn validate_rejects_declaration_only_contract_scenarios() {
+    let ws = temp_workspace("validate-contract-only");
+    let scenario = ws.join("contract-only.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"{
+          "version": 1,
+          "name": "contract-only",
+          "steps": [
+            {
+              "type": "proc_when",
+              "cmd": "/bin/echo",
+              "args": ["ok"],
+              "exit_code": 0,
+              "stdout": "ok\n",
+              "stderr": ""
+            }
+          ]
+        }"#,
+    )
+    .expect("write scenario");
+
+    let output = run_cli(&[
+        "validate".into(),
+        scenario.display().to_string(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "validate should reject declaration-only scenarios"
+    );
+    let doc = parse_json_stdout(&output);
+    assert_eq!(doc.get("ok").and_then(|v| v.as_bool()), Some(false));
+    let msg = doc
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        msg.contains("`proc_when` and `http_when` are declarations"),
+        "expected declaration-only guidance, got: {msg}"
+    );
+}
+
+#[test]
 fn explore_rejects_invalid_distributed_scenario_missing_topology() {
     let ws = temp_workspace("explore-invalid-distributed");
     let scenario = ws.join("distributed-invalid.fozzy.json");

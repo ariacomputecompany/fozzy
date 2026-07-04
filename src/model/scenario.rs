@@ -518,6 +518,12 @@ impl Scenario {
 }
 
 fn validate_steps(steps: &[Step]) -> FozzyResult<()> {
+    if !steps.is_empty() && steps.iter().all(step_is_contract_only) {
+        return Err(FozzyError::Scenario(
+            "scenario declares only contract/mocking steps and executes no runtime work; `proc_when` and `http_when` are declarations, not executable actions. Add executable steps such as `proc_spawn`, `http_request`, or fs/assertion steps.".to_string(),
+        ));
+    }
+
     for step in steps {
         match step {
             Step::Sleep { duration } | Step::Advance { duration } => {
@@ -549,6 +555,10 @@ fn validate_steps(steps: &[Step]) -> FozzyResult<()> {
         }
     }
     Ok(())
+}
+
+fn step_is_contract_only(step: &Step) -> bool {
+    matches!(step, Step::HttpWhen { .. } | Step::ProcWhen { .. })
 }
 
 impl ScenarioV1Distributed {

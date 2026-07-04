@@ -166,19 +166,24 @@ fn run_rejects_declaration_only_proc_when_scenarios() {
     ]);
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "declaration-only scenario should fail closed, stderr={}",
+        Some(2),
+        "declaration-only scenario should fail validation, stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
     let doc = parse_json_stdout(&out);
-    assert_eq!(doc.get("status").and_then(|v| v.as_str()), Some("fail"));
-    let findings = doc
-        .get("findings")
-        .and_then(|v| v.as_array())
-        .expect("findings array");
-    assert!(findings.iter().any(|finding| {
-        finding.get("title").and_then(|v| v.as_str()) == Some("no_steps_executed")
-    }));
+    let msg = doc
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        msg.contains("`proc_when` and `http_when` are declarations"),
+        "expected declaration-only authoring guidance, got: {msg}"
+    );
+    assert!(
+        msg.contains("Add executable steps such as `proc_spawn`"),
+        "expected actionable executable-step guidance, got: {msg}"
+    );
 }
 
 #[test]
