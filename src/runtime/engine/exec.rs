@@ -51,6 +51,7 @@ pub(crate) struct ExecCtx<'a> {
     pub(super) decisions: DecisionLog,
     pub(super) events: Vec<TraceEvent>,
     pub(super) findings: Vec<Finding>,
+    pub(super) executed_steps: usize,
     pub(super) replay: Option<ReplayCursor<'a>>,
     pub(super) current_step_index: Option<usize>,
     pub(super) scenario_path: Option<PathBuf>,
@@ -95,6 +96,7 @@ impl<'a> ExecCtx<'a> {
             decisions: DecisionLog::default(),
             events: Vec::new(),
             findings: Vec::new(),
+            executed_steps: 0,
             replay: None,
             current_step_index: None,
             scenario_path: None,
@@ -272,4 +274,17 @@ impl<'a> ExecCtx<'a> {
         }
         self.exec_memory_step(step).map(|_| ())
     }
+
+    pub(super) fn mark_step_executed(&mut self, step: &crate::Step) {
+        if !step_is_declaration_only(step) {
+            self.executed_steps = self.executed_steps.saturating_add(1);
+        }
+    }
+}
+
+pub(crate) fn step_is_declaration_only(step: &crate::Step) -> bool {
+    matches!(
+        step,
+        crate::Step::HttpWhen { .. } | crate::Step::ProcWhen { .. }
+    )
 }

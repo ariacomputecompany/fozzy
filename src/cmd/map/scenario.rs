@@ -11,6 +11,8 @@ use super::{
     ScenarioFactCache, ScenarioFactCacheEntry, tokenize,
 };
 
+const SCENARIO_FACT_CACHE_SCHEMA_VERSION: &str = "fozzy.map_scenario_facts.v2";
+
 pub(crate) struct ScenarioCoverageIndex {
     by_suite: BTreeMap<String, Vec<usize>>,
 }
@@ -62,7 +64,8 @@ pub(crate) fn build_scenario_facts(
 ) -> ScenarioFactBuild {
     let mut facts = Vec::new();
     let mut unreadable_scenarios = Vec::new();
-    let cache_path = cache_dir.map(|dir| dir.join("map-suites-scenarios.v1.json"));
+    let mut contract_only_scenarios = Vec::new();
+    let cache_path = cache_dir.map(|dir| dir.join("map-suites-scenarios.v2.json"));
     let mut cache = cache_path
         .as_ref()
         .and_then(|path| load_scenario_fact_cache(path).ok())
@@ -70,10 +73,11 @@ pub(crate) fn build_scenario_facts(
     let mut next_entries = BTreeMap::new();
     for path in paths {
         match scenario_fact(path, &cache) {
-            Ok((cache_entry, fact)) => {
+            Ok(Some((cache_entry, fact))) => {
                 next_entries.insert(path_key(path), cache_entry);
                 facts.push(fact);
             }
+            Ok(None) => contract_only_scenarios.push(path.display().to_string()),
             Err(err) => unreadable_scenarios.push(format!("{}: {err}", path.display())),
         }
     }
@@ -84,6 +88,7 @@ pub(crate) fn build_scenario_facts(
     ScenarioFactBuild {
         facts,
         unreadable_scenarios,
+        contract_only_scenarios,
     }
 }
 
@@ -112,7 +117,7 @@ pub(crate) fn discover_scenarios(root: &Path) -> FozzyResult<Vec<PathBuf>> {
 fn scenario_fact(
     path: &Path,
     cache: &ScenarioFactCache,
-) -> FozzyResult<(ScenarioFactCacheEntry, ScenarioFact)> {
+) -> FozzyResult<Option<(ScenarioFactCacheEntry, ScenarioFact)>> {
     let metadata = std::fs::metadata(path)?;
     let modified_ms = metadata
         .modified()
@@ -126,7 +131,7 @@ fn scenario_fact(
         && entry.modified_ms == modified_ms
         && entry.size_bytes == size_bytes
     {
-        return Ok((entry.clone(), entry.fact.clone()));
+        return Ok(Some((entry.clone(), entry.fact.clone())));
     }
 
     let name = path
@@ -138,7 +143,12 @@ fn scenario_fact(
     tokens.extend(tokenize(&path.to_string_lossy().to_ascii_lowercase()));
     let bytes = std::fs::read(path)?;
     let fact = match crate::Scenario::load_file(&ScenarioPath::new(path.to_path_buf())) {
-        Ok(scenario) => scenario_fact_from_parsed(path, &mut tokens, scenario),
+        Ok(scenario) => {
+            if scenario_is_contract_only(&scenario) {
+                return Ok(None);
+            }
+            scenario_fact_from_parsed(path, &mut tokens, scenario)
+        }
         Err(_) => scenario_fact_from_metadata(path, &mut tokens, &bytes)?,
     };
     let cache_entry = ScenarioFactCacheEntry {
@@ -146,7 +156,7 @@ fn scenario_fact(
         size_bytes,
         fact: fact.clone(),
     };
-    Ok((cache_entry, fact))
+    Ok(Some((cache_entry, fact)))
 }
 
 fn scenario_fact_from_parsed(
@@ -157,10 +167,18 @@ fn scenario_fact_from_parsed(
     let (has_explore, has_fuzz, has_host, has_memory, has_failure, has_shrink) = match scenario {
         ScenarioFile::Steps(steps) => {
             tokens.extend(tokenize(&steps.name.to_ascii_lowercase()));
-            let has_host = steps.steps.iter().any(step_uses_host_surface);
-            let has_memory = steps.steps.iter().any(step_uses_memory_surface);
+            let inferred = infer_named_suite_signals(tokens);
+            let has_host = steps.steps.iter().any(step_uses_host_surface) || inferred.host;
+            let has_memory = steps.steps.iter().any(step_uses_memory_surface) || inferred.memory;
             let has_failure = steps.steps.iter().any(step_has_failure_contract);
-            (false, true, has_host, has_memory, has_failure, true)
+            (
+                inferred.explore,
+                inferred.fuzz,
+                has_host,
+                has_memory,
+                has_failure,
+                inferred.shrink,
+            )
         }
         ScenarioFile::Distributed(distributed) => {
             tokens.extend(tokenize(&distributed.name.to_ascii_lowercase()));
@@ -173,7 +191,15 @@ fn scenario_fact_from_parsed(
         }
         ScenarioFile::Suites(suites) => {
             tokens.extend(tokenize(&suites.name.to_ascii_lowercase()));
-            (false, false, false, false, false, false)
+            let inferred = infer_named_suite_signals(tokens);
+            (
+                inferred.explore,
+                inferred.fuzz,
+                inferred.host,
+                inferred.memory,
+                false,
+                inferred.shrink,
+            )
         }
     };
 
@@ -221,19 +247,21 @@ fn scenario_fact_from_metadata(
         serde_json::Value::Object(_) => true,
         _ => false,
     });
+    let inferred = infer_named_suite_signals(tokens);
     let has_fuzz = metadata
         .mode
         .as_deref()
-        .is_some_and(|mode| mode.eq_ignore_ascii_case("fuzz"));
-    let has_shrink = metadata.shrink_trace.unwrap_or(false);
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("fuzz"))
+        || inferred.fuzz;
+    let has_shrink = metadata.shrink_trace.unwrap_or(false) || inferred.shrink;
 
     Ok(ScenarioFact {
         path: path.display().to_string(),
         tokens: tokens.clone(),
-        has_explore,
+        has_explore: has_explore || inferred.explore,
         has_fuzz,
-        has_host: false,
-        has_memory: false,
+        has_host: inferred.host,
+        has_memory: inferred.memory,
         has_failure: false,
         has_shrink,
     })
@@ -241,12 +269,13 @@ fn scenario_fact_from_metadata(
 
 fn step_uses_host_surface(step: &Step) -> bool {
     match step {
-        Step::FsWrite { .. }
+        Step::ProcWhen { .. }
+        | Step::ProcSpawn { .. }
+        | Step::FsWrite { .. }
         | Step::FsReadAssert { .. }
         | Step::FsSnapshot { .. }
         | Step::FsRestore { .. }
-        | Step::HttpRequest { .. }
-        | Step::ProcSpawn { .. } => true,
+        | Step::HttpRequest { .. } => true,
         Step::AssertThrows { steps } | Step::AssertRejects { steps } => {
             steps.iter().any(step_uses_host_surface)
         }
@@ -286,13 +315,46 @@ fn distributed_step_has_failure_contract(step: &DistributedStep) -> bool {
     )
 }
 
+fn scenario_is_contract_only(scenario: &ScenarioFile) -> bool {
+    match scenario {
+        ScenarioFile::Steps(steps) => {
+            !steps.steps.is_empty() && steps.steps.iter().all(step_is_contract_only)
+        }
+        ScenarioFile::Suites(_) | ScenarioFile::Distributed(_) => false,
+    }
+}
+
+fn step_is_contract_only(step: &Step) -> bool {
+    matches!(step, Step::ProcWhen { .. } | Step::HttpWhen { .. })
+}
+
+#[derive(Clone, Copy, Default)]
+struct InferredSuiteSignals {
+    explore: bool,
+    fuzz: bool,
+    host: bool,
+    memory: bool,
+    shrink: bool,
+}
+
+fn infer_named_suite_signals(tokens: &std::collections::BTreeSet<String>) -> InferredSuiteSignals {
+    let has = |needle: &str| tokens.iter().any(|token| token == needle);
+    InferredSuiteSignals {
+        explore: has("explore") || has("distributed"),
+        fuzz: has("fuzz"),
+        host: has("host") || has("proc") || has("http") || has("fs"),
+        memory: has("memory"),
+        shrink: has("shrink"),
+    }
+}
+
 fn path_key(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
 fn empty_scenario_fact_cache() -> ScenarioFactCache {
     ScenarioFactCache {
-        schema_version: "fozzy.map_scenario_facts.v1".to_string(),
+        schema_version: SCENARIO_FACT_CACHE_SCHEMA_VERSION.to_string(),
         entries: BTreeMap::new(),
     }
 }
@@ -302,7 +364,7 @@ fn load_scenario_fact_cache(path: &Path) -> FozzyResult<ScenarioFactCache> {
     let cache: ScenarioFactCache = serde_json::from_slice(&bytes).map_err(|err| {
         FozzyError::Scenario(format!("failed to parse {}: {err}", path.display()))
     })?;
-    if cache.schema_version != "fozzy.map_scenario_facts.v1" {
+    if cache.schema_version != SCENARIO_FACT_CACHE_SCHEMA_VERSION {
         return Ok(empty_scenario_fact_cache());
     }
     Ok(cache)

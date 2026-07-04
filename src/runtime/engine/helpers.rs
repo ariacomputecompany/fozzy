@@ -152,6 +152,29 @@ pub(super) fn assert_proc_when_matches_host(
     actual: &ProcRule,
     location: Option<FindingLocation>,
 ) -> Result<(), Finding> {
+    let detail_payload = || {
+        serde_json::json!({
+            "requestKind": "process_assertion",
+            "command": cmd,
+            "args": args,
+            "expected": {
+                "exitCode": expected.exit_code,
+                "stdoutPreview": truncate_event_text(&expected.stdout),
+                "stderrPreview": truncate_event_text(&expected.stderr),
+            },
+            "actual": {
+                "exitCode": actual.exit_code,
+                "stdoutPreview": truncate_event_text(&actual.stdout),
+                "stderrPreview": truncate_event_text(&actual.stderr),
+            }
+        })
+    };
+    let detail_location = || {
+        location.clone().map(|mut location| {
+            location.details = Some(detail_payload());
+            location
+        })
+    };
     if actual.exit_code != expected.exit_code {
         return Err(Finding {
             kind: FindingKind::Assertion,
@@ -160,7 +183,7 @@ pub(super) fn assert_proc_when_matches_host(
                 "host proc exit mismatch for {cmd:?} {:?}: expected {}, got {}",
                 args, expected.exit_code, actual.exit_code
             ),
-            location,
+            location: detail_location(),
         });
     }
     if actual.stdout != expected.stdout {
@@ -168,7 +191,7 @@ pub(super) fn assert_proc_when_matches_host(
             kind: FindingKind::Assertion,
             title: "proc_when_host_stdout".to_string(),
             message: format!("host proc stdout mismatch for {cmd:?} {:?}", args),
-            location,
+            location: detail_location(),
         });
     }
     if actual.stderr != expected.stderr {
@@ -176,7 +199,7 @@ pub(super) fn assert_proc_when_matches_host(
             kind: FindingKind::Assertion,
             title: "proc_when_host_stderr".to_string(),
             message: format!("host proc stderr mismatch for {cmd:?} {:?}", args),
-            location,
+            location: detail_location(),
         });
     }
     Ok(())

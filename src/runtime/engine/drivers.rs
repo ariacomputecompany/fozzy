@@ -7,6 +7,7 @@ use crate::{
 };
 
 use super::exec::ExecCtx;
+use super::exec::step_is_declaration_only;
 use super::helpers::{ReplayCursor, should_emit_heavy_artifacts};
 use super::types::{FsBackend, HttpBackend, ProcBackend, ProfileCaptureLevel, ScenarioRun};
 
@@ -173,6 +174,7 @@ pub(crate) fn run_embedded_scenario_inner(
                 started.elapsed(),
             ));
         }
+        ctx.mark_step_executed(step);
         let end_ms = ctx.clock.now_ms();
         ctx.events.push(TraceEvent {
             time_ms: end_ms,
@@ -202,6 +204,27 @@ pub(crate) fn run_embedded_scenario_inner(
                 started.elapsed(),
             ));
         }
+    }
+
+    if ctx.executed_steps == 0
+        && scenario
+            .steps
+            .iter()
+            .any(|step| step_is_declaration_only(step))
+    {
+        ctx.findings.push(Finding {
+            kind: FindingKind::Assertion,
+            title: "no_steps_executed".to_string(),
+            message: "scenario declared only contract/mocking steps and executed no runtime work; use executable steps such as `proc_spawn`, `http_request`, or fs/assertion steps instead of a declaration-only scenario".to_string(),
+            location: None,
+        });
+        return Ok(ctx.finish(
+            ExitStatus::Fail,
+            scenario_path,
+            scenario,
+            started_at,
+            started.elapsed(),
+        ));
     }
 
     Ok(ctx.finish(
@@ -387,6 +410,7 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                     started.elapsed(),
                 ));
             }
+            ctx.mark_step_executed(step_def);
             let end_ms = ctx.clock.now_ms();
             ctx.events.push(TraceEvent {
                 time_ms: end_ms,
@@ -483,6 +507,7 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                     started.elapsed(),
                 ));
             }
+            ctx.mark_step_executed(step_def);
             let end_ms = ctx.clock.now_ms();
             ctx.events.push(TraceEvent {
                 time_ms: end_ms,
@@ -509,6 +534,29 @@ pub(crate) fn run_scenario_replay_inner<'a>(
                 "replay finished with {} unused decisions",
                 cursor.remaining()
             ),
+            location: None,
+        });
+        return Ok(ctx.finish(
+            ExitStatus::Fail,
+            PathBuf::from(scenario_path),
+            scenario.clone(),
+            started_at,
+            started.elapsed(),
+        ));
+    }
+
+    if ctx.executed_steps == 0
+        && scenario
+            .steps
+            .iter()
+            .any(|step| step_is_declaration_only(step))
+    {
+        ctx.findings.push(Finding {
+            kind: FindingKind::Assertion,
+            title: "no_steps_executed".to_string(),
+            message:
+                "replay scenario declared only contract/mocking steps and executed no runtime work"
+                    .to_string(),
             location: None,
         });
         return Ok(ctx.finish(

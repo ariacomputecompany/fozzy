@@ -361,3 +361,16 @@ fn map_suites_pagination_and_uncovered_filters_are_publicly_retrievable() {
                 .unwrap_or(true)
     }));
 }
+
+#[test]
+fn global_version_flag_reports_build_info() {
+    let out = run_cli(&["--version".into()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "version stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("fozzy"));
+}

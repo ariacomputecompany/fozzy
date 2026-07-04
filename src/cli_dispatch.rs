@@ -45,11 +45,12 @@ pub(super) fn run_command(
             mem_pressure_wave,
             fail_on_leak,
             leak_budget,
+            mem_artifacts,
         } => {
             let memory = resolve_memory_options(
                 config,
                 *mem_track,
-                false,
+                *mem_artifacts,
                 *mem_limit_mb,
                 *mem_fail_after,
                 *mem_fragmentation_seed,

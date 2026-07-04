@@ -111,8 +111,8 @@ fn test_rejects_aggregate_profile_capture_flag() {
 }
 
 #[test]
-fn test_rejects_aggregate_memory_sidecar_flag() {
-    let ws = temp_workspace("test-mem-artifacts-reject");
+fn test_accepts_aggregate_memory_sidecar_flag() {
+    let ws = temp_workspace("test-mem-artifacts-accept");
     let scenario = ws.join("ok.fozzy.json");
     std::fs::write(&scenario, fixture("example.fozzy.json")).expect("write scenario");
 
@@ -128,17 +128,81 @@ fn test_rejects_aggregate_memory_sidecar_flag() {
     );
     assert_eq!(
         output.status.code(),
-        Some(2),
-        "test should reject mem artifacts"
+        Some(0),
+        "test should accept mem artifacts, stderr={}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let out = parse_json_stdout(&output);
-    let msg = out
-        .get("message")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
     assert!(
-        msg.contains("unexpected argument '--mem-artifacts'"),
-        "expected clap-level memory artifact rejection, got: {msg}"
+        parse_json_stdout(&output)
+            .get("status")
+            .and_then(|v| v.as_str())
+            == Some("pass")
+    );
+}
+
+#[test]
+fn run_rejects_declaration_only_proc_when_scenarios() {
+    let ws = temp_workspace("proc-when-only");
+    let scenario = ws.join("proc-when-only.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"{
+          "version":1,
+          "name":"proc-when-only",
+          "steps":[
+            {"type":"proc_when","cmd":"/bin/echo","args":["ok"],"exit_code":0,"stdout":"ok\n","stderr":""}
+          ]
+        }"#,
+    )
+    .expect("write scenario");
+
+    let out = run_cli(&[
+        "--proc-backend".into(),
+        "host".into(),
+        "run".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "declaration-only scenario should fail closed, stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = parse_json_stdout(&out);
+    assert_eq!(doc.get("status").and_then(|v| v.as_str()), Some("fail"));
+    let findings = doc
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .expect("findings array");
+    assert!(findings.iter().any(|finding| {
+        finding.get("title").and_then(|v| v.as_str()) == Some("no_steps_executed")
+    }));
+}
+
+#[test]
+fn test_accepts_mem_artifacts_flag() {
+    let ws = temp_workspace("test-mem-artifacts-flag");
+    let scenario = ws.join("simple.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"{"version":1,"name":"simple","steps":[{"type":"assert_ok","value":true}]}"#,
+    )
+    .expect("write scenario");
+
+    let out = run_cli(&[
+        "test".into(),
+        scenario.to_string_lossy().to_string(),
+        "--det".into(),
+        "--mem-track".into(),
+        "--mem-artifacts".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "mem-artifacts should parse for test mode, stderr={}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }

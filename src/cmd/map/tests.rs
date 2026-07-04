@@ -144,7 +144,7 @@ fn should_skip_repo_local_tmp_outputs() {
 }
 
 #[test]
-fn discover_scan_roots_prefers_source_trees_over_repo_bulk() {
+fn discover_scan_roots_scans_repo_root() {
     let root = temp_dir("scan-roots");
     for dir in [
         "src",
@@ -167,13 +167,14 @@ fn discover_scan_roots_prefers_source_trees_over_repo_bulk() {
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(roots, vec!["crates".to_string(), "src".to_string()]);
+    assert_eq!(roots, vec!["".to_string()]);
 }
 
 #[test]
-fn scan_repo_prunes_non_source_trees_before_file_walk() {
+fn scan_repo_skips_known_non_product_trees_but_keeps_repo_surface() {
     let root = temp_dir("scan-prune");
     std::fs::create_dir_all(root.join("src")).expect("src");
+    std::fs::create_dir_all(root.join("vendor/vllm")).expect("vendor");
     std::fs::create_dir_all(root.join("tmp/generated")).expect("tmp");
     std::fs::create_dir_all(root.join("examples/demo")).expect("examples");
     std::fs::write(
@@ -181,6 +182,11 @@ fn scan_repo_prunes_non_source_trees_before_file_walk() {
         "fn main() { if true { std::thread::spawn(|| {}); } }",
     )
     .expect("write src");
+    std::fs::write(
+        root.join("vendor/vllm/cache.rs"),
+        "fn cache() { if retry { std::fs::read(\"x\").ok(); } }",
+    )
+    .expect("write vendor");
     std::fs::write(
         root.join("tmp/generated/ignored.rs"),
         "fn ignored() { panic!(\"nope\"); }",
@@ -195,15 +201,21 @@ fn scan_repo_prunes_non_source_trees_before_file_walk() {
     let facts = scan_repo(&root).expect("scan repo");
 
     assert_eq!(
-        facts.scanned_files, 1,
-        "expected only source trees to be scanned"
+        facts.scanned_files, 2,
+        "expected repo scan to keep src + vendored code while skipping tmp/examples"
     );
     assert_eq!(
         facts.hotspots.len(),
-        1,
-        "expected only src hotspot to remain"
+        2,
+        "expected src + vendored hotspots to remain"
     );
-    assert_eq!(facts.hotspots[0].path, "src/main.rs");
+    let paths = facts
+        .hotspots
+        .iter()
+        .map(|hotspot| hotspot.path.as_str())
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"src/main.rs"));
+    assert!(paths.contains(&"vendor/vllm/cache.rs"));
 }
 
 #[test]
@@ -614,4 +626,75 @@ fn map_suites_all_returns_full_filtered_set_without_truncation() {
     assert_eq!(report.offset, 0);
     assert_eq!(report.limit, 3);
     assert!(!report.truncated);
+}
+
+#[test]
+fn build_scenario_facts_infers_named_host_memory_and_shrink_signals() {
+    let root = temp_dir("scenario-facts-signals");
+    let scenario = root.join("memory.cache_root_churn.shrink.host.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"
+        {
+          "version": 1,
+          "name": "memory-cache-root-churn-shrink-host",
+          "steps": [
+            {
+              "type": "proc_when",
+              "cmd": "sh",
+              "args": ["-c", "echo ok"],
+              "exit_code": 0,
+              "stdout": "ok\n",
+              "stderr": ""
+            },
+            {
+              "type": "proc_spawn",
+              "cmd": "sh",
+              "args": ["-c", "echo ok"],
+              "expect_exit": 0,
+              "expect_stdout": "ok\n"
+            }
+          ]
+        }
+        "#,
+    )
+    .expect("write scenario");
+
+    let facts = build_scenario_facts(&[scenario], None);
+    assert!(facts.unreadable_scenarios.is_empty());
+    let fact = facts.facts.first().expect("scenario fact");
+    assert!(fact.has_host);
+    assert!(fact.has_memory);
+    assert!(fact.has_shrink);
+}
+
+#[test]
+fn build_scenario_facts_ignores_contract_only_scenarios() {
+    let root = temp_dir("scenario-facts-contract-only");
+    let scenario = root.join("proc-when-only.fozzy.json");
+    std::fs::write(
+        &scenario,
+        r#"
+        {
+          "version": 1,
+          "name": "proc-when-only",
+          "steps": [
+            {
+              "type": "proc_when",
+              "cmd": "sh",
+              "args": ["-c", "echo ok"],
+              "exit_code": 0,
+              "stdout": "ok\n",
+              "stderr": ""
+            }
+          ]
+        }
+        "#,
+    )
+    .expect("write scenario");
+
+    let facts = build_scenario_facts(&[scenario], None);
+    assert!(facts.unreadable_scenarios.is_empty());
+    assert!(facts.facts.is_empty());
+    assert_eq!(facts.contract_only_scenarios.len(), 1);
 }

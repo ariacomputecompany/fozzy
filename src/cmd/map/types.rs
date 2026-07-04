@@ -279,4 +279,5 @@ pub(crate) struct ScenarioFactCacheEntry {
 pub(crate) struct ScenarioFactBuild {
     pub(crate) facts: Vec<ScenarioFact>,
     pub(crate) unreadable_scenarios: Vec<String>,
+    pub(crate) contract_only_scenarios: Vec<String>,
 }

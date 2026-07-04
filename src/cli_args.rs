@@ -38,6 +38,7 @@ impl From<ExecutionReporter> for Reporter {
 #[derive(Debug, Parser)]
 #[command(name = "fozzy")]
 #[command(about = "deterministic full-stack testing + fuzzing + distributed exploration")]
+#[command(version)]
 #[command(
     after_help = "Start with `fozzy map suites --root . --scenario-root tests --profile pedantic --json` and follow suite gaps in full. Execution policy: use the full command surface by default (map/run/test/fuzz/explore/replay/shrink/trace verify/ci/report/artifacts/profile/memory/doctor/corpus/env/version/usage). Use `fozzy full` to run the end-to-end gate automatically; use `--unsafe` only when intentionally relaxing checks."
 )]
@@ -174,6 +175,9 @@ pub(crate) enum Command {
         /// Leak budget in bytes.
         #[arg(long)]
         leak_budget: Option<u64>,
+
+        #[arg(long)]
+        mem_artifacts: bool,
     },
 
     /// Run a single scenario file (one-off)

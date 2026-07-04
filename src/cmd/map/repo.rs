@@ -21,32 +21,21 @@ pub(crate) fn scan_repo(root: &Path) -> FozzyResult<RepoFacts> {
     let mut records = Vec::<ScanRecord>::new();
     let mut scanned_files = 0usize;
     let mut skipped_source_files = Vec::new();
-    let scan_roots = discover_scan_roots(root);
-    if !scan_roots.iter().any(|scan_root| scan_root == root) {
-        scan_root_level_files(
+    for entry in WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|entry| should_descend(entry.path(), root))
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        scan_candidate_file(
             root,
+            entry.path(),
             &mut records,
             &mut scanned_files,
             &mut skipped_source_files,
         );
-    }
-    for scan_root in scan_roots {
-        for entry in WalkDir::new(&scan_root)
-            .into_iter()
-            .filter_entry(|entry| should_descend(entry.path(), root))
-            .flatten()
-        {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            scan_candidate_file(
-                root,
-                entry.path(),
-                &mut records,
-                &mut scanned_files,
-                &mut skipped_source_files,
-            );
-        }
     }
 
     let mut hotspots = records
@@ -129,31 +118,9 @@ pub(crate) fn hotspot_hints(hotspot: &MapHotspot) -> Vec<String> {
     out.into_iter().filter(|hint| hint.len() >= 3).collect()
 }
 
+#[allow(dead_code)]
 pub(crate) fn discover_scan_roots(root: &Path) -> Vec<PathBuf> {
-    let mut roots = WalkDir::new(root)
-        .max_depth(3)
-        .into_iter()
-        .filter_entry(|entry| should_descend(entry.path(), root))
-        .flatten()
-        .filter(|entry| entry.file_type().is_dir())
-        .map(|entry| entry.into_path())
-        .filter(|path| is_likely_source_dir(path))
-        .collect::<Vec<_>>();
-    roots.sort();
-    roots.dedup();
-
-    let mut minimal = Vec::<PathBuf>::new();
-    for candidate in roots {
-        if minimal.iter().any(|root| candidate.starts_with(root)) {
-            continue;
-        }
-        minimal.push(candidate);
-    }
-    if minimal.is_empty() {
-        vec![root.to_path_buf()]
-    } else {
-        minimal
-    }
+    vec![root.to_path_buf()]
 }
 
 pub(crate) fn should_skip_path(path: &Path) -> bool {
@@ -166,32 +133,6 @@ pub(crate) fn should_skip_path(path: &Path) -> bool {
             .to_str()
             .is_some_and(should_skip_dir_name)
     })
-}
-
-fn scan_root_level_files(
-    root: &Path,
-    records: &mut Vec<ScanRecord>,
-    scanned_files: &mut usize,
-    skipped_source_files: &mut Vec<String>,
-) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_file() {
-            continue;
-        }
-        scan_candidate_file(
-            root,
-            &entry.path(),
-            records,
-            scanned_files,
-            skipped_source_files,
-        );
-    }
 }
 
 fn scan_candidate_file(
@@ -264,30 +205,18 @@ fn should_skip_dir_name(segment: &str) -> bool {
         "build",
         "cache",
         "coverage",
+        "docs",
         "dist",
+        "examples",
         "node_modules",
         "out",
         "target",
         "temp",
         "tmp",
-        "vendor",
         "venv",
     ]
     .iter()
     .any(|needle| segment.eq_ignore_ascii_case(needle))
-}
-
-fn is_likely_source_dir(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            [
-                "app", "apps", "bin", "cmd", "crate", "crates", "internal", "lib", "libs",
-                "package", "packages", "pkg", "service", "services", "src",
-            ]
-            .iter()
-            .any(|needle| name.eq_ignore_ascii_case(needle))
-        })
 }
 
 pub(crate) fn is_candidate_file(path: &Path) -> bool {

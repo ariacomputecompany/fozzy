@@ -198,6 +198,7 @@ fn map_suites_with_cache(
         warnings: map_warnings(
             &facts.skipped_source_files,
             &scenario_build.unreadable_scenarios,
+            &scenario_build.contract_only_scenarios,
         ),
         required_hotspot_count,
         covered_hotspot_count,
@@ -214,6 +215,7 @@ fn map_suites_with_cache(
 pub(crate) fn map_warnings(
     skipped_source_files: &[String],
     unreadable_scenarios: &[String],
+    contract_only_scenarios: &[String],
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     if !skipped_source_files.is_empty() {
@@ -226,6 +228,12 @@ pub(crate) fn map_warnings(
         warnings.push(format!(
             "map suites skipped {} unreadable scenario file(s); suite attribution confidence is reduced",
             unreadable_scenarios.len()
+        ));
+    }
+    if !contract_only_scenarios.is_empty() {
+        warnings.push(format!(
+            "map suites ignored {} declaration-only scenario file(s) that execute no runtime work; these scenarios do not count toward coverage until they use executable steps",
+            contract_only_scenarios.len()
         ));
     }
     warnings
